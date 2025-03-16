@@ -13,7 +13,7 @@ The following tools are available through this MCP server:
 
 - **get-invoices**
 
-  - Get a list of invoices from LexOffice
+  - Get a list of invoices from Lexware Office
   - Inputs:
     - `status` (array of strings, optional): Filter by invoice status ("open", "draft", "paid", "paidoff", "voided"). Default: all statuses
     - `page` (number, optional): Page number to retrieve (starts at 0). Default: 0
@@ -21,12 +21,12 @@ The following tools are available through this MCP server:
 
 - **get-invoice-details**
 
-  - Get details of an invoice from LexOffice
+  - Get details of an invoice from Lexware Office
   - Inputs:
     - `id` (string): The UUID of the invoice
 
 - **get-contacts**
-  - Get contacts from LexOffice with optional filters that are combined with a logical AND
+  - Get contacts from Lexware Office with optional filters that are combined with a logical AND
   - Inputs:
     - `email` (string, optional): Filter contacts by email address (supports wildcards)
     - `name` (string, optional): Filter contacts by name (supports wildcards)
@@ -40,6 +40,8 @@ The following tools are available through this MCP server:
 
 ### Getting a Lexware Office API key
 
+Visit [https://app.lexoffice.de/addons/public-api](https://app.lexoffice.de/addons/public-api) to get your API key.
+
 ### Prerequisites
 
 - Node.js 22 or higher
@@ -52,22 +54,15 @@ Add this to your `claude_desktop_config.json`:
 
 ```json
 {
-  "mcpServers": {
-    "brave-search": {
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "--rm",
-        "-e",
-        "LEXWARE_OFFICE_API_KEY",
-        "mcp-lexware-office"
-      ],
-      "env": {
-        "LEXWARE_OFFICE_API_KEY": "YOUR_API_KEY_HERE"
-      }
-    }
-  }
+	"mcpServers": {
+		"mcp-lexware-office": {
+			"command": "docker",
+			"args": ["run", "-i", "--rm", "-e", "LEXWARE_OFFICE_API_KEY", "mcp-lexware-office"],
+			"env": {
+				"LEXWARE_OFFICE_API_KEY": "YOUR_API_KEY_HERE"
+			}
+		}
+	}
 }
 ```
 
@@ -75,15 +70,15 @@ Add this to your `claude_desktop_config.json`:
 
 ```json
 {
-  "mcpServers": {
-    "lexware-office": {
-      "command": "npx",
-      "args": ["-y", "JannikWempe/mcp-lexware-office"],
-      "env": {
-        "LEXWARE_OFFICE_API_KEY": "YOUR_API_KEY_HERE"
-      }
-    }
-  }
+	"mcpServers": {
+		"mcp-lexware-office": {
+			"command": "npx",
+			"args": ["-y", "JannikWempe/mcp-lexware-office"],
+			"env": {
+				"LEXWARE_OFFICE_API_KEY": "YOUR_API_KEY_HERE"
+			}
+		}
+	}
 }
 ```
 
