@@ -175,6 +175,93 @@ server.tool(
 	},
 );
 
+server.tool(
+	'list-posting-categories',
+	'Retrieve list of posting categories for bookkeeping vouchers',
+	{
+		type: z.enum(['income', 'outgo']).optional().describe('Filter posting categories by type'),
+	},
+	async ({ type }) => {
+		const postingCategoriesUrl = `/v1/posting-categories`;
+		const postingCategoriesData = await makeLexwareOfficeRequest<any>(postingCategoriesUrl);
+
+		if (!postingCategoriesData) {
+			return {
+				content: [
+					{
+						type: 'text',
+						text: 'Failed to retrieve posting categories',
+					},
+				],
+			};
+		}
+
+		// Filter by type if specified
+		let filteredCategories = postingCategoriesData;
+		if (type) {
+			filteredCategories = postingCategoriesData.filter((category: any) => category.type === type);
+		}
+
+		const response = `Posting Categories:\n\n${JSON.stringify(filteredCategories, null, 2)}`;
+
+		return {
+			content: [
+				{
+					type: 'text',
+					text: response,
+				},
+			],
+		};
+	},
+);
+
+server.tool(
+	'list-countries',
+	'Retrieve list of countries known to lexoffice with their tax classifications. Tax classifications include "de" (Germany), "intraCommunity" (eligible for Innergemeinschaftliche Lieferung within EU), and "thirdPartyCountry" (countries outside the EU).',
+	{
+		taxClassification: z
+			.enum(['de', 'intraCommunity', 'thirdPartyCountry'])
+			.optional()
+			.describe(
+				'Filter countries by tax classification: "de" for Germany, "intraCommunity" for EU countries eligible for Innergemeinschaftliche Lieferung, or "thirdPartyCountry" for non-EU countries',
+			),
+	},
+	async ({ taxClassification }) => {
+		const countriesUrl = `/v1/countries`;
+		const countriesData = await makeLexwareOfficeRequest<any>(countriesUrl);
+
+		if (!countriesData) {
+			return {
+				content: [
+					{
+						type: 'text',
+						text: 'Failed to retrieve countries',
+					},
+				],
+			};
+		}
+
+		// Filter by taxClassification if specified
+		let filteredCountries = countriesData;
+		if (taxClassification) {
+			filteredCountries = countriesData.filter(
+				(country: any) => country.taxClassification === taxClassification,
+			);
+		}
+
+		const response = `Countries:\n\n${JSON.stringify(filteredCountries, null, 2)}`;
+
+		return {
+			content: [
+				{
+					type: 'text',
+					text: response,
+				},
+			],
+		};
+	},
+);
+
 async function main() {
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
