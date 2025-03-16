@@ -7,7 +7,7 @@ import { logger } from './logger.js';
 
 const server = new McpServer({
 	name: 'lexware-office',
-	version: '1.0.0',
+	version: '0.1.1',
 });
 
 server.tool(

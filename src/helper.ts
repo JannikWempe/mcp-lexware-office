@@ -7,7 +7,7 @@ if (!LEXWARE_OFFICE_API_KEY) {
 }
 
 const LEXOFFICE_API_BASE = 'https://api.lexoffice.io';
-const USER_AGENT = 'mcp-lexware-office/0.1.0';
+const USER_AGENT = 'mcp-lexware-office/0.1.1';
 
 // Helper function for making NWS API requests
 export async function makeLexwareOfficeRequest<T>(path: string): Promise<T | null> {
