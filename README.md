@@ -26,6 +26,7 @@ The following tools are available through this MCP server:
     - `id` (string): The UUID of the invoice
 
 - **get-contacts**
+
   - Get contacts from Lexware Office with optional filters that are combined with a logical AND
   - Inputs:
     - `email` (string, optional): Filter contacts by email address (supports wildcards)
@@ -35,6 +36,17 @@ The following tools are available through this MCP server:
     - `vendor` (boolean, optional): Filter contacts by vendor role
     - `page` (number, optional): Page number to retrieve (starts at 0). Default: 0
     - `size` (number, optional): Number of contacts per page (1-250). Default: 250
+
+- **list-posting-categories**
+
+  - Retrieve list of posting categories for bookkeeping vouchers
+  - Inputs:
+    - `type` (string, optional): Filter posting categories by type ("income" or "outgo")
+
+- **list-countries**
+  - Retrieve list of countries known to lexoffice with their tax classifications
+  - Inputs:
+    - `taxClassification` (string, optional): Filter countries by tax classification ("de" for Germany, "intraCommunity" for EU countries, or "thirdPartyCountry" for non-EU countries)
 
 ## Configuration
 
