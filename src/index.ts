@@ -1403,12 +1403,17 @@ server.tool(
 
 		for (const fileId of sourceFileIds) {
 			try {
-				const downloadResponse = await fetch(`${LEXOFFICE_API_BASE}/v1/files/${fileId}`, {
-					headers: {
-						'Accept': '*/*',
-						'Authorization': `Bearer ${LEXWARE_OFFICE_API_KEY}`,
-					},
-				});
+				let downloadResponse!: Response;
+				for (let attempt = 0; attempt < 4; attempt++) {
+					if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
+					downloadResponse = await fetch(`${LEXOFFICE_API_BASE}/v1/files/${fileId}`, {
+						headers: {
+							'Accept': '*/*',
+							'Authorization': `Bearer ${LEXWARE_OFFICE_API_KEY}`,
+						},
+					});
+					if (downloadResponse.status !== 429) break;
+				}
 				if (!downloadResponse.ok) {
 					fileWarnings.push(`${fileId} (download failed: ${downloadResponse.status})`);
 					continue;
