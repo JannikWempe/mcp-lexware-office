@@ -1380,6 +1380,8 @@ server.tool(
 			type: source.type,
 			taxType: source.taxType,
 			voucherItems: source.voucherItems,
+			totalGrossAmount: source.totalGrossAmount,
+			totalTaxAmount: source.totalTaxAmount,
 			voucherDate: voucherDate ?? source.voucherDate,
 			voucherStatus,
 		};
