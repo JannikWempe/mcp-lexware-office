@@ -4,7 +4,7 @@ An MCP server implementation that integrates with Lexware Office (formerly known
 
 ## Features
 
-- **Broad Lexware Office API coverage**: 53 tools covering the available read/write workflows exposed by this server
+- **Broad Lexware Office API coverage**: 56 tools covering the available read/write workflows exposed by this server
 - **Full document lifecycle**: Create, finalize, and download PDFs for invoices, quotations, order confirmations, credit notes, delivery notes, and dunning notices
 - **Contact management**: Create, read, and update customers and vendors
 - **Bookkeeping**: Vouchers, posting categories, payments, and file uploads
@@ -65,6 +65,7 @@ An MCP server implementation that integrates with Lexware Office (formerly known
 ### Down-Payment Invoices
 | Tool | Description | API |
 |---|---|---|
+| `get-down-payment-invoices` | List down-payment invoices with optional filters | `GET /v1/down-payment-invoices` |
 | `get-down-payment-invoice-details` | Get details of a specific down-payment invoice | `GET /v1/down-payment-invoices/{id}` |
 
 ### Contacts
@@ -82,6 +83,7 @@ An MCP server implementation that integrates with Lexware Office (formerly known
 | `get-voucher-details` | Get details of a specific voucher | `GET /v1/vouchers/{id}` |
 | `create-voucher` | Create a bookkeeping voucher (e.g. incoming invoice) | `POST /v1/vouchers` |
 | `update-voucher` | Update an existing bookkeeping voucher | `PUT /v1/vouchers/{id}` |
+| `duplicate-voucher` | Duplicate a voucher including all file attachments | `GET + POST /v1/vouchers` |
 | `list-posting-categories` | List posting categories for bookkeeping | `GET /v1/posting-categories` |
 
 ### Articles (Product Catalogue)
@@ -101,11 +103,12 @@ An MCP server implementation that integrates with Lexware Office (formerly known
 | `upload-file` | Upload a file and receive a file ID | `POST /v1/files` |
 | `upload-file-to-voucher` | Upload a file and attach it to a voucher | `POST /v1/vouchers/{id}/files` |
 
-### Payments
+### Payments & Receivables
 | Tool | Description | API |
 |---|---|---|
 | `get-payments` | Get payment information for an invoice or voucher | `GET /v1/payments` |
 | `get-payment-conditions` | List available payment conditions (Zahlungsbedingungen) | `GET /v1/payment-conditions` |
+| `get-open-receivables` | Get all open receivables for a customer (invoices + salesinvoice vouchers combined) | `GET /v1/invoices` + `GET /v1/voucherlist` |
 
 ### Recurring Templates
 | Tool | Description | API |
