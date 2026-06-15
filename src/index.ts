@@ -1358,6 +1358,94 @@ server.tool(
 );
 
 server.tool(
+	'duplicate-voucher',
+	'Duplicates an existing bookkeeping voucher including all file attachments. Equivalent to "Beleg duplizieren" in Lexware Office UI.',
+	{
+		sourceVoucherId: z.string().uuid().describe('ID of the voucher to duplicate'),
+		voucherNumber: z.string().optional().describe("New voucher number (e.g. 'INV-2024-05'). If omitted, Lexware auto-assigns (useful for sales vouchers with sequential numbering)."),
+		voucherDate: z.string().optional().describe('Voucher date in ISO 8601 format. If omitted, copied from source.'),
+		dueDate: z.string().optional().describe('Due date in ISO 8601 format. If omitted, copied from source.'),
+		voucherStatus: z.enum(['unchecked', 'open']).optional().default('open').describe("Status of the new voucher. Default: 'open'."),
+	},
+	async ({ sourceVoucherId, voucherNumber, voucherDate, dueDate, voucherStatus }) => {
+		const LEXOFFICE_API_BASE = 'https://api.lexware.io';
+		const LEXWARE_OFFICE_API_KEY = process.env.LEXWARE_OFFICE_API_KEY!;
+
+		const source = await makeLexwareOfficeRequest<any>(`/v1/vouchers/${sourceVoucherId}`);
+		if (!source) {
+			return { content: [{ type: 'text', text: `Failed to fetch source voucher ${sourceVoucherId} — not found or inaccessible.` }] };
+		}
+
+		const body: Record<string, unknown> = {
+			type: source.type,
+			taxType: source.taxType,
+			voucherItems: source.voucherItems,
+			voucherDate: voucherDate ?? source.voucherDate,
+			voucherStatus,
+		};
+		if (voucherNumber !== undefined) body.voucherNumber = voucherNumber;
+		if (dueDate !== undefined) body.dueDate = dueDate;
+		else if (source.dueDate !== undefined) body.dueDate = source.dueDate;
+		if (source.contactId !== undefined) body.contactId = source.contactId;
+		if (source.remark !== undefined) body.remark = source.remark;
+
+		const result = await makeLexwareOfficeWriteRequest<any>('/v1/vouchers', 'POST', body);
+		if (!result || !result.ok) {
+			return { content: [{ type: 'text', text: writeErrorResponse(result && !result.ok ? result : null) }] };
+		}
+		const newId: string = result.data.id;
+
+		const sourceFileIds: string[] = Array.isArray(source.files) ? source.files : [];
+		const fileWarnings: string[] = [];
+		let attachedFiles = 0;
+
+		for (const fileId of sourceFileIds) {
+			try {
+				const downloadResponse = await fetch(`${LEXOFFICE_API_BASE}/v1/files/${fileId}`, {
+					headers: {
+						'Accept': '*/*',
+						'Authorization': `Bearer ${LEXWARE_OFFICE_API_KEY}`,
+					},
+				});
+				if (!downloadResponse.ok) {
+					fileWarnings.push(`${fileId} (download failed: ${downloadResponse.status})`);
+					continue;
+				}
+				const contentType = downloadResponse.headers.get('content-type') ?? 'application/pdf';
+				const contentDisposition = downloadResponse.headers.get('content-disposition') ?? '';
+				const filename = contentDisposition.match(/filename="?([^";\n]+)"?/)?.[1] ?? `${fileId}.pdf`;
+				const fileBuffer = await downloadResponse.arrayBuffer();
+				const blob = new Blob([fileBuffer], { type: contentType });
+				const formData = new FormData();
+				formData.append('file', blob, filename);
+				const uploadResult = await makeLexwareOfficeMultipartRequest<any>(`/v1/vouchers/${newId}/files`, formData);
+				if (!uploadResult || !uploadResult.ok) {
+					fileWarnings.push(`${fileId} (upload failed)`);
+				} else {
+					attachedFiles++;
+				}
+			} catch {
+				fileWarnings.push(`${fileId} (error)`);
+			}
+		}
+
+		const summary: Record<string, unknown> = {
+			id: newId,
+			voucherNumber: result.data.voucherNumber,
+			voucherDate: result.data.voucherDate ?? body.voucherDate,
+			totalGrossAmount: result.data.totalGrossAmount,
+			attachedFiles,
+			sourceVoucherId,
+		};
+		if (fileWarnings.length > 0) summary.fileWarnings = fileWarnings;
+
+		return {
+			content: [{ type: 'text', text: `Voucher duplicated successfully:\n\n${JSON.stringify(summary, null, 2)}` }],
+		};
+	},
+);
+
+server.tool(
 	'get-quotations',
 	'Get a list of quotations (Angebote) from Lexware Office',
 	{
