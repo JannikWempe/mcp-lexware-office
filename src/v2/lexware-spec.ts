@@ -914,6 +914,28 @@ export const lexwareSpec: LexwareApiCatalog = {
 				{ method: 'GET', path: '/v1/contacts/{id}' },
 			],
 		},
+		duplicateVoucher: {
+			summary: 'Duplicate a bookkeeping voucher (Beleg duplizieren) — copy fields to a new voucher',
+			keywords: ['duplicate', 'copy voucher', 'duplicate voucher', 'Beleg duplizieren', 'Beleg kopieren', 'clone voucher'],
+			steps: [
+				'Fetch the source voucher with GET /v1/vouchers/{id}.',
+				'Build the new POST body from source fields: type, taxType, voucherItems, totalGrossAmount, totalTaxAmount, voucherDate (override if provided by user), dueDate (copied or overridden), contactId, remark. Strip id, version, createdDate, updatedDate, and files[] — do not include them.',
+				'POST /v1/vouchers with the assembled body and desired voucherStatus (open or unchecked; default to open).',
+				'File re-attachment (source.files[]) is not possible in v2 execute: GET /v1/files/{id} returns binary-metadata only ({binary: true, omitted: true}) — the sandbox never receives file bytes. Use the v1 duplicate-voucher tool when full file re-attachment is required.',
+			],
+			relatedEndpoints: [
+				{ method: 'GET', path: '/v1/vouchers/{id}' },
+				{ method: 'POST', path: '/v1/vouchers' },
+				{ method: 'GET', path: '/v1/files/{id}' },
+				{ method: 'POST', path: '/v1/vouchers/{id}/files' },
+			],
+			notes: [
+				'totalGrossAmount and totalTaxAmount must be included in the POST body even though they are derived; the API rejects requests without them.',
+				'contactId and remark may be absent in the source — omit from the POST body rather than sending null.',
+				'voucherNumber can be omitted to let Lexware auto-assign sequential numbering (recommended for salesinvoice and salescreditnote).',
+				'Binary file re-attachment is not supported in v2 execute: v2 drops binary response bodies. For full duplication including attachments, use the v1 duplicate-voucher tool.',
+			],
+		},
 	},
 };
 
