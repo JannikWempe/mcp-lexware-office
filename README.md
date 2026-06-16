@@ -38,6 +38,7 @@ The v1 server exposes one MCP tool per common Lexware workflow. This is easy to 
 - `create-voucher`
 - `finalize-invoice`
 - `upload-file-to-voucher`
+- `duplicate-voucher`
 
 See the full v1 tool list in [docs/version-guide.md#v1-tool-surface](docs/version-guide.md#v1-tool-surface).
 
@@ -47,6 +48,8 @@ The v2 server exposes a smaller MCP surface:
 
 - `search` — runs a sandboxed JavaScript async arrow function against a curated OpenAPI-lite Lexware catalog.
 - `execute` — runs a sandboxed JavaScript async arrow function with one host capability, `lexware.request`, for relative `/v1/...` Lexware API calls.
+
+The catalog (`spec.workflows`) includes curated recipes such as `duplicateVoucher` (field-only duplication; file re-attachment requires v1) and reporting helpers. Run `search` with `async () => Object.keys(spec.workflows)` to list all available workflows.
 
 Example v2 `execute` call:
 
