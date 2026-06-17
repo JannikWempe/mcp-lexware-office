@@ -1026,10 +1026,17 @@ const lineItemSchema = z.discriminatedUnion('type', [
 
 const invoiceAddressSchema = z.union([
 	z.object({
-		contactId: z.string().uuid().describe('Reference to an existing contact'),
+		contactId: z.string().uuid().describe('Reference to an existing contact. The optional fields below are "deviated address" overrides applied to this document only — the contact\'s stored data is not modified.'),
+		name: z.string().optional().describe('Override name for this document only'),
+		supplement: z.string().optional().describe('Override address supplement (Adresszusatz)'),
+		street: z.string().optional().describe('Override street and house number'),
+		zip: z.string().optional().describe('Override postal code'),
+		city: z.string().optional().describe('Override city'),
+		countryCode: z.string().length(2).optional().describe('Override country code (ISO 3166-1 alpha-2, e.g. "DE")'),
 	}),
 	z.object({
-		name: z.string(),
+		name: z.string().describe('Required when no contactId is provided'),
+		supplement: z.string().optional(),
 		street: z.string().optional(),
 		zip: z.string().optional(),
 		city: z.string().optional(),
@@ -1066,6 +1073,8 @@ const invoiceSchema = {
 		.optional(),
 	introduction: z.string().optional().describe('Introductory text before line items'),
 	remark: z.string().optional().describe('Closing text after line items'),
+	language: z.enum(['de', 'en']).optional().describe('Document language — affects all print labels, document title, and default text modules. "de" = German (default), "en" = English (renders "Invoice", "Net", "VAT", etc.)'),
+	title: z.string().optional().describe('Custom document title on the printed voucher. Uses organization default if omitted (e.g. "Rechnung"). Example: "Pro Forma Invoice", "Amended Invoice".'),
 };
 
 async function handleInvoiceRequest(
@@ -1126,6 +1135,8 @@ const dunningSchema = {
 	}).describe('Required by Lexoffice API'),
 	introduction: z.string().optional(),
 	remark: z.string().optional(),
+	language: z.enum(['de', 'en']).optional().describe('Document language — affects all print labels, document title, and default text modules. "de" = German (default), "en" = English.'),
+	title: z.string().optional().describe('Custom document title on the printed voucher. Uses organization default if omitted.'),
 };
 
 async function handleDunningRequest(
@@ -1977,6 +1988,8 @@ const deliveryNoteSchema = {
 	}).describe('Shipping/delivery conditions — required by Lexoffice API'),
 	introduction: z.string().optional().describe('Introductory text before line items'),
 	remark: z.string().optional().describe('Closing text after line items'),
+	language: z.enum(['de', 'en']).optional().describe('Document language — affects all print labels, document title, and default text modules. "de" = German (default), "en" = English.'),
+	title: z.string().optional().describe('Custom document title on the printed voucher. Uses organization default if omitted.'),
 };
 
 async function handleDeliveryNoteRequest(
