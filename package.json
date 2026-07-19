@@ -17,7 +17,7 @@
   "type": "module",
   "bin": {
     "lexware-office": "./build/index.js",
-    "lexware-office-v2": "./build/index.js"
+    "lexware-office-v2": "./build/cli-v2.js"
   },
   "files": [
     "build",

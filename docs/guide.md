@@ -211,7 +211,7 @@ Version 1.x shipped a second, legacy server with one MCP tool per Lexware operat
 To migrate a 1.x config:
 
 1. Point the package spec at `#semver:^2` (or the npm package once published).
-2. Use the `lexware-office` binary. (`lexware-office-v2` still works as a deprecated alias.)
+2. Use the `lexware-office` binary. (`lexware-office-v2` still works as a deprecated alias and prints a deprecation warning on startup.)
 3. Remove any `disabledTools` lists — permissioning is now env-based (see [Permissions](#permissions)).
 4. Writes are now blocked by default. Set `LEXWARE_OFFICE_ALLOW_WRITES=true` if you need create/update/finalize/upload operations.
 
