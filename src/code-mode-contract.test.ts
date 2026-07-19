@@ -35,8 +35,8 @@ const clientWithCalls = (handler: (input: RequestInfo | URL, init?: RequestInit)
 	return { client, calls };
 };
 
-test('v2 registers exactly search and execute tools', async () => {
-	const source = await readFile('src/v2/index.ts', 'utf8');
+test('server registers exactly search and execute tools', async () => {
+	const source = await readFile('src/index.ts', 'utf8');
 	const tools = [...source.matchAll(/server\.tool\(\n\t'([^']+)'/g)].map((match) => match[1]);
 
 	assert.deepEqual(tools, ['search', 'execute']);
@@ -109,7 +109,7 @@ test('absolute URLs, protocol-relative URLs, and /v1 escapes are rejected before
 	assert.equal(calls.length, 0);
 });
 
-test('v2 is read-only by default: writes blocked without ALLOW_WRITES=true', async () => {
+test('server is read-only by default: writes blocked without ALLOW_WRITES=true', async () => {
 	const originalReadOnly = process.env.LEXWARE_OFFICE_READ_ONLY;
 	const originalAllowWrites = process.env.LEXWARE_OFFICE_ALLOW_WRITES;
 	try {
@@ -118,8 +118,8 @@ test('v2 is read-only by default: writes blocked without ALLOW_WRITES=true', asy
 		const { client } = clientWithCalls(async () => responseFor(204, null, {}, 'No Content'));
 
 		// Default: writes are blocked.
-		await assert.rejects(() => client.request({ method: 'PATCH', path: '/v1/custom-resource/123', body: { archived: true } }), /read-only by default/);
-		await assert.rejects(() => client.request({ method: 'POST', path: '/v1/contacts', body: {} }), /read-only by default/);
+		await assert.rejects(() => client.request({ method: 'PATCH', path: '/v1/custom-resource/123', body: { archived: true } }), /writes are disabled by default/);
+		await assert.rejects(() => client.request({ method: 'POST', path: '/v1/contacts', body: {} }), /writes are disabled by default/);
 	} finally {
 		if (originalReadOnly === undefined) delete process.env.LEXWARE_OFFICE_READ_ONLY;
 		else process.env.LEXWARE_OFFICE_READ_ONLY = originalReadOnly;
@@ -155,7 +155,7 @@ test('READ_ONLY=true blocks writes even when ALLOW_WRITES=true', async () => {
 		process.env.LEXWARE_OFFICE_ALLOW_WRITES = 'true';
 		const { client } = clientWithCalls(async () => responseFor(204, null, {}, 'No Content'));
 
-		await assert.rejects(() => client.request({ method: 'POST', path: '/v1/contacts', body: {} }), /read-only by default/);
+		await assert.rejects(() => client.request({ method: 'POST', path: '/v1/contacts', body: {} }), /writes are disabled by default/);
 	} finally {
 		if (originalReadOnly === undefined) delete process.env.LEXWARE_OFFICE_READ_ONLY;
 		else process.env.LEXWARE_OFFICE_READ_ONLY = originalReadOnly;
@@ -467,7 +467,7 @@ test('writesEnabled reflects the env gate and is injected into the sandbox spec'
 		else process.env.LEXWARE_OFFICE_ALLOW_WRITES = originalAllowWrites;
 	}
 
-	const source = await readFile('src/v2/index.ts', 'utf8');
+	const source = await readFile('src/index.ts', 'utf8');
 	assert.match(source, /writesEnabled: writesEnabled\(\)/, 'index.ts must inject writesEnabled into the sandbox spec');
 	assert.match(source, /spec\.info\.writesEnabled/, 'tool docs must mention spec.info.writesEnabled');
 	assert.match(source, /contentPath/, 'execute tool docs must document contentPath uploads');

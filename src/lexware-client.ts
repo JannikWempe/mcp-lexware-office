@@ -4,7 +4,7 @@ import { basename, isAbsolute } from 'node:path';
 
 import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-spec.js';
 import { truncateText } from './truncate.js';
-import { VERSION } from '../version.js';
+import { VERSION } from './version.js';
 
 export type LexwareExecuteMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
@@ -94,7 +94,7 @@ interface NormalizedRequest {
 }
 
 const DEFAULT_BASE_URL = 'https://api.lexware.io';
-const DEFAULT_USER_AGENT = `mcp-lexware-office-v2/${VERSION}`;
+const DEFAULT_USER_AGENT = `mcp-lexware-office/${VERSION}`;
 const DEFAULT_MAX_RESPONSE_CHARS = 24_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_RATE_LIMIT_INTERVAL_MS = 500;
@@ -124,12 +124,12 @@ export class LexwareApiClient {
 	async request(input: unknown, _options: LexwareRequestOptions = {}): Promise<LexwareResponse> {
 		const apiKey = this.apiKey;
 		if (!apiKey) {
-			throw new Error('LEXWARE_OFFICE_API_KEY environment variable is required for the v2 execute tool');
+			throw new Error('LEXWARE_OFFICE_API_KEY environment variable is required for the execute tool');
 		}
 
 		const normalized = normalizeRequest(input);
 		if (WRITE_METHODS.has(normalized.method) && writesAreGloballyDisabled()) {
-			throw new Error(`${normalized.method} ${normalized.path} is blocked: v2 is read-only by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
+			throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
 		}
 
 		await this.waitForRateLimitTurn();
@@ -593,7 +593,7 @@ export function writesEnabled(): boolean {
 function writesAreGloballyDisabled(): boolean {
 	// Hard block: READ_ONLY wins over everything.
 	if (process.env.LEXWARE_OFFICE_READ_ONLY === 'true') return true;
-	// v2 is read-only by default. Writes require explicit opt-in.
+	// Writes are blocked by default. Writes require explicit opt-in.
 	return process.env.LEXWARE_OFFICE_ALLOW_WRITES !== 'true';
 }
 
