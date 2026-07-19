@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.0.0](https://github.com/JannikWempe/mcp-lexware-office/compare/v1.8.0...v2.0.0) (2026-07-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* legacy v1 endpoint tools removed. The lexware-office binary now runs the Code Mode server (search/execute, read-only by default). Pin #semver:^1 to keep the legacy server.
+
+### Features
+
+* print deprecation warning when started via lexware-office-v2 alias ([4b873c2](https://github.com/JannikWempe/mcp-lexware-office/commit/4b873c25975e17e5ad04c718f2b66524e0eddf94))
+* remove legacy v1 server, Code Mode is the only MCP ([84da911](https://github.com/JannikWempe/mcp-lexware-office/commit/84da9114bb82a82aaf961dd6f3caa4a556b33603))
+
 ## [1.8.0](https://github.com/JannikWempe/mcp-lexware-office/compare/v1.7.0...v1.8.0) (2026-07-09)
 
 
