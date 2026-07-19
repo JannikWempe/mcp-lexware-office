@@ -17,17 +17,17 @@
   "type": "module",
   "bin": {
     "lexware-office": "./build/index.js",
-    "lexware-office-v2": "./build/v2/index.js"
+    "lexware-office-v2": "./build/index.js"
   },
   "files": [
     "build",
     "docs"
   ],
   "scripts": {
-    "build": "shx rm -rf build && tsc && shx chmod +x build/*.js build/v2/*.js",
+    "build": "shx rm -rf build && tsc && shx chmod +x build/*.js",
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test build/v2/*.test.js"
+    "test": "npm run build && node --test build/*.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
