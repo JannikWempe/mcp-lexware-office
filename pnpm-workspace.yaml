@@ -1,0 +1,4 @@
+# express-rate-limit (via @modelcontextprotocol/sdk) pins ip-address@10.1.0, which has open
+# advisories (GHSA-xhr4-vxvc-6q4x, GHSA-wj7x-4mf3-7v4q). Lift it to a patched 10.x release.
+overrides:
+  ip-address@<=10.3.0: ^10.3.1
