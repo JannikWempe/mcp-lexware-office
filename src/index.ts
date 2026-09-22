@@ -4,7 +4,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 
 import { QuickJsExecutor } from './executor.js';
-import { LexwareApiClient, writesEnabled } from './lexware-client.js';
+import { LexwareApiClient, configuredUploadDirs, writesEnabled } from './lexware-client.js';
 import { lexwareSpec } from './lexware-spec.js';
 import { stringifyForMcp } from './truncate.js';
 import { VERSION } from './version.js';
@@ -20,8 +20,11 @@ const executeExecutor = new QuickJsExecutor();
 // slow Lexware requests fail with a clean error before the sandbox is torn down.
 const lexwareClient = new LexwareApiClient({ requestTimeoutMs: 25_000 });
 
-// Inject the current write mode so callers can branch before attempting a write.
-const sandboxSpec = () => ({ ...lexwareSpec, info: { ...lexwareSpec.info, writesEnabled: writesEnabled() } });
+// Inject the current write mode and upload allowlist so callers can branch before attempting a write.
+const sandboxSpec = () => ({
+	...lexwareSpec,
+	info: { ...lexwareSpec.info, writesEnabled: writesEnabled(), uploadDirs: configuredUploadDirs() },
+});
 
 server.tool(
 	'search',
@@ -36,6 +39,7 @@ declare const spec: LexwareApiCatalog;
 Useful starting points:
 - spec.info.domainIndex: compact map from business domains to endpoint lists
 - spec.info.writesEnabled: whether this server currently allows POST/PUT/PATCH/DELETE — check before planning writes
+- spec.info.uploadDirs: directories the host may read contentPath uploads from; empty means contentPath uploads are disabled (use contentBase64)
 - spec.paths: path -> method -> operation catalog with params, requestBody, responses, examples, capabilities, docsUrl
 - spec.workflows: curated recipes for reporting, sales documents, files/uploads, webhooks, and API quirks
 - spec.info.voucherStatusSemantics and financeReportingSemantics: finance/status guidance for revenue/Umsatz/profit questions
@@ -121,7 +125,7 @@ type MultipartPart = {
   name: string;
   value?: string; // plain text form field
   contentBase64?: string; // binary part content as base64; host decodes it
-  contentPath?: string; // absolute file path on the MCP server machine; host reads the file directly — preferred for local files (no base64, no size blowup)
+  contentPath?: string; // absolute file path on the MCP server machine, inside one of spec.info.uploadDirs (LEXWARE_OFFICE_UPLOAD_DIRS); host reads the file directly — preferred for local files (no base64, no size blowup)
   filename?: string; // defaults to the contentPath basename
   contentType?: string;
 };
@@ -154,7 +158,7 @@ async () => {
   return { status: response.status, request: response.request, data: response.data };
 }
 
-File upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath and the host reads it from disk:
+File upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath and the host reads it from disk. contentPath must lie inside one of spec.info.uploadDirs; if that list is empty, contentPath uploads are disabled on this server:
 
 async () => {
   const response = await lexware.request({

@@ -43,7 +43,7 @@ The sandbox does **not** receive the Lexware API key, Node globals, filesystem a
 
 Uploads are binary-safe via `multipart` parts with `contentPath` (host reads a local file from disk), `contentBase64` (binary FormData parts), or `bodyBase64` (raw binary body). The host reads/decodes and builds `Buffer` / `Blob` bodies outside the QuickJS sandbox.
 
-Preferred: `contentPath` — pass the file's absolute path instead of inlining bytes. Requires `LEXWARE_OFFICE_ALLOW_WRITES=true` (uploads are writes) and works only when the MCP server runs on the machine that has the file:
+Preferred: `contentPath` — pass the file's absolute path instead of inlining bytes. Requires `LEXWARE_OFFICE_ALLOW_WRITES=true` (uploads are writes), works only when the MCP server runs on the machine that has the file, and the file must live inside a directory you allowlist via `LEXWARE_OFFICE_UPLOAD_DIRS` (see [Upload directories](#upload-directories)):
 
 ```js
 async () => {
@@ -151,6 +151,19 @@ Use this source-based setup only for development. End users should prefer the pa
 ```
 
 See [docs/guide.md#permissions](docs/guide.md#permissions) for the detailed permission model.
+
+### Upload directories
+
+`contentPath` uploads let sandboxed code ask the host to read a local file and send it to Lexware. To keep a prompt-injected model from uploading arbitrary files (SSH keys, `.env`, ...), the host only reads files inside directories you explicitly allowlist. Without this variable, `contentPath` uploads are disabled and only `contentBase64` works:
+
+```json
+{
+  "LEXWARE_OFFICE_ALLOW_WRITES": "true",
+  "LEXWARE_OFFICE_UPLOAD_DIRS": "/Users/me/Belege:/Users/me/Downloads"
+}
+```
+
+Separate multiple absolute directories with `:` on macOS/Linux and `;` on Windows. Symlinks are resolved before the check, so a link inside an allowed directory cannot point outside it. The current list is exposed to the model as `spec.info.uploadDirs`.
 
 ## Docker
 

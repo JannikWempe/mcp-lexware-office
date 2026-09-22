@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
-import { basename, isAbsolute } from 'node:path';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { basename, delimiter, isAbsolute, relative, resolve as resolvePath, sep } from 'node:path';
 
 import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-spec.js';
 import { truncateText } from './truncate.js';
@@ -40,6 +40,8 @@ export interface LexwareClientOptions {
 	maxResponseChars?: number;
 	requestTimeoutMs?: number;
 	rateLimitIntervalMs?: number;
+	/** Directories contentPath uploads may be read from. Defaults to LEXWARE_OFFICE_UPLOAD_DIRS, read on every request. */
+	uploadDirs?: string[];
 }
 
 export interface LexwareRequestOptions {}
@@ -108,6 +110,7 @@ export class LexwareApiClient {
 	private readonly maxResponseChars: number;
 	private readonly requestTimeoutMs: number;
 	private readonly rateLimitIntervalMs: number;
+	private readonly uploadDirsOption?: string[];
 	private nextRequestAtMs = 0;
 	private rateLimitQueue: Promise<void> = Promise.resolve();
 
@@ -119,6 +122,7 @@ export class LexwareApiClient {
 		this.maxResponseChars = options.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS;
 		this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		this.rateLimitIntervalMs = options.rateLimitIntervalMs ?? DEFAULT_RATE_LIMIT_INTERVAL_MS;
+		this.uploadDirsOption = options.uploadDirs;
 	}
 
 	async request(input: unknown, _options: LexwareRequestOptions = {}): Promise<LexwareResponse> {
@@ -146,7 +150,8 @@ export class LexwareApiClient {
 				Authorization: `Bearer ${apiKey}`,
 			};
 
-			const { body, sent } = await serializeRequestBody(normalized, headers);
+			const uploadDirs = this.uploadDirsOption ?? configuredUploadDirs();
+			const { body, sent } = await serializeRequestBody(normalized, headers, uploadDirs);
 
 			let response: Response;
 			try {
@@ -391,7 +396,7 @@ interface SerializedBody {
 	sent?: UploadEcho;
 }
 
-async function serializeRequestBody(request: NormalizedRequest, headers: Record<string, string>): Promise<SerializedBody> {
+async function serializeRequestBody(request: NormalizedRequest, headers: Record<string, string>, uploadDirs: string[]): Promise<SerializedBody> {
 	// Binary body: decode base64 on the host, send raw bytes.
 	if (request.bodyBase64 !== undefined) {
 		headers['Content-Type'] = request.contentType ?? 'application/octet-stream';
@@ -409,7 +414,7 @@ async function serializeRequestBody(request: NormalizedRequest, headers: Record<
 			if (part.contentBase64 !== undefined) {
 				buffer = Buffer.from(part.contentBase64, 'base64');
 			} else if (part.contentPath !== undefined) {
-				buffer = await readUploadFile(part.contentPath);
+				buffer = await readUploadFile(part.contentPath, uploadDirs);
 				defaultFilename = basename(part.contentPath);
 			}
 			if (buffer !== undefined) {
@@ -446,10 +451,54 @@ async function serializeRequestBody(request: NormalizedRequest, headers: Record<
 	throw new Error('Non-JSON request bodies must be strings or use rawBody=true with an explicit contentType.');
 }
 
-async function readUploadFile(contentPath: string): Promise<Buffer<ArrayBuffer>> {
+export const UPLOAD_DIRS_ENV = 'LEXWARE_OFFICE_UPLOAD_DIRS';
+
+/**
+ * Parse a delimiter-separated list of upload directories (":" on POSIX, ";" on Windows).
+ * Entries are resolved to absolute paths; blank entries are ignored.
+ */
+export function parseUploadDirs(value: string | undefined): string[] {
+	if (value === undefined) return [];
+	return value
+		.split(delimiter)
+		.map((dir) => dir.trim())
+		.filter((dir) => dir.length > 0)
+		.map((dir) => resolvePath(dir));
+}
+
+/** Upload directories currently configured via LEXWARE_OFFICE_UPLOAD_DIRS (read on every call). */
+export function configuredUploadDirs(): string[] {
+	return parseUploadDirs(process.env[UPLOAD_DIRS_ENV]);
+}
+
+async function readUploadFile(contentPath: string, uploadDirs: string[]): Promise<Buffer<ArrayBuffer>> {
+	if (uploadDirs.length === 0) {
+		throw new Error(`multipart contentPath uploads are disabled: no upload directories are configured. Set ${UPLOAD_DIRS_ENV} to one or more absolute directories (separated by "${delimiter}") that this server may read files from, or use contentBase64 instead.`);
+	}
+
+	// Lexical check first: paths outside the allowlist never touch the filesystem,
+	// so sandbox code cannot probe for the existence or size of arbitrary files.
+	if (!uploadDirs.some((dir) => isInsideDirectory(dir, resolvePath(contentPath)))) {
+		throw outsideUploadDirsError(contentPath, uploadDirs);
+	}
+
+	let realPath: string;
+	try {
+		realPath = await realpath(contentPath);
+	} catch {
+		throw new Error(`multipart contentPath not found or not readable: ${contentPath}`);
+	}
+
+	// Re-check after resolving symlinks so a link inside an allowed directory
+	// cannot point at a file outside it.
+	const realUploadDirs = await Promise.all(uploadDirs.map((dir) => realpath(dir).catch(() => dir)));
+	if (!realUploadDirs.some((dir) => isInsideDirectory(dir, realPath))) {
+		throw outsideUploadDirsError(contentPath, uploadDirs);
+	}
+
 	let stats;
 	try {
-		stats = await stat(contentPath);
+		stats = await stat(realPath);
 	} catch {
 		throw new Error(`multipart contentPath not found or not readable: ${contentPath}`);
 	}
@@ -459,7 +508,16 @@ async function readUploadFile(contentPath: string): Promise<Buffer<ArrayBuffer>>
 	if (stats.size > MAX_UPLOAD_FILE_BYTES) {
 		throw new Error(`multipart contentPath file is ${stats.size} bytes, exceeding the ${MAX_UPLOAD_FILE_BYTES} byte upload limit: ${contentPath}`);
 	}
-	return readFile(contentPath) as Promise<Buffer<ArrayBuffer>>;
+	return readFile(realPath) as Promise<Buffer<ArrayBuffer>>;
+}
+
+function isInsideDirectory(directory: string, target: string): boolean {
+	const rel = relative(directory, target);
+	return rel.length > 0 && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+function outsideUploadDirsError(contentPath: string, uploadDirs: string[]): Error {
+	return new Error(`multipart contentPath is outside the allowed upload directories (${UPLOAD_DIRS_ENV}=${uploadDirs.join(delimiter)}): ${contentPath}`);
 }
 
 function sha256Hex(buffer: Buffer): string {

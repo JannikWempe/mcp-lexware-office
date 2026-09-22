@@ -12,6 +12,9 @@ export interface LexwareApiCatalog {
 		notes: string[];
 		// Injected at runtime by the MCP server: whether POST/PUT/PATCH/DELETE are currently allowed.
 		writesEnabled?: boolean;
+		// Injected at runtime by the MCP server: directories the host may read contentPath uploads from
+		// (LEXWARE_OFFICE_UPLOAD_DIRS). Empty means contentPath uploads are disabled.
+		uploadDirs?: string[];
 	};
 	paths: Record<string, Partial<Record<HttpMethod, LexwareOperation>>>;
 	workflows: Record<string, LexwareWorkflow>;
@@ -454,6 +457,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 			'Updates use optimistic locking via a version field; on HTTP 409, re-fetch the resource and retry with the current version.',
 			'spec.info.writesEnabled reports whether this server currently allows POST/PUT/PATCH/DELETE; check it before planning writes or uploads.',
 			'File uploads go through the multipart request field of lexware.request (contentPath for local files, contentBase64 for base64 bytes) — see the fileHandling workflow.',
+			'spec.info.uploadDirs lists the directories the host may read contentPath uploads from (LEXWARE_OFFICE_UPLOAD_DIRS). When it is empty, contentPath is disabled and only contentBase64 works.',
 		],
 	},
 	paths: {
@@ -920,8 +924,9 @@ export const lexwareSpec: LexwareApiCatalog = {
 			keywords: ['upload', 'beleg', 'receipt', 'pdf', 'multipart', 'contentPath', 'file'],
 			steps: [
 				'Check spec.info.writesEnabled first — uploads are writes and are blocked when it is false.',
+				'Check spec.info.uploadDirs — contentPath only works for files inside those directories (LEXWARE_OFFICE_UPLOAD_DIRS on the server). When the list is empty, contentPath is disabled; use contentBase64 instead.',
 				'For bookkeeping file upload, POST to /v1/files using the multipart request field with parts file and type=voucher (see example).',
-				'For a file on the server machine, set contentPath to its absolute path — the host reads the file from disk, so never inline file bytes or base64 in the code string.',
+				'For a file on the server machine, set contentPath to its absolute path inside one of spec.info.uploadDirs — the host reads the file from disk, so never inline file bytes or base64 in the code string.',
 				'For bytes you already hold as base64, use contentBase64 instead of contentPath.',
 				'Verify the upload via response.sent (bytes and sha256 per binary part) and the returned file id.',
 				'To attach a file directly to a voucher, POST the same multipart shape (file part only) to /v1/vouchers/{id}/files.',

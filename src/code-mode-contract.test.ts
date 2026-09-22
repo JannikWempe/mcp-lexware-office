@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, delimiter, join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { QuickJsExecutor } from './executor.js';
-import { LexwareApiClient, writesEnabled } from './lexware-client.js';
+import { LexwareApiClient, configuredUploadDirs, writesEnabled, type LexwareClientOptions } from './lexware-client.js';
 import { lexwareSpec } from './lexware-spec.js';
 import { stringifyForMcp, truncateText } from './truncate.js';
 
@@ -21,7 +21,10 @@ const responseFor = (status: number, body: BodyInit | null, headers: HeadersInit
 	headers,
 });
 
-const clientWithCalls = (handler: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>) => {
+const clientWithCalls = (
+	handler: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>,
+	options: LexwareClientOptions = {},
+) => {
 	const calls: FetchCall[] = [];
 	const client = new LexwareApiClient({
 		apiKey: 'test-key',
@@ -31,9 +34,19 @@ const clientWithCalls = (handler: (input: RequestInfo | URL, init?: RequestInit)
 			calls.push({ input, init });
 			return handler(input, init);
 		},
+		...options,
 	});
 	return { client, calls };
 };
+
+const uploadRequest = (contentPath: string) => ({
+	method: 'POST',
+	path: '/v1/files',
+	multipart: [
+		{ name: 'file', contentType: 'application/pdf', contentPath },
+		{ name: 'type', value: 'voucher' },
+	],
+});
 
 test('server registers exactly search and execute tools', async () => {
 	const source = await readFile('src/index.ts', 'utf8');
@@ -353,7 +366,7 @@ test('multipart with contentPath reads the file host-side and echoes sent bytes/
 		const { client } = clientWithCalls(async (_input, init) => {
 			if (init?.body !== undefined) receivedBodies.push(init.body as BodyInit);
 			return responseFor(200, JSON.stringify({ id: 'file-id' }), { 'content-type': 'application/json' }, 'OK');
-		});
+		}, { uploadDirs: [dir] });
 
 		const response = await client.request({
 			method: 'POST',
@@ -389,7 +402,7 @@ test('contentPath validation: relative paths, missing files, and mode conflicts 
 	const originalAllowWrites = process.env.LEXWARE_OFFICE_ALLOW_WRITES;
 	process.env.LEXWARE_OFFICE_ALLOW_WRITES = 'true';
 	try {
-		const { client, calls } = clientWithCalls(async () => responseFor(200, '{}'));
+		const { client, calls } = clientWithCalls(async () => responseFor(200, '{}'), { uploadDirs: ['/definitely/not/a/real'] });
 
 		await assert.rejects(
 			() => client.request({ method: 'POST', path: '/v1/files', multipart: [{ name: 'file', contentPath: 'relative/receipt.pdf' }, { name: 'type', value: 'voucher' }] }),
@@ -408,6 +421,114 @@ test('contentPath validation: relative paths, missing files, and mode conflicts 
 		if (originalAllowWrites === undefined) delete process.env.LEXWARE_OFFICE_ALLOW_WRITES;
 		else process.env.LEXWARE_OFFICE_ALLOW_WRITES = originalAllowWrites;
 	}
+});
+
+test('contentPath uploads are disabled when no upload directories are configured', async () => {
+	const originalAllowWrites = process.env.LEXWARE_OFFICE_ALLOW_WRITES;
+	const originalUploadDirs = process.env.LEXWARE_OFFICE_UPLOAD_DIRS;
+	process.env.LEXWARE_OFFICE_ALLOW_WRITES = 'true';
+	delete process.env.LEXWARE_OFFICE_UPLOAD_DIRS;
+	try {
+		const { client, calls } = clientWithCalls(async () => responseFor(200, '{}'));
+		await assert.rejects(
+			() => client.request(uploadRequest('/etc/hosts')),
+			/contentPath uploads are disabled.*LEXWARE_OFFICE_UPLOAD_DIRS/,
+		);
+		assert.equal(calls.length, 0);
+	} finally {
+		if (originalAllowWrites === undefined) delete process.env.LEXWARE_OFFICE_ALLOW_WRITES;
+		else process.env.LEXWARE_OFFICE_ALLOW_WRITES = originalAllowWrites;
+		if (originalUploadDirs === undefined) delete process.env.LEXWARE_OFFICE_UPLOAD_DIRS;
+		else process.env.LEXWARE_OFFICE_UPLOAD_DIRS = originalUploadDirs;
+	}
+});
+
+test('contentPath outside the upload allowlist is rejected with a uniform error and no filesystem access', async () => {
+	const originalAllowWrites = process.env.LEXWARE_OFFICE_ALLOW_WRITES;
+	process.env.LEXWARE_OFFICE_ALLOW_WRITES = 'true';
+	const dir = await mkdtemp(join(tmpdir(), 'lexware-upload-'));
+	try {
+		const { client, calls } = clientWithCalls(async () => responseFor(200, '{}'), { uploadDirs: [dir] });
+		const errorFor = async (contentPath: string) => {
+			try {
+				await client.request(uploadRequest(contentPath));
+				return undefined;
+			} catch (error) {
+				return (error as Error).message.replace(contentPath, '<path>');
+			}
+		};
+
+		const existing = await errorFor('/etc/hosts');
+		const missing = await errorFor('/definitely/not/a/real/file.pdf');
+		const traversal = await errorFor(join(dir, '..', 'escape.pdf'));
+
+		assert.match(existing ?? '', /outside the allowed upload directories/);
+		assert.equal(existing, missing, 'existing and missing paths outside the allowlist must produce the same error');
+		assert.equal(traversal, missing, '.. segments must not escape the allowlist');
+		assert.equal(calls.length, 0);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+		if (originalAllowWrites === undefined) delete process.env.LEXWARE_OFFICE_ALLOW_WRITES;
+		else process.env.LEXWARE_OFFICE_ALLOW_WRITES = originalAllowWrites;
+	}
+});
+
+test('symlinks inside the upload allowlist cannot point outside it', async () => {
+	const originalAllowWrites = process.env.LEXWARE_OFFICE_ALLOW_WRITES;
+	process.env.LEXWARE_OFFICE_ALLOW_WRITES = 'true';
+	const allowed = await mkdtemp(join(tmpdir(), 'lexware-upload-allowed-'));
+	const outside = await mkdtemp(join(tmpdir(), 'lexware-upload-outside-'));
+	try {
+		const secretPath = join(outside, 'secret.pdf');
+		await writeFile(secretPath, Buffer.from([0x25, 0x50, 0x44, 0x46]));
+		await symlink(secretPath, join(allowed, 'link.pdf'));
+
+		const { client, calls } = clientWithCalls(async () => responseFor(200, '{}'), { uploadDirs: [allowed] });
+		await assert.rejects(
+			() => client.request(uploadRequest(join(allowed, 'link.pdf'))),
+			/outside the allowed upload directories/,
+		);
+		assert.equal(calls.length, 0);
+	} finally {
+		await rm(allowed, { recursive: true, force: true });
+		await rm(outside, { recursive: true, force: true });
+		if (originalAllowWrites === undefined) delete process.env.LEXWARE_OFFICE_ALLOW_WRITES;
+		else process.env.LEXWARE_OFFICE_ALLOW_WRITES = originalAllowWrites;
+	}
+});
+
+test('LEXWARE_OFFICE_UPLOAD_DIRS is parsed per request and injected into the sandbox spec', async () => {
+	const originalAllowWrites = process.env.LEXWARE_OFFICE_ALLOW_WRITES;
+	const originalUploadDirs = process.env.LEXWARE_OFFICE_UPLOAD_DIRS;
+	process.env.LEXWARE_OFFICE_ALLOW_WRITES = 'true';
+	const dirA = await mkdtemp(join(tmpdir(), 'lexware-upload-a-'));
+	const dirB = await mkdtemp(join(tmpdir(), 'lexware-upload-b-'));
+	try {
+		delete process.env.LEXWARE_OFFICE_UPLOAD_DIRS;
+		assert.deepEqual(configuredUploadDirs(), []);
+
+		process.env.LEXWARE_OFFICE_UPLOAD_DIRS = ` ${dirA} ${delimiter}${delimiter}${dirB}/`;
+		assert.deepEqual(configuredUploadDirs(), [resolve(dirA), resolve(dirB)]);
+
+		const filePath = join(dirB, 'receipt.pdf');
+		await writeFile(filePath, Buffer.from([0x25, 0x50, 0x44, 0x46]));
+		const { client, calls } = clientWithCalls(async () => responseFor(200, JSON.stringify({ id: 'file-id' }), { 'content-type': 'application/json' }, 'OK'));
+		const response = await client.request(uploadRequest(filePath));
+		assert.equal(response.ok, true);
+		assert.equal(calls.length, 1);
+		assert.equal(response.sent?.parts?.[0]?.bytes, 4);
+	} finally {
+		await rm(dirA, { recursive: true, force: true });
+		await rm(dirB, { recursive: true, force: true });
+		if (originalAllowWrites === undefined) delete process.env.LEXWARE_OFFICE_ALLOW_WRITES;
+		else process.env.LEXWARE_OFFICE_ALLOW_WRITES = originalAllowWrites;
+		if (originalUploadDirs === undefined) delete process.env.LEXWARE_OFFICE_UPLOAD_DIRS;
+		else process.env.LEXWARE_OFFICE_UPLOAD_DIRS = originalUploadDirs;
+	}
+
+	const source = await readFile('src/index.ts', 'utf8');
+	assert.match(source, /uploadDirs: configuredUploadDirs\(\)/, 'index.ts must inject uploadDirs into the sandbox spec');
+	assert.match(source, /spec\.info\.uploadDirs/, 'tool docs must mention spec.info.uploadDirs');
 });
 
 test('multipart endpoints reject body/bodyBase64 without an explicit multipart contentType', async () => {

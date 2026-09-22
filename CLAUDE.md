@@ -19,6 +19,7 @@ Fetch specific sections on demand with WebFetch. Key sections:
 - `src/lexware-client.ts` — host-side HTTP client behind `lexware.request` (API key stays here, never in the sandbox)
 - `src/truncate.ts` — response truncation for MCP payloads
 - Writes (POST/PUT/PATCH/DELETE) blocked by default; `LEXWARE_OFFICE_ALLOW_WRITES=true` enables them, `LEXWARE_OFFICE_READ_ONLY=true` hard-blocks
+- `contentPath` uploads only read files inside `LEXWARE_OFFICE_UPLOAD_DIRS` (path-delimiter separated, symlinks resolved); unset means contentPath is disabled
 
 ## Conventions
 

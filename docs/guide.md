@@ -143,6 +143,7 @@ async () => {
 ```
 
 - `contentPath` must be an absolute path to a regular file on the machine running the MCP server (25 MB cap).
+- `contentPath` must lie inside one of the directories allowlisted via `LEXWARE_OFFICE_UPLOAD_DIRS`; without that variable, `contentPath` uploads are disabled. The current list is exposed as `spec.info.uploadDirs` (see [Upload directories](#upload-directories)).
 - `filename` defaults to the `contentPath` basename.
 - Uploads are writes: they require `LEXWARE_OFFICE_ALLOW_WRITES=true`. Check `spec.info.writesEnabled` to branch early.
 
@@ -203,6 +204,25 @@ Important behavior:
 - Default read-only mirrors how Cloudflare's OAuth scope template defaults to read-only; Lexware API keys have no equivalent OAuth scopes, so the MCP server provides the safety boundary.
 - Writes should only be enabled when the user explicitly needs a write operation.
 - The API key remains in the host process and is never exposed to sandboxed code.
+
+### Upload directories
+
+`contentPath` asks the host to read a file from its own disk and send it to Lexware. Because `execute` runs model-written code, and that model may be fed hostile text from Lexware data (contact notes, voucher texts, ...), the host must not read arbitrary files. It therefore only reads files inside directories listed in `LEXWARE_OFFICE_UPLOAD_DIRS`:
+
+```json
+{
+  "LEXWARE_OFFICE_ALLOW_WRITES": "true",
+  "LEXWARE_OFFICE_UPLOAD_DIRS": "/Users/me/Belege:/Users/me/Downloads"
+}
+```
+
+Rules:
+
+- Entries are absolute directories separated by the platform path delimiter (`:` on macOS/Linux, `;` on Windows).
+- When the variable is unset or empty, `contentPath` is disabled and the request fails before any file is read. `contentBase64` and `bodyBase64` keep working.
+- Paths are checked lexically first, so a path outside the allowlist never touches the filesystem and cannot be used to probe which files exist.
+- Symlinks are resolved before the final check, so a link inside an allowed directory cannot point outside it.
+- The configured list is injected into the sandbox as `spec.info.uploadDirs` so the model can pick valid locations or fall back to `contentBase64`.
 
 ## Migrating from 1.x
 
