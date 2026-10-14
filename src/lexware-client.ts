@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
-import { basename, isAbsolute } from 'node:path';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { basename, delimiter, isAbsolute, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-spec.js';
@@ -43,6 +43,8 @@ export interface LexwareClientOptions {
 	rateLimitIntervalMs?: number;
 	// GET requests answered with 429 are retried once if Retry-After is at most this long.
 	maxRetryAfterMs?: number;
+	// Directories multipart contentPath may read from. Overrides LEXWARE_OFFICE_UPLOAD_DIRS; empty disables contentPath.
+	uploadDirs?: string[];
 }
 
 export interface LexwareRequestOptions {
@@ -130,6 +132,7 @@ export class LexwareApiClient {
 	private readonly requestTimeoutMs: number;
 	private readonly rateLimitIntervalMs: number;
 	private readonly maxRetryAfterMs: number;
+	private readonly uploadDirs: string[];
 	private nextRequestAtMs = 0;
 	private rateLimitQueue: Promise<void> = Promise.resolve();
 
@@ -142,6 +145,9 @@ export class LexwareApiClient {
 		this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		this.rateLimitIntervalMs = options.rateLimitIntervalMs ?? DEFAULT_RATE_LIMIT_INTERVAL_MS;
 		this.maxRetryAfterMs = options.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
+		this.uploadDirs = (options.uploadDirs ?? (process.env.LEXWARE_OFFICE_UPLOAD_DIRS ?? '').split(delimiter))
+			.map((dir) => dir.trim())
+			.filter((dir) => dir.length > 0);
 	}
 
 	async request(input: unknown, options: LexwareRequestOptions = {}): Promise<LexwareResponse> {
@@ -216,7 +222,7 @@ export class LexwareApiClient {
 				Authorization: `Bearer ${apiKey}`,
 			};
 
-			const { body, sent } = await serializeRequestBody(normalized, headers);
+			const { body, sent } = await serializeRequestBody(normalized, headers, this.uploadDirs);
 			if (signal?.aborted) throw cancelledError();
 
 			let response: Response;
@@ -490,7 +496,7 @@ interface SerializedBody {
 	sent?: UploadEcho;
 }
 
-async function serializeRequestBody(request: NormalizedRequest, headers: Record<string, string>): Promise<SerializedBody> {
+async function serializeRequestBody(request: NormalizedRequest, headers: Record<string, string>, uploadDirs: string[]): Promise<SerializedBody> {
 	// Binary body: decode base64 on the host, send raw bytes.
 	if (request.bodyBase64 !== undefined) {
 		headers['Content-Type'] = request.contentType ?? 'application/octet-stream';
@@ -508,7 +514,7 @@ async function serializeRequestBody(request: NormalizedRequest, headers: Record<
 			if (part.contentBase64 !== undefined) {
 				buffer = Buffer.from(part.contentBase64, 'base64');
 			} else if (part.contentPath !== undefined) {
-				buffer = await readUploadFile(part.contentPath);
+				buffer = await readUploadFile(part.contentPath, uploadDirs);
 				defaultFilename = basename(part.contentPath);
 			}
 			if (buffer !== undefined) {
@@ -545,10 +551,11 @@ async function serializeRequestBody(request: NormalizedRequest, headers: Record<
 	throw new Error('Non-JSON request bodies must be strings or use rawBody=true with an explicit contentType.');
 }
 
-async function readUploadFile(contentPath: string): Promise<Buffer<ArrayBuffer>> {
+async function readUploadFile(contentPath: string, uploadDirs: string[]): Promise<Buffer<ArrayBuffer>> {
+	const realPath = await resolveAllowedUploadPath(contentPath, uploadDirs);
 	let stats;
 	try {
-		stats = await stat(contentPath);
+		stats = await stat(realPath);
 	} catch {
 		throw new Error(`multipart contentPath not found or not readable: ${contentPath}`);
 	}
@@ -558,7 +565,36 @@ async function readUploadFile(contentPath: string): Promise<Buffer<ArrayBuffer>>
 	if (stats.size > MAX_UPLOAD_FILE_BYTES) {
 		throw new Error(`multipart contentPath file is ${stats.size} bytes, exceeding the ${MAX_UPLOAD_FILE_BYTES} byte upload limit: ${contentPath}`);
 	}
-	return readFile(contentPath) as Promise<Buffer<ArrayBuffer>>;
+	return readFile(realPath) as Promise<Buffer<ArrayBuffer>>;
+}
+
+// Returns the real path of contentPath if it lies inside one of the upload dirs (after
+// resolving symlinks on both sides). Paths outside the allowlist always get the same error,
+// whether or not they exist, so the check is not a file-existence oracle.
+async function resolveAllowedUploadPath(contentPath: string, uploadDirs: string[]): Promise<string> {
+	if (uploadDirs.length === 0) {
+		throw new Error('multipart contentPath uploads are disabled. Set LEXWARE_OFFICE_UPLOAD_DIRS to the directories uploads may be read from, or send the file with contentBase64.');
+	}
+	const notAllowed = () => new Error(`multipart contentPath is outside the allowed upload directories (LEXWARE_OFFICE_UPLOAD_DIRS): ${contentPath}`);
+
+	const realDirs = (await Promise.all(uploadDirs.map((dir) => realpath(dir).catch(() => undefined))))
+		.filter((dir): dir is string => dir !== undefined);
+	const lexicalPath = resolve(contentPath);
+	let realPath: string;
+	try {
+		realPath = await realpath(lexicalPath);
+	} catch {
+		// Only report "not found" for paths that would be allowed if they existed.
+		if (![...uploadDirs.map((dir) => resolve(dir)), ...realDirs].some((dir) => isInsideDir(lexicalPath, dir))) throw notAllowed();
+		throw new Error(`multipart contentPath not found or not readable: ${contentPath}`);
+	}
+	if (!realDirs.some((dir) => isInsideDir(realPath, dir))) throw notAllowed();
+	return realPath;
+}
+
+function isInsideDir(path: string, dir: string): boolean {
+	const relativePath = relative(dir, path);
+	return relativePath === '' || (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
 }
 
 function sha256Hex(buffer: Buffer): string {
