@@ -57,6 +57,9 @@ export interface LexwareRequestOptions {
 }
 
 // Audit record for one request attempt. Never contains headers, bodies, query values, or the API key.
+// `sent` is true once the request was handed to fetch. A write that then failed with `error`
+// (cancelled, timed out, network or response read error) gets `outcome: 'unknown'`: Lexware
+// may have applied it, so reconcile with a GET before retrying.
 export interface RequestLogEntry {
 	method: LexwareExecuteMethod;
 	path: string;
@@ -64,6 +67,8 @@ export interface RequestLogEntry {
 	ok?: boolean;
 	error?: string;
 	write: boolean;
+	sent: boolean;
+	outcome?: 'unknown';
 	durationMs: number;
 }
 
@@ -169,25 +174,30 @@ export class LexwareApiClient {
 
 	private async attempt(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number): Promise<LexwareResponse> {
 		const startedAt = Date.now();
+		const write = WRITE_METHODS.has(normalized.method);
+		const progress = { sent: false };
 		const log = (result: Pick<RequestLogEntry, 'status' | 'ok' | 'error'>) => options.onSettled?.({
 			method: normalized.method,
 			path: normalized.path,
 			...result,
-			write: WRITE_METHODS.has(normalized.method),
+			write,
+			sent: progress.sent,
+			...(write && progress.sent && result.error !== undefined && { outcome: 'unknown' as const }),
 			durationMs: Date.now() - startedAt,
 		});
 		let response: LexwareResponse;
 		try {
-			response = await this.send(normalized, apiKey, options.signal, delayMs);
+			response = await this.send(normalized, apiKey, options.signal, delayMs, progress);
 		} catch (error) {
-			log({ error: error instanceof Error ? error.message : String(error) });
+			// send() throws controlled messages; sanitize anyway so the log can never leak secrets.
+			log({ error: sanitizeFetchErrorMessage(error, apiKey) });
 			throw error;
 		}
 		log({ status: response.status, ok: response.ok });
 		return response;
 	}
 
-	private async send(normalized: NormalizedRequest, apiKey: string, signal: AbortSignal | undefined, delayMs: number): Promise<LexwareResponse> {
+	private async send(normalized: NormalizedRequest, apiKey: string, signal: AbortSignal | undefined, delayMs: number, progress: { sent: boolean }): Promise<LexwareResponse> {
 		if (WRITE_METHODS.has(normalized.method) && writesAreGloballyDisabled()) {
 			throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
 		}
@@ -228,6 +238,7 @@ export class LexwareApiClient {
 
 			let response: Response;
 			try {
+				progress.sent = true;
 				response = await this.fetchImpl(url, {
 					method: normalized.method,
 					headers,
@@ -242,7 +253,7 @@ export class LexwareApiClient {
 			try {
 				parsed = await parseResponse(response, normalized, this.maxResponseChars);
 			} catch (error) {
-				throw abortedError(error) ?? error;
+				throw abortedError(error) ?? new Error(`Lexware API response read error for ${normalized.method} ${normalized.path}: ${sanitizeFetchErrorMessage(error, apiKey)}`);
 			}
 			return sent !== undefined ? { ...parsed, sent } : parsed;
 		} finally {

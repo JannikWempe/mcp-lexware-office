@@ -173,7 +173,7 @@ type LexwareResponse<T = unknown> = {
 
 lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. A GET answered with 429 and Retry-After <= 5s is retried once automatically.
 
-The tool result includes requests: one { method, path, status?, ok?, error?, write, durationMs } entry per HTTP attempt, also when execution failed — check it to see which writes already succeeded before retrying.
+The tool result includes requests: one { method, path, status?, ok?, error?, write, sent, outcome?, durationMs } entry per HTTP attempt, also when execution failed — check it to see which writes already succeeded before retrying. A write with error and outcome: 'unknown' (sent=true) may have been applied by Lexware; reconcile via a GET before retrying it.
 
 This server is read-only by default. POST, PUT, PATCH, and DELETE are blocked unless the server is started with LEXWARE_OFFICE_ALLOW_WRITES=true. Setting LEXWARE_OFFICE_READ_ONLY=true is a hard block that overrides ALLOW_WRITES. Check spec.info.writesEnabled to branch before attempting a write.
 

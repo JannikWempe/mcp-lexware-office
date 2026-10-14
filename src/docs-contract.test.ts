@@ -61,4 +61,5 @@ test('guide documents the execute requests audit log and cancellation', () => {
 	assert.match(guide, /`requests` is an audit log/);
 	assert.match(guide, /Execution cancelled by client/);
 	assert.match(guide, /429/);
+	assert.match(guide, /"outcome": "unknown"/);
 });

@@ -100,7 +100,7 @@ async () => {
 - rejects absolute URLs and external hosts,
 - hides the API key from sandboxed code,
 - rate-limits host requests to 2 requests/second by default,
-- retries a `GET` once when Lexware answers `429` with `Retry-After` ≤ 5 s (writes are never retried),
+- retries a `GET` once when Lexware answers `429` with `Retry-After` ≤ 5 s (writes are never retried; the wait counts against the 30 s `execute` timeout),
 - returns JSON/text or binary metadata,
 - adds operation metadata when the request matches the catalog,
 - allows unknown `/v1/...` paths for API coverage gaps.
@@ -123,13 +123,13 @@ declare const lexware: {
 
 Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount` and `requests` for `execute`; `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent` unless the serialized JSON exceeds the 24,000-character truncation limit — then only the truncated text block is returned. No `outputSchema` is declared because `result` is arbitrary.
 
-`requests` is an audit log of every HTTP attempt `execute` made, in order — present on success and on failure:
+`requests` is an audit log of every HTTP attempt `execute` made, in the order the attempts finished — present on success and on failure:
 
 ```json
-{ "method": "POST", "path": "/v1/invoices", "status": 201, "ok": true, "write": true, "durationMs": 412 }
+{ "method": "POST", "path": "/v1/invoices", "status": 201, "ok": true, "write": true, "sent": true, "durationMs": 412 }
 ```
 
-Failed attempts (blocked writes, network errors, timeouts, cancellations) carry `error` instead of `status`/`ok`; a retried `429` shows up as two entries. Entries never contain headers, query values, bodies, or the API key. Use it after a failed execution to see which writes already succeeded before retrying. `requestCount` still counts `lexware.request` calls from the sandbox (limited by `maxRequests`).
+Failed attempts (blocked writes, network errors, timeouts, cancellations) carry `error` instead of `status`/`ok`; a retried `429` shows up as two entries. `sent` tells whether the request reached `fetch`: `false` means Lexware never saw it (blocked, or cancelled while queued). A write with `error` and `sent: true` also carries `"outcome": "unknown"` — it may have been applied by Lexware (e.g. aborted after sending), so reconcile with a `GET` before retrying it. Entries never contain headers, query values, bodies, or the API key. Use it after a failed execution to see which writes already succeeded before retrying. `requestCount` still counts `lexware.request` calls from the sandbox (limited by `maxRequests`).
 
 Cancellation: when the client cancels a `search`/`execute` call, the execution ends with `Execution cancelled by client` and in-flight Lexware requests are aborted (they appear in `requests` with a cancelled `error`). The same happens when `execute` hits its 30 s timeout (`Execution timed out after 30000ms`). A single Lexware request times out after 25 s.
 

@@ -43,7 +43,7 @@ async () => {
 
 The sandbox does **not** receive the Lexware API key, Node globals, filesystem access, imports, `fetch`, or arbitrary network access. `lexware.request` only accepts relative `/v1/...` paths and sends the API key from the host process.
 
-`execute` results include `requests`, an audit log with one `{ method, path, status, ok, error, write, durationMs }` entry per HTTP attempt — also when the execution failed, so you can see which writes already went through. A `GET` answered with `429` and `Retry-After` ≤ 5 s is retried once automatically. Cancelling the tool call (or the 30 s execution timeout) aborts in-flight Lexware requests.
+`execute` results include `requests`, an audit log with one `{ method, path, status, ok, error, write, sent, outcome, durationMs }` entry per HTTP attempt — also when the execution failed, so you can see which writes already went through. A write with `error` and `outcome: "unknown"` was sent but its result is unknown (aborted, timed out, network error) — Lexware may have applied it, so check with a `GET` before retrying. A `GET` answered with `429` and `Retry-After` ≤ 5 s is retried once automatically if the 30 s execution budget allows. Cancelling the tool call (or the 30 s execution timeout) aborts in-flight Lexware requests.
 
 ### Binary-safe file uploads
 

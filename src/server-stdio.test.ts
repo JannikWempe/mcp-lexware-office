@@ -76,7 +76,7 @@ test('execute reports per-attempt requests on success', async () => {
 		assert.equal(result?.structuredContent?.requestCount, 1);
 		assert.deepEqual(
 			(result?.structuredContent?.requests as Array<Record<string, unknown>>).map(({ durationMs: _, ...entry }) => entry),
-			[{ method: 'GET', path: '/v1/countries', status: 200, ok: true, write: false }],
+			[{ method: 'GET', path: '/v1/countries', status: 200, ok: true, write: false, sent: true }],
 		);
 	} finally {
 		mcp.close();
