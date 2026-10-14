@@ -104,3 +104,29 @@ test('abort during the Retry-After wait cancels the retry without a second fetch
 	assert.equal(entries[0].status, 429);
 	assert.match(entries[1].error ?? '', /cancelled/);
 });
+
+test('retry after Retry-After: 0 still respects the rate limiter spacing', async () => {
+	const { fetchImpl, sentAt } = sequenceFetch([() => tooManyRequests('0'), ok]);
+
+	const response = await clientWithFetch(fetchImpl, { rateLimitIntervalMs: 200 }).request({ path: '/v1/countries' });
+
+	assert.equal(response.status, 200);
+	assert.ok(sentAt[1] - sentAt[0] >= 190, `expected ~200ms rate-limit spacing, got ${sentAt[1] - sentAt[0]}ms`);
+});
+
+test('abort while the retry is queued for the rate limiter prevents the second fetch', async () => {
+	const { fetchImpl, sentAt } = sequenceFetch([() => tooManyRequests('0'), ok]);
+	const entries: RequestLogEntry[] = [];
+	const controller = new AbortController();
+	setTimeout(() => controller.abort(), 20);
+	const startedAt = Date.now();
+
+	await assert.rejects(
+		() => clientWithFetch(fetchImpl, { rateLimitIntervalMs: 2_000 }).request({ path: '/v1/countries' }, { signal: controller.signal, onSettled: (entry) => entries.push(entry) }),
+		/cancelled/,
+	);
+
+	assert.ok(Date.now() - startedAt < 1_000);
+	assert.equal(sentAt.length, 1);
+	assert.deepEqual(entries.map(({ status, sent }) => ({ status, sent })), [{ status: 429, sent: true }, { status: undefined, sent: false }]);
+});
