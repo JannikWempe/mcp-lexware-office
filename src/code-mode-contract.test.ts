@@ -21,12 +21,13 @@ const responseFor = (status: number, body: BodyInit | null, headers: HeadersInit
 	headers,
 });
 
-const clientWithCalls = (handler: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>) => {
+const clientWithCalls = (handler: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>, uploadDirs?: string[]) => {
 	const calls: FetchCall[] = [];
 	const client = new LexwareApiClient({
 		apiKey: 'test-key',
 		baseUrl: 'https://example.test',
 		rateLimitIntervalMs: 0,
+		...(uploadDirs !== undefined && { uploadDirs }),
 		fetchImpl: async (input, init) => {
 			calls.push({ input, init });
 			return handler(input, init);
@@ -37,12 +38,14 @@ const clientWithCalls = (handler: (input: RequestInfo | URL, init?: RequestInit)
 
 test('server registers exactly search and execute tools', async () => {
 	const source = await readFile('src/index.ts', 'utf8');
-	const tools = [...source.matchAll(/server\.tool\(\n\t'([^']+)'/g)].map((match) => match[1]);
+	const tools = [...source.matchAll(/server\.registerTool\(\n\s*'([^']+)'/g)].map((match) => match[1]);
 
 	assert.deepEqual(tools, ['search', 'execute']);
 	assert.doesNotMatch(source, /get-revenue-summary|allowWrite/);
 	assert.match(source, /spec\.info\.domainIndex: compact map/);
 	assert.match(source, /lexware\.request returns all HTTP responses/);
+	assert.match(source, /contentPath.*LEXWARE_OFFICE_UPLOAD_DIRS/);
+	assert.match(source, /The tool result includes requests/);
 });
 
 test('execute sandbox exposes generic request but not API key or Node globals', async () => {
@@ -353,7 +356,7 @@ test('multipart with contentPath reads the file host-side and echoes sent bytes/
 		const { client } = clientWithCalls(async (_input, init) => {
 			if (init?.body !== undefined) receivedBodies.push(init.body as BodyInit);
 			return responseFor(200, JSON.stringify({ id: 'file-id' }), { 'content-type': 'application/json' }, 'OK');
-		});
+		}, [dir]);
 
 		const response = await client.request({
 			method: 'POST',
@@ -388,15 +391,16 @@ test('multipart with contentPath reads the file host-side and echoes sent bytes/
 test('contentPath validation: relative paths, missing files, and mode conflicts are rejected before fetch', async () => {
 	const originalAllowWrites = process.env.LEXWARE_OFFICE_ALLOW_WRITES;
 	process.env.LEXWARE_OFFICE_ALLOW_WRITES = 'true';
+	const dir = await mkdtemp(join(tmpdir(), 'lexware-upload-'));
 	try {
-		const { client, calls } = clientWithCalls(async () => responseFor(200, '{}'));
+		const { client, calls } = clientWithCalls(async () => responseFor(200, '{}'), [dir]);
 
 		await assert.rejects(
 			() => client.request({ method: 'POST', path: '/v1/files', multipart: [{ name: 'file', contentPath: 'relative/receipt.pdf' }, { name: 'type', value: 'voucher' }] }),
 			/contentPath must be an absolute path/,
 		);
 		await assert.rejects(
-			() => client.request({ method: 'POST', path: '/v1/files', multipart: [{ name: 'file', contentPath: '/definitely/not/a/real/file.pdf' }, { name: 'type', value: 'voucher' }] }),
+			() => client.request({ method: 'POST', path: '/v1/files', multipart: [{ name: 'file', contentPath: join(dir, 'not-a-real-file.pdf') }, { name: 'type', value: 'voucher' }] }),
 			/contentPath not found or not readable/,
 		);
 		await assert.rejects(
@@ -405,6 +409,7 @@ test('contentPath validation: relative paths, missing files, and mode conflicts 
 		);
 		assert.equal(calls.length, 0);
 	} finally {
+		await rm(dir, { recursive: true, force: true });
 		if (originalAllowWrites === undefined) delete process.env.LEXWARE_OFFICE_ALLOW_WRITES;
 		else process.env.LEXWARE_OFFICE_ALLOW_WRITES = originalAllowWrites;
 	}

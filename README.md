@@ -5,6 +5,8 @@ An MCP server for [Lexware Office](https://www.lexware.de/lexware-office/) (form
 The server uses **Code Mode**: instead of one MCP tool per API endpoint, it exposes two tools — `search` to explore a curated Lexware API catalog and `execute` to run constrained, sandboxed API workflows. This keeps the tool surface small while covering the whole API, including pagination, aggregation, and multi-step reporting in a single call.
 
 > Upgrading from 1.x? The legacy tool-per-endpoint server was removed in 2.0.0. See [docs/guide.md#migrating-from-1x](docs/guide.md#migrating-from-1x).
+>
+> Using `contentPath` uploads? They now require `LEXWARE_OFFICE_UPLOAD_DIRS`. See [docs/guide.md#migrating-contentpath-requires-lexware_office_upload_dirs](docs/guide.md#migrating-contentpath-requires-lexware_office_upload_dirs).
 
 ## Features
 
@@ -23,6 +25,8 @@ The server exposes two MCP tools:
 - `search` — runs a sandboxed JavaScript async arrow function against a curated OpenAPI-lite Lexware catalog.
 - `execute` — runs a sandboxed JavaScript async arrow function with one host capability, `lexware.request`, for relative `/v1/...` Lexware API calls.
 
+Both tools declare MCP annotations (`search` is read-only; `execute` is marked destructive only when writes are enabled) and return `structuredContent` alongside the JSON text block. Built on the MCP TypeScript SDK v2 (protocol revision 2026-07-28 and 2025-era clients). See [docs/guide.md](docs/guide.md#tool-results-and-metadata).
+
 Example `execute` call:
 
 ```js
@@ -39,11 +43,13 @@ async () => {
 
 The sandbox does **not** receive the Lexware API key, Node globals, filesystem access, imports, `fetch`, or arbitrary network access. `lexware.request` only accepts relative `/v1/...` paths and sends the API key from the host process.
 
+`execute` results include `requests`, an audit log with one `{ method, path, status, ok, error, write, sent, outcome, durationMs }` entry per HTTP attempt — also when the execution failed, so you can see which writes already went through. A write with `error` and `outcome: "unknown"` was sent but its result is unknown (aborted, timed out, network error) — Lexware may have applied it, so check with a `GET` before retrying. A `GET` answered with `429` and `Retry-After` ≤ 5 s is retried once automatically if the 30 s execution budget allows. Cancelling the tool call (or the 30 s execution timeout) aborts in-flight Lexware requests.
+
 ### Binary-safe file uploads
 
 Uploads are binary-safe via `multipart` parts with `contentPath` (host reads a local file from disk), `contentBase64` (binary FormData parts), or `bodyBase64` (raw binary body). The host reads/decodes and builds `Buffer` / `Blob` bodies outside the QuickJS sandbox.
 
-Preferred: `contentPath` — pass the file's absolute path instead of inlining bytes. Requires `LEXWARE_OFFICE_ALLOW_WRITES=true` (uploads are writes) and works only when the MCP server runs on the machine that has the file:
+Preferred: `contentPath` — pass the file's absolute path instead of inlining bytes. Requires `LEXWARE_OFFICE_ALLOW_WRITES=true` (uploads are writes) and `LEXWARE_OFFICE_UPLOAD_DIRS` (see [Upload directories](#upload-directories)); the file must be on the machine running the MCP server:
 
 ```js
 async () => {
@@ -77,14 +83,14 @@ Create an API key at <https://app.lexoffice.de/addons/public-api>.
 
 #### Recommended: consume the packaged server
 
-Run the packaged binary from the latest GitHub release (`#semver:^2` resolves to the newest `v2.x` tag and picks up future releases automatically). The package builds itself during GitHub installs via `prepare`, so users do **not** need to clone the repository or commit `build/` artifacts.
+Run the packaged binary from the latest GitHub release (`#semver:^3` resolves to the newest `v3.x` tag and picks up future releases automatically). The package builds itself during GitHub installs via `prepare`, so users do **not** need to clone the repository or commit `build/` artifacts.
 
 ```json
 {
   "mcpServers": {
     "lexware-office": {
       "command": "npx",
-      "args": ["-y", "--package=github:JannikWempe/mcp-lexware-office#semver:^2", "lexware-office"],
+      "args": ["-y", "--package=github:JannikWempe/mcp-lexware-office#semver:^3", "lexware-office"],
       "env": {
         "LEXWARE_OFFICE_API_KEY": "YOUR_API_KEY_HERE",
         "LEXWARE_OFFICE_READ_ONLY": "true"
@@ -99,7 +105,7 @@ Run the packaged binary from the latest GitHub release (`#semver:^2` resolves to
 ```bash
 # Option 1: bypass your user config for this invocation
 NPM_CONFIG_USERCONFIG=/dev/null \
-  npx -y --package=github:JannikWempe/mcp-lexware-office#semver:^2 lexware-office
+  npx -y --package=github:JannikWempe/mcp-lexware-office#semver:^3 lexware-office
 
 # Option 2: remove the conflicting setting permanently
 npm config delete minimum-release-age --location=user
@@ -152,12 +158,25 @@ Use this source-based setup only for development. End users should prefer the pa
 
 See [docs/guide.md#permissions](docs/guide.md#permissions) for the detailed permission model.
 
+### Upload directories
+
+`multipart` `contentPath` uploads are disabled unless `LEXWARE_OFFICE_UPLOAD_DIRS` lists the directories the server may read files from (separated by `:` on macOS/Linux, `;` on Windows):
+
+```json
+{
+  "LEXWARE_OFFICE_ALLOW_WRITES": "true",
+  "LEXWARE_OFFICE_UPLOAD_DIRS": "/Users/me/Documents/Belege:/Users/me/Downloads"
+}
+```
+
+Files must resolve (after following symlinks) to a path inside one of these directories, including subdirectories. Anything else is rejected. `contentBase64` uploads work without this setting.
+
 ## Docker
 
 Build the image:
 
 ```bash
-docker build -t mcp-lexware-office:latest -f src/Dockerfile .
+docker build -t mcp-lexware-office:latest .
 ```
 
 Run it:
@@ -166,6 +185,17 @@ Run it:
 docker run -i --rm \
   -e LEXWARE_OFFICE_API_KEY \
   -e LEXWARE_OFFICE_READ_ONLY=true \
+  mcp-lexware-office:latest
+```
+
+`contentPath` uploads read from the container's filesystem: mount a volume and set `LEXWARE_OFFICE_UPLOAD_DIRS` to the container path, then pass `contentPath: '/data/receipt.pdf'`:
+
+```bash
+docker run -i --rm \
+  -e LEXWARE_OFFICE_API_KEY \
+  -e LEXWARE_OFFICE_ALLOW_WRITES=true \
+  -e LEXWARE_OFFICE_UPLOAD_DIRS=/data \
+  -v /host/dir:/data:ro \
   mcp-lexware-office:latest
 ```
 
