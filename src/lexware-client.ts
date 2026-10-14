@@ -41,6 +41,8 @@ export interface LexwareClientOptions {
 	maxResponseChars?: number;
 	requestTimeoutMs?: number;
 	rateLimitIntervalMs?: number;
+	// GET requests answered with 429 are retried once if Retry-After is at most this long.
+	maxRetryAfterMs?: number;
 }
 
 export interface LexwareRequestOptions {
@@ -116,6 +118,7 @@ const DEFAULT_USER_AGENT = `mcp-lexware-office/${VERSION}`;
 const DEFAULT_MAX_RESPONSE_CHARS = 24_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_RATE_LIMIT_INTERVAL_MS = 500;
+const DEFAULT_MAX_RETRY_AFTER_MS = 5_000;
 const WRITE_METHODS = new Set<LexwareExecuteMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export class LexwareApiClient {
@@ -126,6 +129,7 @@ export class LexwareApiClient {
 	private readonly maxResponseChars: number;
 	private readonly requestTimeoutMs: number;
 	private readonly rateLimitIntervalMs: number;
+	private readonly maxRetryAfterMs: number;
 	private nextRequestAtMs = 0;
 	private rateLimitQueue: Promise<void> = Promise.resolve();
 
@@ -137,6 +141,7 @@ export class LexwareApiClient {
 		this.maxResponseChars = options.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS;
 		this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		this.rateLimitIntervalMs = options.rateLimitIntervalMs ?? DEFAULT_RATE_LIMIT_INTERVAL_MS;
+		this.maxRetryAfterMs = options.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
 	}
 
 	async request(input: unknown, options: LexwareRequestOptions = {}): Promise<LexwareResponse> {
@@ -146,10 +151,16 @@ export class LexwareApiClient {
 		}
 
 		const normalized = normalizeRequest(input);
-		return this.attempt(normalized, apiKey, options);
+		const response = await this.attempt(normalized, apiKey, options, 0);
+		// Only idempotent reads are retried; a retried write could duplicate documents.
+		const retryAfterMs = response.retryAfterSeconds !== undefined ? response.retryAfterSeconds * 1000 : undefined;
+		if (normalized.method === 'GET' && response.status === 429 && retryAfterMs !== undefined && retryAfterMs <= this.maxRetryAfterMs) {
+			return this.attempt(normalized, apiKey, options, retryAfterMs);
+		}
+		return response;
 	}
 
-	private async attempt(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions): Promise<LexwareResponse> {
+	private async attempt(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number): Promise<LexwareResponse> {
 		const startedAt = Date.now();
 		const log = (result: Pick<RequestLogEntry, 'status' | 'ok' | 'error'>) => options.onSettled?.({
 			method: normalized.method,
@@ -160,7 +171,7 @@ export class LexwareApiClient {
 		});
 		let response: LexwareResponse;
 		try {
-			response = await this.send(normalized, apiKey, options.signal);
+			response = await this.send(normalized, apiKey, options.signal, delayMs);
 		} catch (error) {
 			log({ error: error instanceof Error ? error.message : String(error) });
 			throw error;
@@ -169,7 +180,7 @@ export class LexwareApiClient {
 		return response;
 	}
 
-	private async send(normalized: NormalizedRequest, apiKey: string, signal: AbortSignal | undefined): Promise<LexwareResponse> {
+	private async send(normalized: NormalizedRequest, apiKey: string, signal: AbortSignal | undefined, delayMs: number): Promise<LexwareResponse> {
 		if (WRITE_METHODS.has(normalized.method) && writesAreGloballyDisabled()) {
 			throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
 		}
@@ -178,6 +189,7 @@ export class LexwareApiClient {
 		if (signal?.aborted) throw cancelledError();
 
 		try {
+			if (delayMs > 0) await sleep(delayMs, undefined, signal !== undefined ? { signal } : undefined);
 			await this.waitForRateLimitTurn(signal);
 		} catch (error) {
 			if (signal?.aborted) throw cancelledError();
