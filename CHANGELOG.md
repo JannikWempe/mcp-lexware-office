@@ -1,5 +1,28 @@
 # Changelog
 
+## [3.0.0](https://github.com/JannikWempe/mcp-lexware-office/compare/v2.0.0...v3.0.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* multipart contentPath is disabled unless LEXWARE_OFFICE_UPLOAD_DIRS (or uploadDirs) is set. contentBase64 unaffected.
+
+### Features
+
+* mark sent writes with unknown outcome in request log; sanitize response read errors ([ba62a10](https://github.com/JannikWempe/mcp-lexware-office/commit/ba62a10217489a0d6835a1846d5734917c8cb277))
+* migrate to MCP TypeScript SDK v2 ([587568f](https://github.com/JannikWempe/mcp-lexware-office/commit/587568f9cb879b6a89556b0b5ed45d2971df397d))
+* per-attempt request log via onSettled request option ([e64e058](https://github.com/JannikWempe/mcp-lexware-office/commit/e64e05875941ebd9a1b6f70c3648730207fbf85e))
+* report per-request audit log and propagate cancellation in execute ([1b213ee](https://github.com/JannikWempe/mcp-lexware-office/commit/1b213ee134386394974dfd4df75dd388e61db32f))
+* restrict multipart contentPath to LEXWARE_OFFICE_UPLOAD_DIRS ([9b7e013](https://github.com/JannikWempe/mcp-lexware-office/commit/9b7e01343bffa81bca85ea5d3749c5fcbee9a002))
+* retry GET once on 429 with short Retry-After ([c4211b3](https://github.com/JannikWempe/mcp-lexware-office/commit/c4211b397a6aa9af167a623e8bccd98df780ff75))
+
+
+### Bug Fixes
+
+* abort in-flight Lexware requests on timeout or client cancel ([6c087a8](https://github.com/JannikWempe/mcp-lexware-office/commit/6c087a8f62184d39f3fde030d3b67e540aa0d2fc))
+* **executor:** recheck cancellation after QuickJS init so aborted runs never start guest code ([357de81](https://github.com/JannikWempe/mcp-lexware-office/commit/357de81bda12e066d502ca9c15dda07f885ab8d5))
+* **upload:** read contentPath via O_NOFOLLOW fd with post-open identity check; close dir-symlink existence oracle ([b8429db](https://github.com/JannikWempe/mcp-lexware-office/commit/b8429db397244b1eb167290eac6b5ad685f37a06))
+
 ## [2.0.0](https://github.com/JannikWempe/mcp-lexware-office/compare/v1.8.0...v2.0.0) (2026-07-19)
 
 
