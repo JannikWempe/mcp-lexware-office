@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
-import { basename, isAbsolute } from 'node:path';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { basename, delimiter, isAbsolute, relative, resolve, sep } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-spec.js';
 import { truncateText } from './truncate.js';
@@ -40,9 +41,30 @@ export interface LexwareClientOptions {
 	maxResponseChars?: number;
 	requestTimeoutMs?: number;
 	rateLimitIntervalMs?: number;
+	// GET requests answered with 429 are retried once if Retry-After is at most this long.
+	maxRetryAfterMs?: number;
+	// Directories multipart contentPath may read from. Overrides LEXWARE_OFFICE_UPLOAD_DIRS; empty disables contentPath.
+	uploadDirs?: string[];
 }
 
-export interface LexwareRequestOptions {}
+export interface LexwareRequestOptions {
+	// Cancels the request: while queued for the rate limiter, before sending, or during fetch.
+	signal?: AbortSignal;
+	// Called exactly once per attempt that passed input validation, including blocked writes,
+	// cancellations, and network errors (with `error`), for audit logging.
+	onSettled?: (entry: RequestLogEntry) => void;
+}
+
+// Audit record for one request attempt. Never contains headers, bodies, query values, or the API key.
+export interface RequestLogEntry {
+	method: LexwareExecuteMethod;
+	path: string;
+	status?: number;
+	ok?: boolean;
+	error?: string;
+	write: boolean;
+	durationMs: number;
+}
 
 export interface LexwareResponse {
 	ok: boolean;
@@ -98,6 +120,7 @@ const DEFAULT_USER_AGENT = `mcp-lexware-office/${VERSION}`;
 const DEFAULT_MAX_RESPONSE_CHARS = 24_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_RATE_LIMIT_INTERVAL_MS = 500;
+const DEFAULT_MAX_RETRY_AFTER_MS = 5_000;
 const WRITE_METHODS = new Set<LexwareExecuteMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export class LexwareApiClient {
@@ -108,6 +131,8 @@ export class LexwareApiClient {
 	private readonly maxResponseChars: number;
 	private readonly requestTimeoutMs: number;
 	private readonly rateLimitIntervalMs: number;
+	private readonly maxRetryAfterMs: number;
+	private readonly uploadDirs: string[];
 	private nextRequestAtMs = 0;
 	private rateLimitQueue: Promise<void> = Promise.resolve();
 
@@ -119,26 +144,77 @@ export class LexwareApiClient {
 		this.maxResponseChars = options.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS;
 		this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		this.rateLimitIntervalMs = options.rateLimitIntervalMs ?? DEFAULT_RATE_LIMIT_INTERVAL_MS;
+		this.maxRetryAfterMs = options.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
+		this.uploadDirs = (options.uploadDirs ?? (process.env.LEXWARE_OFFICE_UPLOAD_DIRS ?? '').split(delimiter))
+			.map((dir) => dir.trim())
+			.filter((dir) => dir.length > 0);
 	}
 
-	async request(input: unknown, _options: LexwareRequestOptions = {}): Promise<LexwareResponse> {
+	async request(input: unknown, options: LexwareRequestOptions = {}): Promise<LexwareResponse> {
 		const apiKey = this.apiKey;
 		if (!apiKey) {
 			throw new Error('LEXWARE_OFFICE_API_KEY environment variable is required for the execute tool');
 		}
 
 		const normalized = normalizeRequest(input);
+		const response = await this.attempt(normalized, apiKey, options, 0);
+		// Only idempotent reads are retried; a retried write could duplicate documents.
+		const retryAfterMs = response.retryAfterSeconds !== undefined ? response.retryAfterSeconds * 1000 : undefined;
+		if (normalized.method === 'GET' && response.status === 429 && retryAfterMs !== undefined && retryAfterMs <= this.maxRetryAfterMs) {
+			return this.attempt(normalized, apiKey, options, retryAfterMs);
+		}
+		return response;
+	}
+
+	private async attempt(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number): Promise<LexwareResponse> {
+		const startedAt = Date.now();
+		const log = (result: Pick<RequestLogEntry, 'status' | 'ok' | 'error'>) => options.onSettled?.({
+			method: normalized.method,
+			path: normalized.path,
+			...result,
+			write: WRITE_METHODS.has(normalized.method),
+			durationMs: Date.now() - startedAt,
+		});
+		let response: LexwareResponse;
+		try {
+			response = await this.send(normalized, apiKey, options.signal, delayMs);
+		} catch (error) {
+			log({ error: error instanceof Error ? error.message : String(error) });
+			throw error;
+		}
+		log({ status: response.status, ok: response.ok });
+		return response;
+	}
+
+	private async send(normalized: NormalizedRequest, apiKey: string, signal: AbortSignal | undefined, delayMs: number): Promise<LexwareResponse> {
 		if (WRITE_METHODS.has(normalized.method) && writesAreGloballyDisabled()) {
 			throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
 		}
 
-		await this.waitForRateLimitTurn();
+		const cancelledError = () => new Error(`Lexware API request cancelled for ${normalized.method} ${normalized.path}`);
+		if (signal?.aborted) throw cancelledError();
+
+		try {
+			if (delayMs > 0) await sleep(delayMs, undefined, signal !== undefined ? { signal } : undefined);
+			await this.waitForRateLimitTurn(signal);
+		} catch (error) {
+			if (signal?.aborted) throw cancelledError();
+			throw error;
+		}
 
 		const url = new URL(normalized.path, this.baseUrl);
 		url.search = normalized.query.toString();
 
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+		const timeoutController = new AbortController();
+		const timeout = setTimeout(() => timeoutController.abort(), this.requestTimeoutMs);
+		const fetchSignal = signal !== undefined ? AbortSignal.any([signal, timeoutController.signal]) : timeoutController.signal;
+		const abortedError = (error: unknown): Error | undefined => {
+			if (signal?.aborted) return cancelledError();
+			if (timeoutController.signal.aborted || isAbortError(error)) {
+				return new Error(`Lexware API request timed out after ${this.requestTimeoutMs}ms for ${normalized.method} ${normalized.path}`);
+			}
+			return undefined;
+		};
 		try {
 			const headers: Record<string, string> = {
 				'User-Agent': this.userAgent,
@@ -146,7 +222,8 @@ export class LexwareApiClient {
 				Authorization: `Bearer ${apiKey}`,
 			};
 
-			const { body, sent } = await serializeRequestBody(normalized, headers);
+			const { body, sent } = await serializeRequestBody(normalized, headers, this.uploadDirs);
+			if (signal?.aborted) throw cancelledError();
 
 			let response: Response;
 			try {
@@ -154,34 +231,62 @@ export class LexwareApiClient {
 					method: normalized.method,
 					headers,
 					body,
-					signal: controller.signal,
+					signal: fetchSignal,
 				});
 			} catch (error) {
-				if (controller.signal.aborted || isAbortError(error)) {
-					throw new Error(`Lexware API request timed out after ${this.requestTimeoutMs}ms for ${normalized.method} ${normalized.path}`);
-				}
-				throw new Error(`Lexware API network error for ${normalized.method} ${normalized.path}: ${sanitizeFetchErrorMessage(error, apiKey)}`);
+				throw abortedError(error) ?? new Error(`Lexware API network error for ${normalized.method} ${normalized.path}: ${sanitizeFetchErrorMessage(error, apiKey)}`);
 			}
 
-			const parsed = await parseResponse(response, normalized, this.maxResponseChars);
+			let parsed: LexwareResponse;
+			try {
+				parsed = await parseResponse(response, normalized, this.maxResponseChars);
+			} catch (error) {
+				throw abortedError(error) ?? error;
+			}
 			return sent !== undefined ? { ...parsed, sent } : parsed;
 		} finally {
 			clearTimeout(timeout);
 		}
 	}
 
-	private waitForRateLimitTurn(): Promise<void> {
-		if (this.rateLimitIntervalMs <= 0) return Promise.resolve();
+	// Serializes requests through a promise chain. A waiter cancelled mid-wait rejects
+	// immediately but only releases its slot once its predecessor is done, and it never
+	// claims the next send slot, so later waiters keep the configured spacing.
+	private async waitForRateLimitTurn(signal: AbortSignal | undefined): Promise<void> {
+		if (this.rateLimitIntervalMs <= 0) return;
 
-		const wait = this.rateLimitQueue.then(async () => {
-			const now = Date.now();
-			const delayMs = Math.max(0, this.nextRequestAtMs - now);
-			if (delayMs > 0) await delay(delayMs);
+		const previous = this.rateLimitQueue;
+		let release!: () => void;
+		this.rateLimitQueue = new Promise<void>((resolve) => { release = resolve; });
+		try {
+			await untilAborted(previous, signal);
+			const delayMs = Math.max(0, this.nextRequestAtMs - Date.now());
+			if (delayMs > 0) await sleep(delayMs, undefined, signal !== undefined ? { signal } : undefined);
 			this.nextRequestAtMs = Date.now() + this.rateLimitIntervalMs;
-		});
-		this.rateLimitQueue = wait.catch(() => undefined);
-		return wait;
+		} finally {
+			void previous.then(release);
+		}
 	}
+}
+
+// Resolves with `promise`, or rejects as soon as `signal` aborts.
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (signal === undefined) return promise;
+	signal.throwIfAborted();
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener('abort', onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener('abort', onAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener('abort', onAbort);
+				reject(error);
+			},
+		);
+	});
 }
 
 function normalizeRequest(input: unknown): NormalizedRequest {
@@ -391,7 +496,7 @@ interface SerializedBody {
 	sent?: UploadEcho;
 }
 
-async function serializeRequestBody(request: NormalizedRequest, headers: Record<string, string>): Promise<SerializedBody> {
+async function serializeRequestBody(request: NormalizedRequest, headers: Record<string, string>, uploadDirs: string[]): Promise<SerializedBody> {
 	// Binary body: decode base64 on the host, send raw bytes.
 	if (request.bodyBase64 !== undefined) {
 		headers['Content-Type'] = request.contentType ?? 'application/octet-stream';
@@ -409,7 +514,7 @@ async function serializeRequestBody(request: NormalizedRequest, headers: Record<
 			if (part.contentBase64 !== undefined) {
 				buffer = Buffer.from(part.contentBase64, 'base64');
 			} else if (part.contentPath !== undefined) {
-				buffer = await readUploadFile(part.contentPath);
+				buffer = await readUploadFile(part.contentPath, uploadDirs);
 				defaultFilename = basename(part.contentPath);
 			}
 			if (buffer !== undefined) {
@@ -446,10 +551,11 @@ async function serializeRequestBody(request: NormalizedRequest, headers: Record<
 	throw new Error('Non-JSON request bodies must be strings or use rawBody=true with an explicit contentType.');
 }
 
-async function readUploadFile(contentPath: string): Promise<Buffer<ArrayBuffer>> {
+async function readUploadFile(contentPath: string, uploadDirs: string[]): Promise<Buffer<ArrayBuffer>> {
+	const realPath = await resolveAllowedUploadPath(contentPath, uploadDirs);
 	let stats;
 	try {
-		stats = await stat(contentPath);
+		stats = await stat(realPath);
 	} catch {
 		throw new Error(`multipart contentPath not found or not readable: ${contentPath}`);
 	}
@@ -459,7 +565,36 @@ async function readUploadFile(contentPath: string): Promise<Buffer<ArrayBuffer>>
 	if (stats.size > MAX_UPLOAD_FILE_BYTES) {
 		throw new Error(`multipart contentPath file is ${stats.size} bytes, exceeding the ${MAX_UPLOAD_FILE_BYTES} byte upload limit: ${contentPath}`);
 	}
-	return readFile(contentPath) as Promise<Buffer<ArrayBuffer>>;
+	return readFile(realPath) as Promise<Buffer<ArrayBuffer>>;
+}
+
+// Returns the real path of contentPath if it lies inside one of the upload dirs (after
+// resolving symlinks on both sides). Paths outside the allowlist always get the same error,
+// whether or not they exist, so the check is not a file-existence oracle.
+async function resolveAllowedUploadPath(contentPath: string, uploadDirs: string[]): Promise<string> {
+	if (uploadDirs.length === 0) {
+		throw new Error('multipart contentPath uploads are disabled. Set LEXWARE_OFFICE_UPLOAD_DIRS to the directories uploads may be read from, or send the file with contentBase64.');
+	}
+	const notAllowed = () => new Error(`multipart contentPath is outside the allowed upload directories (LEXWARE_OFFICE_UPLOAD_DIRS): ${contentPath}`);
+
+	const realDirs = (await Promise.all(uploadDirs.map((dir) => realpath(dir).catch(() => undefined))))
+		.filter((dir): dir is string => dir !== undefined);
+	const lexicalPath = resolve(contentPath);
+	let realPath: string;
+	try {
+		realPath = await realpath(lexicalPath);
+	} catch {
+		// Only report "not found" for paths that would be allowed if they existed.
+		if (![...uploadDirs.map((dir) => resolve(dir)), ...realDirs].some((dir) => isInsideDir(lexicalPath, dir))) throw notAllowed();
+		throw new Error(`multipart contentPath not found or not readable: ${contentPath}`);
+	}
+	if (!realDirs.some((dir) => isInsideDir(realPath, dir))) throw notAllowed();
+	return realPath;
+}
+
+function isInsideDir(path: string, dir: string): boolean {
+	const relativePath = relative(dir, path);
+	return relativePath === '' || (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
 }
 
 function sha256Hex(buffer: Buffer): string {
@@ -595,10 +730,6 @@ function writesAreGloballyDisabled(): boolean {
 	if (process.env.LEXWARE_OFFICE_READ_ONLY === 'true') return true;
 	// Writes are blocked by default. Writes require explicit opt-in.
 	return process.env.LEXWARE_OFFICE_ALLOW_WRITES !== 'true';
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function headersToObject(headers: Headers): Record<string, string> {
