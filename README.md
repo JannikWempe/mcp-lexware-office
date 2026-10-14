@@ -83,14 +83,14 @@ Create an API key at <https://app.lexoffice.de/addons/public-api>.
 
 #### Recommended: consume the packaged server
 
-Run the packaged binary from the latest GitHub release (`#semver:^2` resolves to the newest `v2.x` tag and picks up future releases automatically). The package builds itself during GitHub installs via `prepare`, so users do **not** need to clone the repository or commit `build/` artifacts.
+Run the packaged binary from the latest GitHub release (`#semver:^3` resolves to the newest `v3.x` tag and picks up future releases automatically). The package builds itself during GitHub installs via `prepare`, so users do **not** need to clone the repository or commit `build/` artifacts.
 
 ```json
 {
   "mcpServers": {
     "lexware-office": {
       "command": "npx",
-      "args": ["-y", "--package=github:JannikWempe/mcp-lexware-office#semver:^2", "lexware-office"],
+      "args": ["-y", "--package=github:JannikWempe/mcp-lexware-office#semver:^3", "lexware-office"],
       "env": {
         "LEXWARE_OFFICE_API_KEY": "YOUR_API_KEY_HERE",
         "LEXWARE_OFFICE_READ_ONLY": "true"
@@ -105,7 +105,7 @@ Run the packaged binary from the latest GitHub release (`#semver:^2` resolves to
 ```bash
 # Option 1: bypass your user config for this invocation
 NPM_CONFIG_USERCONFIG=/dev/null \
-  npx -y --package=github:JannikWempe/mcp-lexware-office#semver:^2 lexware-office
+  npx -y --package=github:JannikWempe/mcp-lexware-office#semver:^3 lexware-office
 
 # Option 2: remove the conflicting setting permanently
 npm config delete minimum-release-age --location=user
