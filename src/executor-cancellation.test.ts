@@ -35,13 +35,20 @@ test('already-aborted external signal ends execution without host calls', async 
 test('external abort mid-run ends execution promptly and aborts the host signal', async () => {
 	const controller = new AbortController();
 	const seen: AbortSignal[] = [];
-	setTimeout(() => controller.abort(), 20);
+	const host = abortAwareHost(seen);
 	const startedAt = Date.now();
 
 	const execution = await new QuickJsExecutor().execute(requestCode, { spec: {} }, {
 		timeoutMs: 5_000,
 		signal: controller.signal,
-		hostFunctions: { __lexwareRequestJson: abortAwareHost(seen) },
+		hostFunctions: {
+			// Abort once the host call is in flight; a wall-clock timer races QuickJS init on cold runners.
+			__lexwareRequestJson: (payload, context) => {
+				const pending = host(payload, context);
+				setTimeout(() => controller.abort(), 20);
+				return pending;
+			},
+		},
 	});
 
 	assert.match(execution.error ?? '', /Execution cancelled by client/);
