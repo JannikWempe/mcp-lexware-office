@@ -46,6 +46,20 @@ export interface LexwareClientOptions {
 export interface LexwareRequestOptions {
 	// Cancels the request: while queued for the rate limiter, before sending, or during fetch.
 	signal?: AbortSignal;
+	// Called exactly once per attempt that passed input validation, including blocked writes,
+	// cancellations, and network errors (with `error`), for audit logging.
+	onSettled?: (entry: RequestLogEntry) => void;
+}
+
+// Audit record for one request attempt. Never contains headers, bodies, query values, or the API key.
+export interface RequestLogEntry {
+	method: LexwareExecuteMethod;
+	path: string;
+	status?: number;
+	ok?: boolean;
+	error?: string;
+	write: boolean;
+	durationMs: number;
 }
 
 export interface LexwareResponse {
@@ -132,11 +146,34 @@ export class LexwareApiClient {
 		}
 
 		const normalized = normalizeRequest(input);
+		return this.attempt(normalized, apiKey, options);
+	}
+
+	private async attempt(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions): Promise<LexwareResponse> {
+		const startedAt = Date.now();
+		const log = (result: Pick<RequestLogEntry, 'status' | 'ok' | 'error'>) => options.onSettled?.({
+			method: normalized.method,
+			path: normalized.path,
+			...result,
+			write: WRITE_METHODS.has(normalized.method),
+			durationMs: Date.now() - startedAt,
+		});
+		let response: LexwareResponse;
+		try {
+			response = await this.send(normalized, apiKey, options.signal);
+		} catch (error) {
+			log({ error: error instanceof Error ? error.message : String(error) });
+			throw error;
+		}
+		log({ status: response.status, ok: response.ok });
+		return response;
+	}
+
+	private async send(normalized: NormalizedRequest, apiKey: string, signal: AbortSignal | undefined): Promise<LexwareResponse> {
 		if (WRITE_METHODS.has(normalized.method) && writesAreGloballyDisabled()) {
 			throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
 		}
 
-		const signal = options.signal;
 		const cancelledError = () => new Error(`Lexware API request cancelled for ${normalized.method} ${normalized.path}`);
 		if (signal?.aborted) throw cancelledError();
 
