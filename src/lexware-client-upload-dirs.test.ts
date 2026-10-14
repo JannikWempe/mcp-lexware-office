@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { LexwareApiClient } from './lexware-client.js';
+import { LexwareApiClient, readUploadFile } from './lexware-client.js';
 
 const fileBytes = Buffer.from('%PDF-test');
 
@@ -135,7 +135,14 @@ test('paths outside the allowlist are rejected without revealing whether they ex
 			join(allowed, '..', 'outside', 'secret.pdf'),
 			join(allowed, 'escape.pdf'), // symlink pointing outside
 			join(root, 'missing-dir', 'x.pdf'),
+			join(allowed, 'link-out', 'secret.pdf'), // directory symlink pointing outside
+			join(allowed, 'link-out', 'missing.pdf'),
+			join(allowed, 'link-out', 'missing-dir', 'x.pdf'),
+			join(allowed, 'dangling.pdf'), // dangling symlink pointing outside
+			join(allowed, 'dangling.pdf', 'x.pdf'),
 		];
+		await symlink(outside, join(allowed, 'link-out'));
+		await symlink(join(outside, 'missing.pdf'), join(allowed, 'dangling.pdf'));
 
 		const messages = [];
 		for (const contentPath of cases) {
@@ -163,7 +170,10 @@ test('missing files and directories inside an allowed dir get specific errors', 
 	await withFixture(async ({ allowed }) => {
 		const { upload } = uploadClient([allowed]);
 
-		await assert.rejects(() => upload(join(allowed, 'missing.pdf')), /contentPath not found or not readable/);
+		await symlink(join(allowed, 'nested'), join(allowed, 'link-in'));
+		for (const missing of ['missing.pdf', join('missing-dir', 'x.pdf'), join('link-in', 'missing.pdf')]) {
+			await assert.rejects(() => upload(join(allowed, missing)), /contentPath not found or not readable/);
+		}
 		await assert.rejects(() => upload(join(allowed, 'folder')), /contentPath must be a regular file/);
 		await assert.rejects(() => upload(allowed), /contentPath must be a regular file/);
 	});
@@ -173,5 +183,60 @@ test('write gate runs before the allowlist check', async () => {
 	await withFixture(async ({ outside }) => {
 		delete process.env.LEXWARE_OFFICE_ALLOW_WRITES;
 		await assert.rejects(() => uploadClient([]).upload(join(outside, 'secret.pdf')), /blocked: writes are disabled/);
+	});
+});
+
+// Swaps simulate an attacker replacing parts of a validated path between the allowlist
+// check and the read (TOCTOU). The outside file holds different bytes so a leak is visible.
+const secretBytes = Buffer.from('outside-secret');
+
+test('reads the file bytes when nothing is swapped', async () => {
+	await withFixture(async ({ allowed }) => {
+		assert.deepEqual(await readUploadFile(join(allowed, 'nested', 'receipt.pdf'), [allowed]), fileBytes);
+	});
+});
+
+test('file swapped for a symlink after validation is not followed', async () => {
+	await withFixture(async ({ allowed, outside }) => {
+		await writeFile(join(outside, 'receipt.pdf'), secretBytes);
+		const target = join(allowed, 'receipt.pdf');
+
+		await assert.rejects(() => readUploadFile(target, [allowed], {
+			beforeOpen: async () => {
+				await rm(target);
+				await symlink(join(outside, 'receipt.pdf'), target);
+			},
+		}), /contentPath not found or not readable/);
+	});
+});
+
+test('parent directory swapped for a symlink after validation is rejected', async () => {
+	await withFixture(async ({ allowed, outside }) => {
+		await writeFile(join(outside, 'receipt.pdf'), secretBytes);
+		const nested = join(allowed, 'nested');
+		const swapIn = async () => {
+			await rename(nested, `${nested}-orig`);
+			await symlink(outside, nested);
+		};
+
+		await assert.rejects(() => readUploadFile(join(nested, 'receipt.pdf'), [allowed], { beforeOpen: swapIn }), /outside the allowed upload directories/);
+	});
+});
+
+test('parent directory swapped out and back around the open is rejected by inode identity', async () => {
+	await withFixture(async ({ allowed, outside }) => {
+		await writeFile(join(outside, 'receipt.pdf'), secretBytes);
+		const nested = join(allowed, 'nested');
+
+		await assert.rejects(() => readUploadFile(join(nested, 'receipt.pdf'), [allowed], {
+			beforeOpen: async () => {
+				await rename(nested, `${nested}-orig`);
+				await symlink(outside, nested);
+			},
+			afterOpen: async () => {
+				await rm(nested);
+				await rename(`${nested}-orig`, nested);
+			},
+		}), /outside the allowed upload directories/);
 	});
 });

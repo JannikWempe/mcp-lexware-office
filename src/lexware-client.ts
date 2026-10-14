@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { readFile, realpath, stat } from 'node:fs/promises';
-import { basename, delimiter, isAbsolute, relative, resolve, sep } from 'node:path';
+import { constants as fsConstants } from 'node:fs';
+import { type FileHandle, lstat, open, realpath, stat } from 'node:fs/promises';
+import { basename, delimiter, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-spec.js';
@@ -551,45 +552,84 @@ async function serializeRequestBody(request: NormalizedRequest, headers: Record<
 	throw new Error('Non-JSON request bodies must be strings or use rawBody=true with an explicit contentType.');
 }
 
-async function readUploadFile(contentPath: string, uploadDirs: string[]): Promise<Buffer<ArrayBuffer>> {
-	const realPath = await resolveAllowedUploadPath(contentPath, uploadDirs);
-	let stats;
-	try {
-		stats = await stat(realPath);
-	} catch {
-		throw new Error(`multipart contentPath not found or not readable: ${contentPath}`);
-	}
-	if (!stats.isFile()) {
-		throw new Error(`multipart contentPath must be a regular file: ${contentPath}`);
-	}
-	if (stats.size > MAX_UPLOAD_FILE_BYTES) {
-		throw new Error(`multipart contentPath file is ${stats.size} bytes, exceeding the ${MAX_UPLOAD_FILE_BYTES} byte upload limit: ${contentPath}`);
-	}
-	return readFile(realPath) as Promise<Buffer<ArrayBuffer>>;
+export interface UploadReadHooks {
+	// Test seams around the open, to simulate paths being swapped (TOCTOU).
+	beforeOpen?: () => Promise<void>;
+	afterOpen?: () => Promise<void>;
 }
 
-// Returns the real path of contentPath if it lies inside one of the upload dirs (after
-// resolving symlinks on both sides). Paths outside the allowlist always get the same error,
-// whether or not they exist, so the check is not a file-existence oracle.
-async function resolveAllowedUploadPath(contentPath: string, uploadDirs: string[]): Promise<string> {
+// Reads contentPath via a file descriptor and re-verifies after opening that the path still
+// resolves to the opened inode inside an allowed dir, so a path swapped after validation
+// (file or parent directory replaced by a symlink) cannot leak a file from outside.
+export async function readUploadFile(contentPath: string, uploadDirs: string[], hooks: UploadReadHooks = {}): Promise<Buffer<ArrayBuffer>> {
+	const realPath = await resolveAllowedUploadPath(contentPath, uploadDirs);
+	const notFound = () => new Error(`multipart contentPath not found or not readable: ${contentPath}`);
+	await hooks.beforeOpen?.();
+	let handle: FileHandle;
+	try {
+		// O_NONBLOCK keeps a FIFO from blocking the open; it is rejected as non-regular below.
+		handle = await open(realPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+	} catch {
+		throw notFound();
+	}
+	try {
+		await hooks.afterOpen?.();
+		const stats = await handle.stat();
+		const pathStats = await stat(await resolveAllowedUploadPath(realPath, uploadDirs, contentPath)).catch(() => undefined);
+		if (pathStats === undefined || pathStats.dev !== stats.dev || pathStats.ino !== stats.ino) {
+			throw notAllowedUploadPath(contentPath);
+		}
+		if (!stats.isFile()) {
+			throw new Error(`multipart contentPath must be a regular file: ${contentPath}`);
+		}
+		if (stats.size > MAX_UPLOAD_FILE_BYTES) {
+			throw new Error(`multipart contentPath file is ${stats.size} bytes, exceeding the ${MAX_UPLOAD_FILE_BYTES} byte upload limit: ${contentPath}`);
+		}
+		try {
+			return await handle.readFile() as Buffer<ArrayBuffer>;
+		} catch {
+			throw notFound();
+		}
+	} finally {
+		await handle.close();
+	}
+}
+
+const notAllowedUploadPath = (contentPath: string) => new Error(`multipart contentPath is outside the allowed upload directories (LEXWARE_OFFICE_UPLOAD_DIRS): ${contentPath}`);
+
+// Returns the real path of path if it lies inside one of the upload dirs (after resolving
+// symlinks on both sides). Paths outside the allowlist always get the same error, whether or
+// not they exist, so the check is not a file-existence oracle. contentPath is what errors show.
+async function resolveAllowedUploadPath(path: string, uploadDirs: string[], contentPath = path): Promise<string> {
 	if (uploadDirs.length === 0) {
 		throw new Error('multipart contentPath uploads are disabled. Set LEXWARE_OFFICE_UPLOAD_DIRS to the directories uploads may be read from, or send the file with contentBase64.');
 	}
-	const notAllowed = () => new Error(`multipart contentPath is outside the allowed upload directories (LEXWARE_OFFICE_UPLOAD_DIRS): ${contentPath}`);
 
 	const realDirs = (await Promise.all(uploadDirs.map((dir) => realpath(dir).catch(() => undefined))))
 		.filter((dir): dir is string => dir !== undefined);
-	const lexicalPath = resolve(contentPath);
+	const isAllowed = (realPath: string) => realDirs.some((dir) => isInsideDir(realPath, dir));
+	const lexicalPath = resolve(path);
 	let realPath: string;
 	try {
 		realPath = await realpath(lexicalPath);
 	} catch {
-		// Only report "not found" for paths that would be allowed if they existed.
-		if (![...uploadDirs.map((dir) => resolve(dir)), ...realDirs].some((dir) => isInsideDir(lexicalPath, dir))) throw notAllowed();
+		// Only report "not found" if the nearest existing entry on the path really lies inside
+		// an allowed dir; a symlink (dangling or to a dir) pointing outside gets the uniform error.
+		const existing = await nearestExistingPath(lexicalPath);
+		const realExisting = existing !== undefined ? await realpath(existing).catch(() => undefined) : undefined;
+		if (realExisting === undefined || !isAllowed(realExisting)) throw notAllowedUploadPath(contentPath);
 		throw new Error(`multipart contentPath not found or not readable: ${contentPath}`);
 	}
-	if (!realDirs.some((dir) => isInsideDir(realPath, dir))) throw notAllowed();
+	if (!isAllowed(realPath)) throw notAllowedUploadPath(contentPath);
 	return realPath;
+}
+
+// Walks up from path to the first entry that exists (lstat, so dangling symlinks count).
+async function nearestExistingPath(path: string): Promise<string | undefined> {
+	for (let current = path; ; current = dirname(current)) {
+		if (await lstat(current).then(() => true, () => false)) return current;
+		if (dirname(current) === current) return undefined;
+	}
 }
 
 function isInsideDir(path: string, dir: string): boolean {
