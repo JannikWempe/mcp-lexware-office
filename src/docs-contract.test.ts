@@ -45,3 +45,20 @@ test('guide voucherlist examples use totalAmount', () => {
 		'guide.md voucherlist example should reference totalAmount',
 	);
 });
+
+const readme = readFileSync(join(__dirname, '../README.md'), 'utf8');
+
+test('docs explain the contentPath upload allowlist and its migration', () => {
+	for (const doc of [guide, readme]) {
+		assert.match(doc, /LEXWARE_OFFICE_UPLOAD_DIRS/);
+		assert.match(doc, /-e LEXWARE_OFFICE_UPLOAD_DIRS=\/data/, 'Docker example must set the upload dir to the container path');
+	}
+	assert.match(guide, /^## Migrating: `contentPath` requires `LEXWARE_OFFICE_UPLOAD_DIRS`$/m);
+	assert.match(readme, /docs\/guide\.md#migrating-contentpath-requires-lexware_office_upload_dirs/);
+});
+
+test('guide documents the execute requests audit log and cancellation', () => {
+	assert.match(guide, /`requests` is an audit log/);
+	assert.match(guide, /Execution cancelled by client/);
+	assert.match(guide, /429/);
+});

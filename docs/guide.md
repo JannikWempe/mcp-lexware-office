@@ -100,6 +100,7 @@ async () => {
 - rejects absolute URLs and external hosts,
 - hides the API key from sandboxed code,
 - rate-limits host requests to 2 requests/second by default,
+- retries a `GET` once when Lexware answers `429` with `Retry-After` ≤ 5 s (writes are never retried),
 - returns JSON/text or binary metadata,
 - adds operation metadata when the request matches the catalog,
 - allows unknown `/v1/...` paths for API coverage gaps.
@@ -120,7 +121,17 @@ declare const lexware: {
 
 ### Tool results and metadata
 
-Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount` for `execute`; `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent` unless the serialized JSON exceeds the 24,000-character truncation limit — then only the truncated text block is returned. No `outputSchema` is declared because `result` is arbitrary.
+Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount` and `requests` for `execute`; `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent` unless the serialized JSON exceeds the 24,000-character truncation limit — then only the truncated text block is returned. No `outputSchema` is declared because `result` is arbitrary.
+
+`requests` is an audit log of every HTTP attempt `execute` made, in order — present on success and on failure:
+
+```json
+{ "method": "POST", "path": "/v1/invoices", "status": 201, "ok": true, "write": true, "durationMs": 412 }
+```
+
+Failed attempts (blocked writes, network errors, timeouts, cancellations) carry `error` instead of `status`/`ok`; a retried `429` shows up as two entries. Entries never contain headers, query values, bodies, or the API key. Use it after a failed execution to see which writes already succeeded before retrying. `requestCount` still counts `lexware.request` calls from the sandbox (limited by `maxRequests`).
+
+Cancellation: when the client cancels a `search`/`execute` call, the execution ends with `Execution cancelled by client` and in-flight Lexware requests are aborted (they appear in `requests` with a cancelled `error`). The same happens when `execute` hits its 30 s timeout (`Execution timed out after 30000ms`). A single Lexware request times out after 25 s.
 
 Tools carry MCP annotations and titles so clients can label and gate them:
 
@@ -153,8 +164,9 @@ async () => {
 }
 ```
 
+- `contentPath` is disabled unless the server sets `LEXWARE_OFFICE_UPLOAD_DIRS` (see [Upload directories](#upload-directories)); the file must lie inside one of those directories. Without it, use `contentBase64`.
 - `contentPath` must be an absolute path to a regular file on the machine running the MCP server (25 MB cap).
-- In Docker, `contentPath` refers to the container's filesystem: mount the directory (e.g. `-v /host/dir:/data:ro`) and pass `/data/...` paths.
+- In Docker, `contentPath` refers to the container's filesystem: mount the directory and set `LEXWARE_OFFICE_UPLOAD_DIRS` to the container path (e.g. `-v /host/dir:/data:ro -e LEXWARE_OFFICE_UPLOAD_DIRS=/data`), then pass `/data/...` paths.
 - `filename` defaults to the `contentPath` basename.
 - Uploads are writes: they require `LEXWARE_OFFICE_ALLOW_WRITES=true`. Check `spec.info.writesEnabled` to branch early.
 
@@ -174,9 +186,25 @@ Key constraints:
 - `body`, `bodyBase64`, and `multipart` are mutually exclusive — set at most one per request.
 - `value`, `contentBase64`, and `contentPath` are mutually exclusive within a single multipart part — set exactly one.
 - GET requests may not include any body mode.
-- Invalid base64 and unreadable `contentPath` files are rejected before the request is sent.
+- Invalid base64 and unreadable or non-allowlisted `contentPath` files are rejected before the request is sent.
 - Endpoints cataloged as `multipart/form-data` reject `body`/`bodyBase64` up front (instead of an opaque Lexware 500) unless an explicit `contentType` containing `multipart/` and a boundary marks a deliberately hand-rolled body.
 - Requests with binary payloads echo `response.sent` (`bytes`, `sha256` per part) so callers can verify what was uploaded.
+
+### Upload directories
+
+`LEXWARE_OFFICE_UPLOAD_DIRS` is the allowlist of directories `contentPath` may read from, separated by the platform path delimiter (`:` on macOS/Linux, `;` on Windows):
+
+```json
+{
+  "LEXWARE_OFFICE_ALLOW_WRITES": "true",
+  "LEXWARE_OFFICE_UPLOAD_DIRS": "/Users/me/Documents/Belege:/Users/me/Downloads"
+}
+```
+
+- Unset or empty → `contentPath` is disabled; `contentBase64` and `bodyBase64` still work.
+- Both the directories and the file are resolved with `realpath`, so symlinks cannot escape the allowlist. Subdirectories are allowed.
+- Paths outside the allowlist get one uniform error, whether or not the file exists.
+- The write gate runs first: with writes disabled, uploads are blocked before any file is touched.
 
 ### Legacy `rawBody=true`
 
@@ -215,6 +243,10 @@ Important behavior:
 - Default read-only mirrors how Cloudflare's OAuth scope template defaults to read-only; Lexware API keys have no equivalent OAuth scopes, so the MCP server provides the safety boundary.
 - Writes should only be enabled when the user explicitly needs a write operation.
 - The API key remains in the host process and is never exposed to sandboxed code.
+
+## Migrating: `contentPath` requires `LEXWARE_OFFICE_UPLOAD_DIRS`
+
+`multipart` `contentPath` uploads used to read any absolute path on the server machine. They now only read files inside the directories listed in `LEXWARE_OFFICE_UPLOAD_DIRS`, and are disabled when it is unset. If you upload local files via `contentPath`, add the directories holding them (see [Upload directories](#upload-directories)); in Docker, set it to the mounted container path. `contentBase64` uploads are unaffected.
 
 ## Migrating from 1.x
 

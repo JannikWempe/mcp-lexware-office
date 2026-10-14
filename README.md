@@ -5,6 +5,8 @@ An MCP server for [Lexware Office](https://www.lexware.de/lexware-office/) (form
 The server uses **Code Mode**: instead of one MCP tool per API endpoint, it exposes two tools — `search` to explore a curated Lexware API catalog and `execute` to run constrained, sandboxed API workflows. This keeps the tool surface small while covering the whole API, including pagination, aggregation, and multi-step reporting in a single call.
 
 > Upgrading from 1.x? The legacy tool-per-endpoint server was removed in 2.0.0. See [docs/guide.md#migrating-from-1x](docs/guide.md#migrating-from-1x).
+>
+> Using `contentPath` uploads? They now require `LEXWARE_OFFICE_UPLOAD_DIRS`. See [docs/guide.md#migrating-contentpath-requires-lexware_office_upload_dirs](docs/guide.md#migrating-contentpath-requires-lexware_office_upload_dirs).
 
 ## Features
 
@@ -41,11 +43,13 @@ async () => {
 
 The sandbox does **not** receive the Lexware API key, Node globals, filesystem access, imports, `fetch`, or arbitrary network access. `lexware.request` only accepts relative `/v1/...` paths and sends the API key from the host process.
 
+`execute` results include `requests`, an audit log with one `{ method, path, status, ok, error, write, durationMs }` entry per HTTP attempt — also when the execution failed, so you can see which writes already went through. A `GET` answered with `429` and `Retry-After` ≤ 5 s is retried once automatically. Cancelling the tool call (or the 30 s execution timeout) aborts in-flight Lexware requests.
+
 ### Binary-safe file uploads
 
 Uploads are binary-safe via `multipart` parts with `contentPath` (host reads a local file from disk), `contentBase64` (binary FormData parts), or `bodyBase64` (raw binary body). The host reads/decodes and builds `Buffer` / `Blob` bodies outside the QuickJS sandbox.
 
-Preferred: `contentPath` — pass the file's absolute path instead of inlining bytes. Requires `LEXWARE_OFFICE_ALLOW_WRITES=true` (uploads are writes) and works only when the MCP server runs on the machine that has the file:
+Preferred: `contentPath` — pass the file's absolute path instead of inlining bytes. Requires `LEXWARE_OFFICE_ALLOW_WRITES=true` (uploads are writes) and `LEXWARE_OFFICE_UPLOAD_DIRS` (see [Upload directories](#upload-directories)); the file must be on the machine running the MCP server:
 
 ```js
 async () => {
@@ -154,6 +158,19 @@ Use this source-based setup only for development. End users should prefer the pa
 
 See [docs/guide.md#permissions](docs/guide.md#permissions) for the detailed permission model.
 
+### Upload directories
+
+`multipart` `contentPath` uploads are disabled unless `LEXWARE_OFFICE_UPLOAD_DIRS` lists the directories the server may read files from (separated by `:` on macOS/Linux, `;` on Windows):
+
+```json
+{
+  "LEXWARE_OFFICE_ALLOW_WRITES": "true",
+  "LEXWARE_OFFICE_UPLOAD_DIRS": "/Users/me/Documents/Belege:/Users/me/Downloads"
+}
+```
+
+Files must resolve (after following symlinks) to a path inside one of these directories, including subdirectories. Anything else is rejected. `contentBase64` uploads work without this setting.
+
 ## Docker
 
 Build the image:
@@ -171,7 +188,16 @@ docker run -i --rm \
   mcp-lexware-office:latest
 ```
 
-`contentPath` uploads read from the container's filesystem, so they only work for files inside a mounted volume, e.g. add `-v /host/dir:/data:ro` and pass `contentPath: '/data/receipt.pdf'`.
+`contentPath` uploads read from the container's filesystem: mount a volume and set `LEXWARE_OFFICE_UPLOAD_DIRS` to the container path, then pass `contentPath: '/data/receipt.pdf'`:
+
+```bash
+docker run -i --rm \
+  -e LEXWARE_OFFICE_API_KEY \
+  -e LEXWARE_OFFICE_ALLOW_WRITES=true \
+  -e LEXWARE_OFFICE_UPLOAD_DIRS=/data \
+  -v /host/dir:/data:ro \
+  mcp-lexware-office:latest
+```
 
 ## Build and test
 

@@ -1,5 +1,6 @@
-# Upload note: multipart `contentPath` is read from the container's filesystem, so local files
-# are only reachable when mounted, e.g. `docker run -v /host/dir:/data:ro ...` and contentPath '/data/receipt.pdf'.
+# Upload note: multipart `contentPath` is read from the container's filesystem and only from
+# LEXWARE_OFFICE_UPLOAD_DIRS, e.g. `docker run -v /host/dir:/data:ro -e LEXWARE_OFFICE_UPLOAD_DIRS=/data ...`
+# and contentPath '/data/receipt.pdf'.
 FROM node:22.23-alpine AS builder
 
 WORKDIR /app
