@@ -1,18 +1,13 @@
 #!/usr/bin/env node
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { type CallToolResult, McpServer } from '@modelcontextprotocol/server';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 
 import { QuickJsExecutor } from './executor.js';
 import { LexwareApiClient, writesEnabled } from './lexware-client.js';
 import { lexwareSpec } from './lexware-spec.js';
-import { stringifyForMcp } from './truncate.js';
+import { stringifyForMcp, truncateText } from './truncate.js';
 import { VERSION } from './version.js';
-
-const server = new McpServer({
-	name: 'lexware-office',
-	version: VERSION,
-});
 
 const searchExecutor = new QuickJsExecutor();
 const executeExecutor = new QuickJsExecutor();
@@ -23,9 +18,43 @@ const lexwareClient = new LexwareApiClient({ requestTimeoutMs: 25_000 });
 // Inject the current write mode so callers can branch before attempting a write.
 const sandboxSpec = () => ({ ...lexwareSpec, info: { ...lexwareSpec.info, writesEnabled: writesEnabled() } });
 
-server.tool(
-	'search',
-	`Search the curated Lexware Office API catalog by running a JavaScript async arrow function.
+// The text block (truncated) stays for clients without structuredContent support.
+// structuredContent mirrors it but is never truncated, so it is only attached when the
+// full JSON fits within the truncation limit.
+function toolResult(payload: Record<string, unknown>, isError = false): CallToolResult {
+	let json: string | undefined;
+	try {
+		json = JSON.stringify(payload, null, 2);
+	} catch {
+		json = undefined;
+	}
+	const text = json !== undefined ? truncateText(json) : stringifyForMcp(payload);
+	const result: CallToolResult = { content: [{ type: 'text', text }] };
+	if (json !== undefined && text === json) result.structuredContent = payload;
+	if (isError) result.isError = true;
+	return result;
+}
+
+// One McpServer per connection; serveStdio picks the protocol era (2025-era initialize or 2026-07-28 server/discover).
+function createServer(): McpServer {
+	const server = new McpServer(
+		{
+			name: 'lexware-office',
+			version: VERSION,
+		},
+		{
+			instructions: `Lexware Office API via Code Mode: \`search\` explores a curated API catalog, \`execute\` runs a sandboxed JS workflow against the live API.
+Always call \`search\` to discover endpoints, parameters, and workflows before \`execute\`; do not guess /v1 paths from memory.
+The server is read-only unless started with LEXWARE_OFFICE_ALLOW_WRITES=true; check spec.info.writesEnabled before planning writes.
+Summarize, filter, and aggregate inside \`execute\` and return only what is needed — large results are truncated.`,
+		},
+	);
+
+	server.registerTool(
+		'search',
+		{
+			title: 'Search Lexware API catalog',
+			description: `Search the curated Lexware Office API catalog by running a JavaScript async arrow function.
 
 Use this before execute to discover endpoints, request shapes, response notes, workflows, and domain-specific caveats.
 
@@ -52,42 +81,33 @@ async () => {
   const op = spec.paths['/v1/voucherlist']?.get;
   return { summary: op?.summary, parameters: op?.parameters, notes: op?.notes, examples: op?.examples };
 }`,
-	{
-		code: z.string().describe('JavaScript async arrow function to search the Lexware API catalog'),
-	},
-	async ({ code }) => {
-		const execution = await searchExecutor.execute(
-			code,
-			{ spec: sandboxSpec() },
-			{ timeoutMs: 1_000, memoryLimitBytes: 32 * 1024 * 1024, maxStackSizeBytes: 1024 * 1024, filename: 'lexware-search.js' },
-		);
+			inputSchema: z.object({
+				code: z.string().describe('JavaScript async arrow function to search the Lexware API catalog'),
+			}),
+			annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+		},
+		async ({ code }) => {
+			const execution = await searchExecutor.execute(
+				code,
+				{ spec: sandboxSpec() },
+				{ timeoutMs: 1_000, memoryLimitBytes: 32 * 1024 * 1024, maxStackSizeBytes: 1024 * 1024, filename: 'lexware-search.js' },
+			);
 
-		if (execution.error) {
-			return {
-				content: [
-					{
-						type: 'text',
-						text: stringifyForMcp({ ok: false, error: execution.error, logs: execution.logs ?? [] }),
-					},
-				],
-				isError: true,
-			};
-		}
+			if (execution.error) {
+				return toolResult({ ok: false, error: execution.error, logs: execution.logs ?? [] }, true);
+			}
 
-		return {
-			content: [
-				{
-					type: 'text',
-					text: stringifyForMcp({ ok: true, result: execution.result, logs: execution.logs ?? [] }),
-				},
-			],
-		};
-	},
-);
+			return toolResult({ ok: true, result: execution.result, logs: execution.logs ?? [] });
+		},
+	);
 
-server.tool(
-	'execute',
-	`Execute a constrained Lexware Office API workflow by running a JavaScript async arrow function.
+	const writes = writesEnabled();
+
+	server.registerTool(
+		'execute',
+		{
+			title: 'Execute Lexware API workflow',
+			description: `Execute a constrained Lexware Office API workflow by running a JavaScript async arrow function.
 
 Use search first when you need endpoint/domain guidance; do not guess Lexware paths from memory. The sandbox exposes no API key, filesystem, process, imports, fetch, or arbitrary network access.
 
@@ -167,70 +187,54 @@ async () => {
   });
   return { status: response.status, id: response.data?.id, sent: response.sent };
 }`,
-	{
-		code: z.string().describe('JavaScript async arrow function to execute a constrained Lexware API workflow'),
-		maxRequests: z
-			.number()
-			.int()
-			.min(1)
-			.max(50)
-			.optional()
-			.default(10)
-			.describe('Maximum number of Lexware API requests this execution may perform.'),
-	},
-	async ({ code, maxRequests }) => {
-		let requestCount = 0;
-		const execution = await executeExecutor.execute(
-			code,
-			{ spec: sandboxSpec() },
-			{
-				timeoutMs: 30_000,
-				memoryLimitBytes: 32 * 1024 * 1024,
-				maxStackSizeBytes: 1024 * 1024,
-				filename: 'lexware-execute.js',
-				hostFunctions: {
-					__lexwareRequestJson: async (payload) => {
-						requestCount += 1;
-						if (requestCount > maxRequests) {
-							throw new Error(`Execution exceeded maxRequests=${maxRequests}`);
-						}
-						const request = JSON.parse(payload) as unknown;
-						const response = await lexwareClient.request(request);
-						return JSON.stringify(response);
-					},
-				},
-			},
-		);
-
-		if (execution.error) {
-			return {
-				content: [
-					{
-						type: 'text',
-						text: stringifyForMcp({ ok: false, error: execution.error, logs: execution.logs ?? [], requestCount }),
-					},
-				],
-				isError: true,
-			};
-		}
-
-		return {
-			content: [
+			inputSchema: z.object({
+				code: z.string().describe('JavaScript async arrow function to execute a constrained Lexware API workflow'),
+				maxRequests: z
+					.number()
+					.int()
+					.min(1)
+					.max(50)
+					.optional()
+					.default(10)
+					.describe('Maximum number of Lexware API requests this execution may perform.'),
+			}),
+			annotations: { readOnlyHint: !writes, destructiveHint: writes, idempotentHint: false, openWorldHint: true },
+		},
+		async ({ code, maxRequests }) => {
+			let requestCount = 0;
+			const execution = await executeExecutor.execute(
+				code,
+				{ spec: sandboxSpec() },
 				{
-					type: 'text',
-					text: stringifyForMcp({ ok: true, result: execution.result, logs: execution.logs ?? [], requestCount }),
+					timeoutMs: 30_000,
+					memoryLimitBytes: 32 * 1024 * 1024,
+					maxStackSizeBytes: 1024 * 1024,
+					filename: 'lexware-execute.js',
+					hostFunctions: {
+						__lexwareRequestJson: async (payload) => {
+							requestCount += 1;
+							if (requestCount > maxRequests) {
+								throw new Error(`Execution exceeded maxRequests=${maxRequests}`);
+							}
+							const request = JSON.parse(payload) as unknown;
+							const response = await lexwareClient.request(request);
+							return JSON.stringify(response);
+						},
+					},
 				},
-			],
-		};
-	},
-);
+			);
 
-async function main(): Promise<void> {
-	const transport = new StdioServerTransport();
-	await server.connect(transport);
+			if (execution.error) {
+				return toolResult({ ok: false, error: execution.error, logs: execution.logs ?? [], requestCount }, true);
+			}
+
+			return toolResult({ ok: true, result: execution.result, logs: execution.logs ?? [], requestCount });
+		},
+	);
+
+	return server;
 }
 
-main().catch((error) => {
-	console.error('Fatal error in Lexware Office MCP server:', error);
-	process.exit(1);
+serveStdio(createServer, {
+	onerror: (error) => console.error('Lexware Office MCP server error:', error),
 });

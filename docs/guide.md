@@ -118,6 +118,17 @@ declare const lexware: {
 };
 ```
 
+### Tool results and metadata
+
+Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount` for `execute`; `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent` unless the serialized JSON exceeds the 24,000-character truncation limit — then only the truncated text block is returned. No `outputSchema` is declared because `result` is arbitrary.
+
+Tools carry MCP annotations and titles so clients can label and gate them:
+
+- `search` — `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
+- `execute` — `openWorldHint: true`, `idempotentHint: false`; `readOnlyHint`/`destructiveHint` follow the write mode at server startup (`readOnlyHint: true` when writes are blocked, `destructiveHint: true` when `LEXWARE_OFFICE_ALLOW_WRITES=true`).
+
+The server also sends short `instructions` at initialization (search before execute, check `spec.info.writesEnabled`, aggregate inside `execute`). It is built on MCP TypeScript SDK v2 and negotiates both the 2025-era `initialize` handshake and protocol revision 2026-07-28.
+
 ## Binary-safe file uploads
 
 Three binary-safe upload modes are supported in addition to the legacy `rawBody=true` string-based multipart. Prefer `multipart` with `contentPath` — the file's bytes never pass through the model or the sandbox.

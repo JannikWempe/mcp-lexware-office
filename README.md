@@ -23,6 +23,8 @@ The server exposes two MCP tools:
 - `search` — runs a sandboxed JavaScript async arrow function against a curated OpenAPI-lite Lexware catalog.
 - `execute` — runs a sandboxed JavaScript async arrow function with one host capability, `lexware.request`, for relative `/v1/...` Lexware API calls.
 
+Both tools declare MCP annotations (`search` is read-only; `execute` is marked destructive only when writes are enabled) and return `structuredContent` alongside the JSON text block. Built on the MCP TypeScript SDK v2 (protocol revision 2026-07-28 and 2025-era clients). See [docs/guide.md](docs/guide.md#tool-results-and-metadata).
+
 Example `execute` call:
 
 ```js

@@ -37,7 +37,7 @@ const clientWithCalls = (handler: (input: RequestInfo | URL, init?: RequestInit)
 
 test('server registers exactly search and execute tools', async () => {
 	const source = await readFile('src/index.ts', 'utf8');
-	const tools = [...source.matchAll(/server\.tool\(\n\t'([^']+)'/g)].map((match) => match[1]);
+	const tools = [...source.matchAll(/server\.registerTool\(\n\s*'([^']+)'/g)].map((match) => match[1]);
 
 	assert.deepEqual(tools, ['search', 'execute']);
 	assert.doesNotMatch(source, /get-revenue-summary|allowWrite/);
