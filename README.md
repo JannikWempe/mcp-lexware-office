@@ -159,7 +159,7 @@ See [docs/guide.md#permissions](docs/guide.md#permissions) for the detailed perm
 Build the image:
 
 ```bash
-docker build -t mcp-lexware-office:latest -f src/Dockerfile .
+docker build -t mcp-lexware-office:latest .
 ```
 
 Run it:
@@ -170,6 +170,8 @@ docker run -i --rm \
   -e LEXWARE_OFFICE_READ_ONLY=true \
   mcp-lexware-office:latest
 ```
+
+`contentPath` uploads read from the container's filesystem, so they only work for files inside a mounted volume, e.g. add `-v /host/dir:/data:ro` and pass `contentPath: '/data/receipt.pdf'`.
 
 ## Build and test
 

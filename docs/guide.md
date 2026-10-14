@@ -154,6 +154,7 @@ async () => {
 ```
 
 - `contentPath` must be an absolute path to a regular file on the machine running the MCP server (25 MB cap).
+- In Docker, `contentPath` refers to the container's filesystem: mount the directory (e.g. `-v /host/dir:/data:ro`) and pass `/data/...` paths.
 - `filename` defaults to the `contentPath` basename.
 - Uploads are writes: they require `LEXWARE_OFFICE_ALLOW_WRITES=true`. Check `spec.info.writesEnabled` to branch early.
 
