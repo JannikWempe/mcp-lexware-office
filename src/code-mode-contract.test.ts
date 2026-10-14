@@ -44,6 +44,8 @@ test('server registers exactly search and execute tools', async () => {
 	assert.doesNotMatch(source, /get-revenue-summary|allowWrite/);
 	assert.match(source, /spec\.info\.domainIndex: compact map/);
 	assert.match(source, /lexware\.request returns all HTTP responses/);
+	assert.match(source, /contentPath.*LEXWARE_OFFICE_UPLOAD_DIRS/);
+	assert.match(source, /The tool result includes requests/);
 });
 
 test('execute sandbox exposes generic request but not API key or Node globals', async () => {

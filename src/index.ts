@@ -4,15 +4,17 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 
 import { QuickJsExecutor } from './executor.js';
-import { LexwareApiClient, writesEnabled } from './lexware-client.js';
+import { LexwareApiClient, type RequestLogEntry, writesEnabled } from './lexware-client.js';
 import { lexwareSpec } from './lexware-spec.js';
 import { stringifyForMcp, truncateText } from './truncate.js';
 import { VERSION } from './version.js';
 
 const searchExecutor = new QuickJsExecutor();
 const executeExecutor = new QuickJsExecutor();
-// Use a shorter per-request timeout than the executor timeout (30 s) so that
-// slow Lexware requests fail with a clean error before the sandbox is torn down.
+// Use a shorter per-request timeout than the executor timeout (30 s) so that a single
+// slow Lexware request fails with a clean error the sandbox can still handle. Request
+// chains (incl. a GET 429 retry waiting up to 5 s) can exceed 30 s; the executor then
+// aborts in-flight requests and reports them as cancelled in `requests`.
 const lexwareClient = new LexwareApiClient({ requestTimeoutMs: 25_000 });
 
 // Inject the current write mode so callers can branch before attempting a write.
@@ -86,11 +88,17 @@ async () => {
 			}),
 			annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
 		},
-		async ({ code }) => {
+		async ({ code }, ctx) => {
 			const execution = await searchExecutor.execute(
 				code,
 				{ spec: sandboxSpec() },
-				{ timeoutMs: 1_000, memoryLimitBytes: 32 * 1024 * 1024, maxStackSizeBytes: 1024 * 1024, filename: 'lexware-search.js' },
+				{
+					timeoutMs: 1_000,
+					memoryLimitBytes: 32 * 1024 * 1024,
+					maxStackSizeBytes: 1024 * 1024,
+					filename: 'lexware-search.js',
+					signal: ctx.mcpReq.signal,
+				},
 			);
 
 			if (execution.error) {
@@ -141,7 +149,7 @@ type MultipartPart = {
   name: string;
   value?: string; // plain text form field
   contentBase64?: string; // binary part content as base64; host decodes it
-  contentPath?: string; // absolute file path on the MCP server machine; host reads the file directly — preferred for local files (no base64, no size blowup)
+  contentPath?: string; // absolute file path on the MCP server machine; host reads it directly (no base64 blowup). Only works if the server sets LEXWARE_OFFICE_UPLOAD_DIRS and the file is inside one of those dirs; otherwise use contentBase64
   filename?: string; // defaults to the contentPath basename
   contentType?: string;
 };
@@ -163,7 +171,9 @@ type LexwareResponse<T = unknown> = {
   sent?: { bytes: number; sha256?: string; parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }> }; // echo of uploaded binary payloads for integrity checks
 };
 
-lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw.
+lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. A GET answered with 429 and Retry-After <= 5s is retried once automatically.
+
+The tool result includes requests: one { method, path, status?, ok?, error?, write, durationMs } entry per HTTP attempt, also when execution failed — check it to see which writes already succeeded before retrying.
 
 This server is read-only by default. POST, PUT, PATCH, and DELETE are blocked unless the server is started with LEXWARE_OFFICE_ALLOW_WRITES=true. Setting LEXWARE_OFFICE_READ_ONLY=true is a hard block that overrides ALLOW_WRITES. Check spec.info.writesEnabled to branch before attempting a write.
 
@@ -174,7 +184,7 @@ async () => {
   return { status: response.status, request: response.request, data: response.data };
 }
 
-File upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath and the host reads it from disk:
+File upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath (requires LEXWARE_OFFICE_UPLOAD_DIRS, see MultipartPart) and the host reads it from disk:
 
 async () => {
   const response = await lexware.request({
@@ -200,8 +210,9 @@ async () => {
 			}),
 			annotations: { readOnlyHint: !writes, destructiveHint: writes, idempotentHint: false, openWorldHint: true },
 		},
-		async ({ code, maxRequests }) => {
+		async ({ code, maxRequests }, ctx) => {
 			let requestCount = 0;
+			const requests: RequestLogEntry[] = [];
 			const execution = await executeExecutor.execute(
 				code,
 				{ spec: sandboxSpec() },
@@ -210,14 +221,15 @@ async () => {
 					memoryLimitBytes: 32 * 1024 * 1024,
 					maxStackSizeBytes: 1024 * 1024,
 					filename: 'lexware-execute.js',
+					signal: ctx.mcpReq.signal,
 					hostFunctions: {
-						__lexwareRequestJson: async (payload) => {
+						__lexwareRequestJson: async (payload, { signal }) => {
 							requestCount += 1;
 							if (requestCount > maxRequests) {
 								throw new Error(`Execution exceeded maxRequests=${maxRequests}`);
 							}
 							const request = JSON.parse(payload) as unknown;
-							const response = await lexwareClient.request(request);
+							const response = await lexwareClient.request(request, { signal, onSettled: (entry) => requests.push(entry) });
 							return JSON.stringify(response);
 						},
 					},
@@ -225,10 +237,10 @@ async () => {
 			);
 
 			if (execution.error) {
-				return toolResult({ ok: false, error: execution.error, logs: execution.logs ?? [], requestCount }, true);
+				return toolResult({ ok: false, error: execution.error, logs: execution.logs ?? [], requestCount, requests }, true);
 			}
 
-			return toolResult({ ok: true, result: execution.result, logs: execution.logs ?? [], requestCount });
+			return toolResult({ ok: true, result: execution.result, logs: execution.logs ?? [], requestCount, requests });
 		},
 	);
 
