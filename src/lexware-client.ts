@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, isAbsolute } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-spec.js';
 import { truncateText } from './truncate.js';
@@ -42,7 +43,10 @@ export interface LexwareClientOptions {
 	rateLimitIntervalMs?: number;
 }
 
-export interface LexwareRequestOptions {}
+export interface LexwareRequestOptions {
+	// Cancels the request: while queued for the rate limiter, before sending, or during fetch.
+	signal?: AbortSignal;
+}
 
 export interface LexwareResponse {
 	ok: boolean;
@@ -121,7 +125,7 @@ export class LexwareApiClient {
 		this.rateLimitIntervalMs = options.rateLimitIntervalMs ?? DEFAULT_RATE_LIMIT_INTERVAL_MS;
 	}
 
-	async request(input: unknown, _options: LexwareRequestOptions = {}): Promise<LexwareResponse> {
+	async request(input: unknown, options: LexwareRequestOptions = {}): Promise<LexwareResponse> {
 		const apiKey = this.apiKey;
 		if (!apiKey) {
 			throw new Error('LEXWARE_OFFICE_API_KEY environment variable is required for the execute tool');
@@ -132,13 +136,30 @@ export class LexwareApiClient {
 			throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
 		}
 
-		await this.waitForRateLimitTurn();
+		const signal = options.signal;
+		const cancelledError = () => new Error(`Lexware API request cancelled for ${normalized.method} ${normalized.path}`);
+		if (signal?.aborted) throw cancelledError();
+
+		try {
+			await this.waitForRateLimitTurn(signal);
+		} catch (error) {
+			if (signal?.aborted) throw cancelledError();
+			throw error;
+		}
 
 		const url = new URL(normalized.path, this.baseUrl);
 		url.search = normalized.query.toString();
 
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+		const timeoutController = new AbortController();
+		const timeout = setTimeout(() => timeoutController.abort(), this.requestTimeoutMs);
+		const fetchSignal = signal !== undefined ? AbortSignal.any([signal, timeoutController.signal]) : timeoutController.signal;
+		const abortedError = (error: unknown): Error | undefined => {
+			if (signal?.aborted) return cancelledError();
+			if (timeoutController.signal.aborted || isAbortError(error)) {
+				return new Error(`Lexware API request timed out after ${this.requestTimeoutMs}ms for ${normalized.method} ${normalized.path}`);
+			}
+			return undefined;
+		};
 		try {
 			const headers: Record<string, string> = {
 				'User-Agent': this.userAgent,
@@ -147,6 +168,7 @@ export class LexwareApiClient {
 			};
 
 			const { body, sent } = await serializeRequestBody(normalized, headers);
+			if (signal?.aborted) throw cancelledError();
 
 			let response: Response;
 			try {
@@ -154,34 +176,62 @@ export class LexwareApiClient {
 					method: normalized.method,
 					headers,
 					body,
-					signal: controller.signal,
+					signal: fetchSignal,
 				});
 			} catch (error) {
-				if (controller.signal.aborted || isAbortError(error)) {
-					throw new Error(`Lexware API request timed out after ${this.requestTimeoutMs}ms for ${normalized.method} ${normalized.path}`);
-				}
-				throw new Error(`Lexware API network error for ${normalized.method} ${normalized.path}: ${sanitizeFetchErrorMessage(error, apiKey)}`);
+				throw abortedError(error) ?? new Error(`Lexware API network error for ${normalized.method} ${normalized.path}: ${sanitizeFetchErrorMessage(error, apiKey)}`);
 			}
 
-			const parsed = await parseResponse(response, normalized, this.maxResponseChars);
+			let parsed: LexwareResponse;
+			try {
+				parsed = await parseResponse(response, normalized, this.maxResponseChars);
+			} catch (error) {
+				throw abortedError(error) ?? error;
+			}
 			return sent !== undefined ? { ...parsed, sent } : parsed;
 		} finally {
 			clearTimeout(timeout);
 		}
 	}
 
-	private waitForRateLimitTurn(): Promise<void> {
-		if (this.rateLimitIntervalMs <= 0) return Promise.resolve();
+	// Serializes requests through a promise chain. A waiter cancelled mid-wait rejects
+	// immediately but only releases its slot once its predecessor is done, and it never
+	// claims the next send slot, so later waiters keep the configured spacing.
+	private async waitForRateLimitTurn(signal: AbortSignal | undefined): Promise<void> {
+		if (this.rateLimitIntervalMs <= 0) return;
 
-		const wait = this.rateLimitQueue.then(async () => {
-			const now = Date.now();
-			const delayMs = Math.max(0, this.nextRequestAtMs - now);
-			if (delayMs > 0) await delay(delayMs);
+		const previous = this.rateLimitQueue;
+		let release!: () => void;
+		this.rateLimitQueue = new Promise<void>((resolve) => { release = resolve; });
+		try {
+			await untilAborted(previous, signal);
+			const delayMs = Math.max(0, this.nextRequestAtMs - Date.now());
+			if (delayMs > 0) await sleep(delayMs, undefined, signal !== undefined ? { signal } : undefined);
 			this.nextRequestAtMs = Date.now() + this.rateLimitIntervalMs;
-		});
-		this.rateLimitQueue = wait.catch(() => undefined);
-		return wait;
+		} finally {
+			void previous.then(release);
+		}
 	}
+}
+
+// Resolves with `promise`, or rejects as soon as `signal` aborts.
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (signal === undefined) return promise;
+	signal.throwIfAborted();
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener('abort', onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener('abort', onAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener('abort', onAbort);
+				reject(error);
+			},
+		);
+	});
 }
 
 function normalizeRequest(input: unknown): NormalizedRequest {
@@ -595,10 +645,6 @@ function writesAreGloballyDisabled(): boolean {
 	if (process.env.LEXWARE_OFFICE_READ_ONLY === 'true') return true;
 	// Writes are blocked by default. Writes require explicit opt-in.
 	return process.env.LEXWARE_OFFICE_ALLOW_WRITES !== 'true';
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function headersToObject(headers: Headers): Record<string, string> {

@@ -8,7 +8,12 @@ export interface CodeExecutor {
 	): Promise<CodeExecutionResult>;
 }
 
-export type SandboxHostFunction = (payload: string) => Promise<string>;
+export interface SandboxHostCallContext {
+	// Aborted when the execution times out, is cancelled via CodeExecutorOptions.signal, or finishes.
+	signal: AbortSignal;
+}
+
+export type SandboxHostFunction = (payload: string, context: SandboxHostCallContext) => Promise<string>;
 
 export interface CodeExecutorOptions {
 	timeoutMs?: number;
@@ -18,6 +23,8 @@ export interface CodeExecutorOptions {
 	maxLogChars?: number;
 	filename?: string;
 	hostFunctions?: Record<string, SandboxHostFunction>;
+	// External cancellation (e.g. the MCP request signal). Aborting ends execution with a cancelled error.
+	signal?: AbortSignal;
 }
 
 export interface CodeExecutionResult {
@@ -31,6 +38,7 @@ const DEFAULT_MEMORY_LIMIT_BYTES = 32 * 1024 * 1024;
 const DEFAULT_MAX_STACK_SIZE_BYTES = 1024 * 1024;
 const DEFAULT_MAX_LOG_ENTRIES = 25;
 const DEFAULT_MAX_LOG_CHARS = 8_000;
+const CANCELLED_MESSAGE = 'Execution cancelled by client';
 
 export class QuickJsExecutor implements CodeExecutor {
 	async execute(
@@ -38,6 +46,8 @@ export class QuickJsExecutor implements CodeExecutor {
 		capabilities: Record<string, unknown>,
 		options: CodeExecutorOptions = {},
 	): Promise<CodeExecutionResult> {
+		if (options.signal?.aborted) return { error: `Error: ${CANCELLED_MESSAGE}`, logs: [] };
+
 		const QuickJS = await getQuickJS();
 		const runtime = QuickJS.newRuntime();
 		const vm = runtime.newContext();
@@ -74,18 +84,31 @@ export class QuickJsExecutor implements CodeExecutor {
 		// we don't dispose the VM while a callback is mid-flight.
 		const pendingHostCalls = new Set<Promise<void>>();
 
+		// Aborted in finally, i.e. as soon as execution ends for any reason (result, error,
+		// timeout, external cancellation), so in-flight host calls stop their network requests.
+		const hostCallController = new AbortController();
+
 		try {
 			for (const [name, handler] of Object.entries(options.hostFunctions ?? {})) {
 				vm.newFunction(name, (payloadHandle) => {
 					const payload = vm.getString(payloadHandle);
 					const deferred = vm.newPromise();
+
+					// Guest code can still call host functions while teardown drains its
+					// continuations; reject those immediately instead of starting new work.
+					if (hostCallController.signal.aborted) {
+						const errorHandle = vm.newError({ name: 'Error', message: 'Sandbox execution has ended' });
+						deferred.reject(errorHandle);
+						errorHandle.dispose();
+						return deferred.handle;
+					}
 					unsettledDeferreds.add(deferred);
 
 					let resolveTracked!: () => void;
 					const tracked = new Promise<void>((res) => { resolveTracked = res; });
 					pendingHostCalls.add(tracked);
 
-					handler(payload)
+					handler(payload, { signal: hostCallController.signal })
 						.then(
 							(result) => {
 								if (!vmDisposed) {
@@ -339,7 +362,7 @@ export class QuickJsExecutor implements CodeExecutor {
 					promiseHandle.dispose();
 					return { error, logs };
 				}
-				resolved = await withTimeout(nativePromise, timeoutMs);
+				resolved = await withTimeoutAndCancel(nativePromise, timeoutMs, options.signal);
 				sandboxNativePromise = undefined;
 				promiseHandle.dispose();
 			} catch (error) {
@@ -359,6 +382,7 @@ export class QuickJsExecutor implements CodeExecutor {
 		} finally {
 			// Signal host callbacks not to touch the VM anymore.
 			vmDisposed = true;
+			hostCallController.abort();
 
 			// Reject every unsettled QuickJS deferred. Without this, the resolveHandle /
 			// rejectHandle inside each deferred remain live in QuickJS's GC list and
@@ -416,16 +440,33 @@ export class QuickJsExecutor implements CodeExecutor {
 	}
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+function withTimeoutAndCancel<T>(promise: Promise<T>, timeoutMs: number, signal: AbortSignal | undefined): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
-		const timeout = setTimeout(() => reject(new Error(`Execution timed out after ${timeoutMs}ms`)), timeoutMs);
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		const cleanup = () => {
+			clearTimeout(timeout);
+			signal?.removeEventListener('abort', onAbort);
+		};
+		const onAbort = () => {
+			cleanup();
+			reject(new Error(CANCELLED_MESSAGE));
+		};
+		if (signal?.aborted) {
+			onAbort();
+			return;
+		}
+		timeout = setTimeout(() => {
+			cleanup();
+			reject(new Error(`Execution timed out after ${timeoutMs}ms`));
+		}, timeoutMs);
+		signal?.addEventListener('abort', onAbort, { once: true });
 		promise.then(
 			(value) => {
-				clearTimeout(timeout);
+				cleanup();
 				resolve(value);
 			},
 			(error) => {
-				clearTimeout(timeout);
+				cleanup();
 				reject(error);
 			},
 		);
