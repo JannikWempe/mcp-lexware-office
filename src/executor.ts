@@ -49,6 +49,9 @@ export class QuickJsExecutor implements CodeExecutor {
 		if (options.signal?.aborted) return { error: `Error: ${CANCELLED_MESSAGE}`, logs: [] };
 
 		const QuickJS = await getQuickJS();
+		// Recheck: the signal may have aborted while QuickJS was loading. Everything below runs
+		// synchronously up to evalCode, so no later abort can slip in before guest code starts.
+		if (options.signal?.aborted) return { error: `Error: ${CANCELLED_MESSAGE}`, logs: [] };
 		const runtime = QuickJS.newRuntime();
 		const vm = runtime.newContext();
 		const logs: string[] = [];

@@ -106,3 +106,21 @@ test('guest retries after teardown rejection do not reach the host function', as
 	assert.match(execution.error ?? '', /timed out/);
 	assert.equal(hostCalls, 1);
 });
+
+test('abort right after execute() starts prevents any guest execution', async () => {
+	const executor = new QuickJsExecutor();
+	await executor.execute(`async () => 1`, {}); // warm up getQuickJS so its promise is cached
+	const controller = new AbortController();
+	const startedAt = Date.now();
+
+	const pending = executor.execute(`async () => { console.log('ran'); while (true) {} }`, {}, {
+		timeoutMs: 2_000,
+		signal: controller.signal,
+	});
+	controller.abort();
+	const execution = await pending;
+
+	assert.match(execution.error ?? '', /Execution cancelled by client/);
+	assert.deepEqual(execution.logs, []);
+	assert.ok(Date.now() - startedAt < 1_000, 'guest code must not run until the executor timeout');
+});
