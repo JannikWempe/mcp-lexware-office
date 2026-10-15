@@ -3,22 +3,30 @@ import { type CallToolResult, McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 
+import { loadConfig } from './config.js';
 import { QuickJsExecutor } from './executor.js';
-import { LexwareApiClient, type RequestLogEntry, writesEnabled } from './lexware-client.js';
+import { LexwareApiClient, type RequestLogEntry } from './lexware-client.js';
 import { lexwareSpec } from './lexware-spec.js';
 import { stringifyForMcp, truncateText } from './truncate.js';
 import { VERSION } from './version.js';
 
+const config = loadConfig();
 const searchExecutor = new QuickJsExecutor();
 const executeExecutor = new QuickJsExecutor();
 // Use a shorter per-request timeout than the executor timeout (30 s) so that a single
 // slow Lexware request fails with a clean error the sandbox can still handle. Request
 // chains (incl. a GET 429 retry waiting up to 5 s) can exceed 30 s; the executor then
 // aborts in-flight requests and reports them as cancelled in `requests`.
-const lexwareClient = new LexwareApiClient({ requestTimeoutMs: 25_000 });
+const lexwareClient = new LexwareApiClient({
+	apiKey: config.apiKey,
+	baseUrl: config.baseUrl,
+	uploadDirs: config.uploadDirs,
+	writesEnabled: config.writesEnabled,
+	requestTimeoutMs: 25_000,
+});
 
 // Inject the current write mode so callers can branch before attempting a write.
-const sandboxSpec = () => ({ ...lexwareSpec, info: { ...lexwareSpec.info, writesEnabled: writesEnabled() } });
+const sandboxSpec = () => ({ ...lexwareSpec, info: { ...lexwareSpec.info, writesEnabled: config.writesEnabled } });
 
 // The text block (truncated) stays for clients without structuredContent support.
 // structuredContent mirrors it but is never truncated, so it is only attached when the
@@ -109,7 +117,7 @@ async () => {
 		},
 	);
 
-	const writes = writesEnabled();
+	const writes = config.writesEnabled;
 
 	server.registerTool(
 		'execute',

@@ -232,3 +232,14 @@ test('large valid JSON with UTF-8 BOM is parsed into res.data (BOM regression)',
 	assert.equal(Object.prototype.hasOwnProperty.call(response, 'truncated'), false);
 	assert.deepEqual(response.data, COUNTRIES_FIXTURE);
 });
+
+test('missing API key fails before fetch with the env var hint', async () => {
+	let calls = 0;
+	const client = new LexwareApiClient({ rateLimitIntervalMs: 0, fetchImpl: async () => {
+		calls += 1;
+		return responseFor(200, '{}');
+	} });
+
+	await assert.rejects(() => client.request({ path: '/v1/countries' }), /LEXWARE_OFFICE_API_KEY environment variable is required/);
+	assert.equal(calls, 0);
+});
