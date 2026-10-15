@@ -27,7 +27,9 @@
     "build": "shx rm -rf build && tsc && shx chmod +x build/*.js",
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test build/*.test.js"
+    "test": "npm run build && node --test build/*.test.js",
+    "check:docs": "npm run build && node scripts/check-docs.mjs",
+    "smoke": "npm run -s build && node scripts/smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.3.1",

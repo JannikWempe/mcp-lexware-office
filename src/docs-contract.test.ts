@@ -63,3 +63,30 @@ test('guide documents the execute requests audit log and cancellation', () => {
 	assert.match(guide, /429/);
 	assert.match(guide, /"outcome": "unknown"/);
 });
+
+// Release Please rewrites the first number on lines marked `x-release-please-major` (inline or inside a
+// start-major/end block) to the new major, so marked lines pin the current release. Unmarked pins are history.
+test('install docs pin the package.json major only on release-please-marked lines', () => {
+	const major = Number(JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf8')).version.split('.')[0]);
+	let markedPins = 0;
+	for (const [name, doc] of [['README.md', readme], ['docs/guide.md', guide]]) {
+		let inBlock = false;
+		for (const line of doc.split('\n')) {
+			const marked = inBlock || /x-release-please-major/.test(line);
+			if (/x-release-please-start-major/.test(line)) {
+				inBlock = true;
+			} else if (/x-release-please-end/.test(line)) {
+				inBlock = false;
+			}
+			for (const [, pinned] of line.matchAll(/#semver:\^(\d+)/g)) {
+				if (marked) {
+					markedPins += 1;
+					assert.equal(Number(pinned), major, `${name}: marked pin ^${pinned} must match package.json major ${major}; Release Please bumps it`);
+				} else {
+					assert.ok(Number(pinned) < major, `${name}: unmarked pin ^${pinned} goes stale on the next major; mark it with x-release-please-major or reword it as history: ${line}`);
+				}
+			}
+		}
+	}
+	assert.equal(markedPins, 4, 'expected the README (3) and guide (1) install pins to be marked');
+});

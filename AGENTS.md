@@ -1,15 +1,6 @@
-# Lexware Office MCP Server — Claude Instructions
+# Lexware Office MCP Server
 
-## API Documentation
-
-Lexware Office REST API: https://developers.lexoffice.io/docs/
-
-Fetch specific sections on demand with WebFetch. Key sections:
-- Contacts: `/docs/#contacts-endpoint`
-- Invoices: `/docs/#invoices-endpoint`
-- Vouchers (voucherlist): `/docs/#voucherlist-endpoint`
-- Down-Payment Invoices: `/docs/#down-payment-invoices-endpoint`
-- Dunnings: `/docs/#dunnings-endpoint`
+Lexware Office API docs: https://developers.lexware.io/docs/ (one page; each catalog operation in `src/lexware-spec.ts` links its section via `docsUrl`).
 
 ## Architecture (Code Mode)
 
@@ -21,11 +12,11 @@ Fetch specific sections on demand with WebFetch. Key sections:
 - `src/lexware-sandbox-sdk.ts` — guest `lexware` object (`createLexwareSdk`, serialized into the prelude, must stay self-contained), its host binding to `LexwareApiClient.request`, and the declarations shown in the `execute` description
 - `src/lexware-client.ts` — host-side HTTP client behind `lexware.request` (API key stays here, never in the sandbox)
 - `src/truncate.ts` — response truncation for MCP payloads
-- Writes (POST/PUT/PATCH/DELETE) blocked by default; `LEXWARE_OFFICE_ALLOW_WRITES=true` enables them, `LEXWARE_OFFICE_READ_ONLY=true` hard-blocks
 
 ## Conventions
 
-- Catalog entries in `lexware-spec.ts` must match official Lexware docs (docsUrl per operation)
+- Catalog entries in `lexware-spec.ts` must match official Lexware docs (docsUrl per operation); `pnpm run check:docs` (network) verifies anchors and flags changelog entries newer than `scripts/lexware-docs-baseline.json`
 - Optional fields use `!== undefined` guards, not falsy checks
 - Tests are `src/*.test.ts` (node:test); `pnpm test` builds then runs them; `pnpm run typecheck` for tsc only
 - `docs/guide.md` is user-facing and checked in; `src/docs-contract.test.ts` asserts parts of it
+- `pnpm -s run smoke [--writes]` prints the built server's `initialize` + `tools/list`; `src/tools-list.snapshot.json` pins what models see (`UPDATE_SNAPSHOTS=1 pnpm test` after intended changes)

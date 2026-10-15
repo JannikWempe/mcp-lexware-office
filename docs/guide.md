@@ -14,9 +14,11 @@ The package follows the standard TypeScript MCP layout:
 
 For GitHub installs, use an explicit GitHub package spec:
 
+<!-- x-release-please-start-major -->
 ```json
 "args": ["-y", "--package=github:JannikWempe/mcp-lexware-office#semver:^3", "lexware-office"]
 ```
+<!-- x-release-please-end -->
 
 After publishing to npm, use the npm package name instead:
 
@@ -246,7 +248,7 @@ Important behavior:
 
 ## Migrating: `contentPath` requires `LEXWARE_OFFICE_UPLOAD_DIRS`
 
-This change ships in 3.0.0. Update the package spec from `#semver:^2` to `#semver:^3` to receive it.
+This change ships in 3.0.0; installs pinned to `#semver:^2` do not receive it. Use the package spec from [Distribution model](#distribution-model).
 
 `multipart` `contentPath` uploads used to read any absolute path on the server machine. They now only read files inside the directories listed in `LEXWARE_OFFICE_UPLOAD_DIRS`, and are disabled when it is unset. If you upload local files via `contentPath`, add the directories holding them (see [Upload directories](#upload-directories)); in Docker, set it to the mounted container path. `contentBase64` uploads are unaffected.
 
@@ -256,7 +258,7 @@ Version 1.x shipped a second, legacy server with one MCP tool per Lexware operat
 
 To migrate a 1.x config:
 
-1. Point the package spec at `#semver:^3` (or the npm package once published).
+1. Use the package spec from [Distribution model](#distribution-model) (or the npm package once published).
 2. Use the `lexware-office` binary. (`lexware-office-v2` still works as a deprecated alias and prints a deprecation warning on startup.)
 3. Remove any `disabledTools` lists — permissioning is now env-based (see [Permissions](#permissions)).
 4. Writes are now blocked by default. Set `LEXWARE_OFFICE_ALLOW_WRITES=true` if you need create/update/finalize/upload operations.

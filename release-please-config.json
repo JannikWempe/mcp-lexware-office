@@ -4,7 +4,11 @@
   "packages": {
     ".": {
       "changelog-path": "CHANGELOG.md",
-      "include-component-in-tag": false
+      "include-component-in-tag": false,
+      "extra-files": [
+        "README.md",
+        "docs/guide.md"
+      ]
     }
   }
 }
