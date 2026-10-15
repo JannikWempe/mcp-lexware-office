@@ -1,3 +1,7 @@
+// Curated OpenAPI-lite catalog the `search` and `execute` sandboxes see as `spec`. Entries mirror the
+// official docs (https://developers.lexware.io/docs/, one page), each operation linking its section via
+// `docsUrl`. Verify with `pnpm run check:docs` (network) after catalog changes.
+
 export interface LexwareApiCatalog {
 	info: {
 		title: string;

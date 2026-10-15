@@ -1,5 +1,9 @@
 import { getQuickJS, shouldInterruptAfterDeadline, type QuickJSDeferredPromise } from 'quickjs-emscripten';
 
+// Generic QuickJS sandbox runner: model-supplied JS plus JSON capabilities, host functions and an
+// optional guest prelude. Keep it Lexware-agnostic; Lexware specifics go in lexware-sandbox-sdk.ts
+// and code-mode.ts.
+
 export interface CodeExecutor {
 	// Each capability is JSON-copied into the sandbox and bound to a local const of the same name.
 	execute(
