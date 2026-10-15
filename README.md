@@ -83,8 +83,9 @@ Create an API key at <https://app.lexoffice.de/addons/public-api>.
 
 #### Recommended: consume the packaged server
 
-Run the packaged binary from the latest GitHub release (`#semver:^3` resolves to the newest `v3.x` tag and picks up future releases automatically). The package builds itself during GitHub installs via `prepare`, so users do **not** need to clone the repository or commit `build/` artifacts.
+Run the packaged binary from the latest GitHub release (`#semver:^3` resolves to the newest tag of this major version and picks up future releases automatically). <!-- x-release-please-major --> The package builds itself during GitHub installs via `prepare`, so users do **not** need to clone the repository or commit `build/` artifacts.
 
+<!-- x-release-please-start-major -->
 ```json
 {
   "mcpServers": {
@@ -99,17 +100,20 @@ Run the packaged binary from the latest GitHub release (`#semver:^3` resolves to
   }
 }
 ```
+<!-- x-release-please-end -->
 
 **Troubleshooting:** If the `npx` command above fails during git-dependency preparation with an error mentioning `--before`, your npm user config may contain `minimum-release-age`, which conflicts with npm's internal `--before` flag. Two fixes:
 
+<!-- x-release-please-start-major -->
 ```bash
-# Option 1: bypass your user config for this invocation
+# Either bypass your user config for this invocation
 NPM_CONFIG_USERCONFIG=/dev/null \
   npx -y --package=github:JannikWempe/mcp-lexware-office#semver:^3 lexware-office
 
-# Option 2: remove the conflicting setting permanently
+# or remove the conflicting setting permanently
 npm config delete minimum-release-age --location=user
 ```
+<!-- x-release-please-end -->
 
 When this package is published to npm, replace the GitHub package spec with the npm package name:
 
