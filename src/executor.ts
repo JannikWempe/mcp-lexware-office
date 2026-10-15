@@ -45,6 +45,11 @@ const DEFAULT_MAX_LOG_ENTRIES = 25;
 const DEFAULT_MAX_LOG_CHARS = 8_000;
 const CANCELLED_MESSAGE = 'Execution cancelled by client';
 
+/**
+ * Generic QuickJS sandbox runner: model-supplied JS plus JSON capabilities, host functions and an
+ * optional guest prelude. Keep it Lexware-agnostic; Lexware specifics go in lexware-sandbox-sdk.ts
+ * and code-mode.ts.
+ */
 export class QuickJsExecutor implements CodeExecutor {
 	async execute(
 		code: string,

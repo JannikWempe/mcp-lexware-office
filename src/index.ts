@@ -20,7 +20,11 @@ const codeMode = new CodeMode({
 	}),
 });
 
-// One McpServer per connection; serveStdio picks the protocol era (2025-era initialize or 2026-07-28 server/discover).
+/**
+ * One McpServer per connection; serveStdio picks the protocol era (2025-era initialize or 2026-07-28 server/discover).
+ * Instructions, tool descriptions and schemas are model-facing: server-stdio.test.ts pins them in
+ * tools-list.snapshot.json; preview with `pnpm -s run smoke [--writes]`.
+ */
 function createServer(): McpServer {
 	const server = new McpServer(
 		{
