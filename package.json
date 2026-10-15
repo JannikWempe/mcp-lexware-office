@@ -28,7 +28,8 @@
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test build/*.test.js",
-    "check:docs": "npm run build && node scripts/check-docs.mjs"
+    "check:docs": "npm run build && node scripts/check-docs.mjs",
+    "smoke": "npm run -s build && node scripts/smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.3.1",

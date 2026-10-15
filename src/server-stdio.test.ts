@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { dirname, join } from 'node:path';
@@ -8,6 +9,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 const serverEntry = join(dirname(fileURLToPath(import.meta.url)), 'index.js');
+const toolsListSnapshot = join(dirname(fileURLToPath(import.meta.url)), '../src/tools-list.snapshot.json');
 
 interface ListedTool {
 	name: string;
@@ -18,7 +20,7 @@ interface ListedTool {
 
 interface JsonRpcResponse {
 	id: number;
-	result?: { structuredContent?: Record<string, unknown>; isError?: boolean; tools?: ListedTool[] };
+	result?: { structuredContent?: Record<string, unknown>; isError?: boolean; tools?: ListedTool[]; instructions?: string };
 	error?: unknown;
 }
 
@@ -32,9 +34,9 @@ async function startFakeLexware(handler: (req: IncomingMessage, res: ServerRespo
 }
 
 // Spawns the built stdio server and speaks raw JSON-RPC (2025-era initialize handshake).
-async function startMcp(baseUrl: string) {
+async function startMcp(baseUrl: string, env: Record<string, string> = {}) {
 	const child = spawn(process.execPath, [serverEntry], {
-		env: { ...process.env, LEXWARE_OFFICE_API_KEY: 'test-key', LEXWARE_OFFICE_API_BASE_URL: baseUrl, LEXWARE_OFFICE_ALLOW_WRITES: 'false' },
+		env: { ...process.env, LEXWARE_OFFICE_API_KEY: 'test-key', LEXWARE_OFFICE_API_BASE_URL: baseUrl, LEXWARE_OFFICE_ALLOW_WRITES: 'false', ...env },
 		stdio: ['pipe', 'pipe', 'ignore'],
 	});
 	const pending = new Map<number, (message: JsonRpcResponse) => void>();
@@ -61,9 +63,9 @@ async function startMcp(baseUrl: string) {
 		return { id, response };
 	};
 
-	await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' } }).response;
+	const initialized = await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' } }).response;
 	send({ method: 'notifications/initialized' });
-	return { request, send, close: () => child.kill() };
+	return { initialized, request, send, close: () => child.kill() };
 }
 
 const callExecute = (mcp: Awaited<ReturnType<typeof startMcp>>, code: string) =>
@@ -93,6 +95,35 @@ test('server lists exactly search and execute with docs and write-mode annotatio
 		mcp.close();
 		lexware.close();
 	}
+});
+
+// Everything the model sees before its first call. Diff against a checked-in snapshot so description or schema
+// changes are always deliberate.
+test('instructions and tools/list match the snapshot in read-only and writes-enabled mode', async () => {
+	const lexware = await startFakeLexware((_req, res) => res.end());
+	const actual: Record<string, unknown> = {};
+	try {
+		for (const [mode, allowWrites] of [['readOnly', 'false'], ['writesEnabled', 'true']]) {
+			const mcp = await startMcp(lexware.baseUrl, { LEXWARE_OFFICE_ALLOW_WRITES: allowWrites });
+			try {
+				const { result } = await mcp.request('tools/list', {}).response;
+				actual[mode] = { instructions: mcp.initialized.result?.instructions, tools: result?.tools };
+			} finally {
+				mcp.close();
+			}
+		}
+	} finally {
+		lexware.close();
+	}
+
+	if (process.env.UPDATE_SNAPSHOTS === '1') {
+		writeFileSync(toolsListSnapshot, `${JSON.stringify(actual, null, '\t')}\n`);
+	}
+	assert.deepEqual(
+		actual,
+		JSON.parse(readFileSync(toolsListSnapshot, 'utf8')),
+		'Model-facing instructions or tools changed. If intended, run `UPDATE_SNAPSHOTS=1 pnpm test` and commit src/tools-list.snapshot.json.',
+	);
 });
 
 test('execute reports per-attempt requests on success', async () => {

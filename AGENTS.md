@@ -19,3 +19,4 @@ Lexware Office API docs: https://developers.lexware.io/docs/ (one page; each cat
 - Optional fields use `!== undefined` guards, not falsy checks
 - Tests are `src/*.test.ts` (node:test); `pnpm test` builds then runs them; `pnpm run typecheck` for tsc only
 - `docs/guide.md` is user-facing and checked in; `src/docs-contract.test.ts` asserts parts of it
+- `pnpm -s run smoke [--writes]` prints the built server's `initialize` + `tools/list`; `src/tools-list.snapshot.json` pins what models see (`UPDATE_SNAPSHOTS=1 pnpm test` after intended changes)

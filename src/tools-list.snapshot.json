@@ -1,0 +1,120 @@
+{
+	"readOnly": {
+		"instructions": "Lexware Office API via Code Mode: `search` explores a curated API catalog, `execute` runs a sandboxed JS workflow against the live API.\nAlways call `search` to discover endpoints, parameters, and workflows before `execute`; do not guess /v1 paths from memory.\nThe server is read-only unless started with LEXWARE_OFFICE_ALLOW_WRITES=true; check spec.info.writesEnabled before planning writes.\nSummarize, filter, and aggregate inside `execute` and return only what is needed — large results are truncated.",
+		"tools": [
+			{
+				"name": "search",
+				"title": "Search Lexware API catalog",
+				"description": "Search the curated Lexware Office API catalog by running a JavaScript async arrow function.\n\nUse this before execute to discover endpoints, request shapes, response notes, workflows, and domain-specific caveats.\n\nAvailable global:\n\ndeclare const spec: LexwareApiCatalog;\n\nUseful starting points:\n- spec.info.domainIndex: compact map from business domains to endpoint lists\n- spec.info.writesEnabled: whether this server currently allows POST/PUT/PATCH/DELETE — check before planning writes\n- spec.paths: path -> method -> operation catalog with params, requestBody, responses, examples, capabilities, docsUrl\n- spec.workflows: curated recipes for reporting, sales documents, files/uploads, webhooks, and API quirks\n- spec.info.voucherStatusSemantics and financeReportingSemantics: finance/status guidance for revenue/Umsatz/profit questions\n\nSandbox: no network, filesystem, process, fetch, imports, or API key. Return JSON-serializable data; console logs are captured.\n\nExamples:\n\nasync () => Object.entries(spec.info.domainIndex)\n  .filter(([name, domain]) => [name, ...domain.tags].some(value => value.toLowerCase().includes('contact')))\n  .map(([name, domain]) => ({ name, ...domain }))\n\nasync () => {\n  const op = spec.paths['/v1/voucherlist']?.get;\n  return { summary: op?.summary, parameters: op?.parameters, notes: op?.notes, examples: op?.examples };\n}",
+				"inputSchema": {
+					"type": "object",
+					"$schema": "https://json-schema.org/draft/2020-12/schema",
+					"properties": {
+						"code": {
+							"type": "string",
+							"description": "JavaScript async arrow function to search the Lexware API catalog"
+						}
+					},
+					"required": [
+						"code"
+					]
+				},
+				"annotations": {
+					"readOnlyHint": true,
+					"idempotentHint": true,
+					"openWorldHint": false
+				}
+			},
+			{
+				"name": "execute",
+				"title": "Execute Lexware API workflow",
+				"description": "Execute a constrained Lexware Office API workflow by running a JavaScript async arrow function.\n\nUse search first when you need endpoint/domain guidance; do not guess Lexware paths from memory. The sandbox exposes no API key, filesystem, process, imports, fetch, or arbitrary network access.\n\nAvailable globals:\n\ndeclare const spec: LexwareApiCatalog;\ndeclare const lexware: {\n  request<T = unknown>(input: LexwareRequest): Promise<LexwareResponse<T>>;\n  json(input: LexwareRequest): Promise<unknown>;\n  paginate<T = unknown>(input: LexwareRequest, options?: { maxPages?: number }): Promise<T[]>;\n  requireNumber(row: unknown, fieldPath: string): number;\n  requireMoney(row: unknown, fieldPath: string): number;\n  sumMoney(rows: unknown[], fieldPath: string): number;\n  formatMoney(cents: number, currency?: string): string;\n};\n\ntype LexwareRequest = {\n  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';\n  path: string; // relative /v1/... only; no absolute URLs or // hosts\n  query?: Record<string, string | number | boolean | Array<string | number | boolean> | null | undefined>;\n  body?: unknown; // JSON by default; string when rawBody=true (UTF-8 encoded, NOT binary-safe)\n  bodyBase64?: string; // raw binary body as base64; the host decodes it outside the sandbox\n  multipart?: MultipartPart[]; // multipart/form-data uploads (e.g. POST /v1/files); host builds FormData\n  contentType?: string;\n  rawBody?: boolean;\n  accept?: string;\n};\n// At most one of body, bodyBase64, or multipart per request.\n\ntype MultipartPart = {\n  name: string;\n  value?: string; // plain text form field\n  contentBase64?: string; // binary part content as base64; host decodes it\n  contentPath?: string; // absolute file path on the MCP server machine; host reads it directly (no base64 blowup). Only works if the server sets LEXWARE_OFFICE_UPLOAD_DIRS and the file is inside one of those dirs; otherwise use contentBase64\n  filename?: string; // defaults to the contentPath basename\n  contentType?: string;\n};\n// Exactly one of value, contentBase64, or contentPath per part.\n\ntype LexwareResponse<T = unknown> = {\n  ok: boolean;\n  status: number;\n  statusText: string;\n  data?: T;\n  text?: string;\n  truncated?: boolean;\n  contentType: string;\n  headers: Record<string, string>;\n  errorCategory?: string;\n  retryAfterSeconds?: number;\n  operation?: { operationId: string; method: string; pathTemplate: string; summary: string };\n  request: { method: string; path: string; query: Record<string, string[]> };\n  sent?: { bytes: number; sha256?: string; parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }> }; // echo of uploaded binary payloads for integrity checks\n};\n\nlexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. A GET answered with 429 and Retry-After <= 5s is retried once automatically.\n\nThe tool result includes requests: one { method, path, status?, ok?, error?, write, sent, outcome?, durationMs } entry per HTTP attempt, also when execution failed — check it to see which writes already succeeded before retrying. A write with error and outcome: 'unknown' (sent=true) may have been applied by Lexware; reconcile via a GET before retrying it.\n\nmaxRequests bounds the HTTP attempts actually sent to Lexware, including automatic 429 retries; requestCount equals the number of requests entries with sent=true. Requests rejected before sending (invalid input, blocked writes) do not count. An attempt beyond the budget is not sent and fails with \"Execution exceeded maxRequests=N\".\n\nThis server is read-only by default. POST, PUT, PATCH, and DELETE are blocked unless the server is started with LEXWARE_OFFICE_ALLOW_WRITES=true. Setting LEXWARE_OFFICE_READ_ONLY=true is a hard block that overrides ALLOW_WRITES. Check spec.info.writesEnabled to branch before attempting a write.\n\nExample:\n\nasync () => {\n  const response = await lexware.request({ path: '/v1/contacts', query: { page: 0, size: 5 } });\n  return { status: response.status, request: response.request, data: response.data };\n}\n\nFile upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath (requires LEXWARE_OFFICE_UPLOAD_DIRS, see MultipartPart) and the host reads it from disk:\n\nasync () => {\n  const response = await lexware.request({\n    method: 'POST',\n    path: '/v1/files',\n    multipart: [\n      { name: 'file', contentType: 'application/pdf', contentPath: '/absolute/path/to/receipt.pdf' },\n      { name: 'type', value: 'voucher' },\n    ],\n  });\n  return { status: response.status, id: response.data?.id, sent: response.sent };\n}",
+				"inputSchema": {
+					"type": "object",
+					"$schema": "https://json-schema.org/draft/2020-12/schema",
+					"properties": {
+						"code": {
+							"type": "string",
+							"description": "JavaScript async arrow function to execute a constrained Lexware API workflow"
+						},
+						"maxRequests": {
+							"default": 10,
+							"description": "Maximum number of HTTP attempts this execution may send to Lexware, including automatic 429 retries.",
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 50
+						}
+					},
+					"required": [
+						"code"
+					]
+				},
+				"annotations": {
+					"readOnlyHint": true,
+					"destructiveHint": false,
+					"idempotentHint": false,
+					"openWorldHint": true
+				}
+			}
+		]
+	},
+	"writesEnabled": {
+		"instructions": "Lexware Office API via Code Mode: `search` explores a curated API catalog, `execute` runs a sandboxed JS workflow against the live API.\nAlways call `search` to discover endpoints, parameters, and workflows before `execute`; do not guess /v1 paths from memory.\nThe server is read-only unless started with LEXWARE_OFFICE_ALLOW_WRITES=true; check spec.info.writesEnabled before planning writes.\nSummarize, filter, and aggregate inside `execute` and return only what is needed — large results are truncated.",
+		"tools": [
+			{
+				"name": "search",
+				"title": "Search Lexware API catalog",
+				"description": "Search the curated Lexware Office API catalog by running a JavaScript async arrow function.\n\nUse this before execute to discover endpoints, request shapes, response notes, workflows, and domain-specific caveats.\n\nAvailable global:\n\ndeclare const spec: LexwareApiCatalog;\n\nUseful starting points:\n- spec.info.domainIndex: compact map from business domains to endpoint lists\n- spec.info.writesEnabled: whether this server currently allows POST/PUT/PATCH/DELETE — check before planning writes\n- spec.paths: path -> method -> operation catalog with params, requestBody, responses, examples, capabilities, docsUrl\n- spec.workflows: curated recipes for reporting, sales documents, files/uploads, webhooks, and API quirks\n- spec.info.voucherStatusSemantics and financeReportingSemantics: finance/status guidance for revenue/Umsatz/profit questions\n\nSandbox: no network, filesystem, process, fetch, imports, or API key. Return JSON-serializable data; console logs are captured.\n\nExamples:\n\nasync () => Object.entries(spec.info.domainIndex)\n  .filter(([name, domain]) => [name, ...domain.tags].some(value => value.toLowerCase().includes('contact')))\n  .map(([name, domain]) => ({ name, ...domain }))\n\nasync () => {\n  const op = spec.paths['/v1/voucherlist']?.get;\n  return { summary: op?.summary, parameters: op?.parameters, notes: op?.notes, examples: op?.examples };\n}",
+				"inputSchema": {
+					"type": "object",
+					"$schema": "https://json-schema.org/draft/2020-12/schema",
+					"properties": {
+						"code": {
+							"type": "string",
+							"description": "JavaScript async arrow function to search the Lexware API catalog"
+						}
+					},
+					"required": [
+						"code"
+					]
+				},
+				"annotations": {
+					"readOnlyHint": true,
+					"idempotentHint": true,
+					"openWorldHint": false
+				}
+			},
+			{
+				"name": "execute",
+				"title": "Execute Lexware API workflow",
+				"description": "Execute a constrained Lexware Office API workflow by running a JavaScript async arrow function.\n\nUse search first when you need endpoint/domain guidance; do not guess Lexware paths from memory. The sandbox exposes no API key, filesystem, process, imports, fetch, or arbitrary network access.\n\nAvailable globals:\n\ndeclare const spec: LexwareApiCatalog;\ndeclare const lexware: {\n  request<T = unknown>(input: LexwareRequest): Promise<LexwareResponse<T>>;\n  json(input: LexwareRequest): Promise<unknown>;\n  paginate<T = unknown>(input: LexwareRequest, options?: { maxPages?: number }): Promise<T[]>;\n  requireNumber(row: unknown, fieldPath: string): number;\n  requireMoney(row: unknown, fieldPath: string): number;\n  sumMoney(rows: unknown[], fieldPath: string): number;\n  formatMoney(cents: number, currency?: string): string;\n};\n\ntype LexwareRequest = {\n  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';\n  path: string; // relative /v1/... only; no absolute URLs or // hosts\n  query?: Record<string, string | number | boolean | Array<string | number | boolean> | null | undefined>;\n  body?: unknown; // JSON by default; string when rawBody=true (UTF-8 encoded, NOT binary-safe)\n  bodyBase64?: string; // raw binary body as base64; the host decodes it outside the sandbox\n  multipart?: MultipartPart[]; // multipart/form-data uploads (e.g. POST /v1/files); host builds FormData\n  contentType?: string;\n  rawBody?: boolean;\n  accept?: string;\n};\n// At most one of body, bodyBase64, or multipart per request.\n\ntype MultipartPart = {\n  name: string;\n  value?: string; // plain text form field\n  contentBase64?: string; // binary part content as base64; host decodes it\n  contentPath?: string; // absolute file path on the MCP server machine; host reads it directly (no base64 blowup). Only works if the server sets LEXWARE_OFFICE_UPLOAD_DIRS and the file is inside one of those dirs; otherwise use contentBase64\n  filename?: string; // defaults to the contentPath basename\n  contentType?: string;\n};\n// Exactly one of value, contentBase64, or contentPath per part.\n\ntype LexwareResponse<T = unknown> = {\n  ok: boolean;\n  status: number;\n  statusText: string;\n  data?: T;\n  text?: string;\n  truncated?: boolean;\n  contentType: string;\n  headers: Record<string, string>;\n  errorCategory?: string;\n  retryAfterSeconds?: number;\n  operation?: { operationId: string; method: string; pathTemplate: string; summary: string };\n  request: { method: string; path: string; query: Record<string, string[]> };\n  sent?: { bytes: number; sha256?: string; parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }> }; // echo of uploaded binary payloads for integrity checks\n};\n\nlexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. A GET answered with 429 and Retry-After <= 5s is retried once automatically.\n\nThe tool result includes requests: one { method, path, status?, ok?, error?, write, sent, outcome?, durationMs } entry per HTTP attempt, also when execution failed — check it to see which writes already succeeded before retrying. A write with error and outcome: 'unknown' (sent=true) may have been applied by Lexware; reconcile via a GET before retrying it.\n\nmaxRequests bounds the HTTP attempts actually sent to Lexware, including automatic 429 retries; requestCount equals the number of requests entries with sent=true. Requests rejected before sending (invalid input, blocked writes) do not count. An attempt beyond the budget is not sent and fails with \"Execution exceeded maxRequests=N\".\n\nThis server is read-only by default. POST, PUT, PATCH, and DELETE are blocked unless the server is started with LEXWARE_OFFICE_ALLOW_WRITES=true. Setting LEXWARE_OFFICE_READ_ONLY=true is a hard block that overrides ALLOW_WRITES. Check spec.info.writesEnabled to branch before attempting a write.\n\nExample:\n\nasync () => {\n  const response = await lexware.request({ path: '/v1/contacts', query: { page: 0, size: 5 } });\n  return { status: response.status, request: response.request, data: response.data };\n}\n\nFile upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath (requires LEXWARE_OFFICE_UPLOAD_DIRS, see MultipartPart) and the host reads it from disk:\n\nasync () => {\n  const response = await lexware.request({\n    method: 'POST',\n    path: '/v1/files',\n    multipart: [\n      { name: 'file', contentType: 'application/pdf', contentPath: '/absolute/path/to/receipt.pdf' },\n      { name: 'type', value: 'voucher' },\n    ],\n  });\n  return { status: response.status, id: response.data?.id, sent: response.sent };\n}",
+				"inputSchema": {
+					"type": "object",
+					"$schema": "https://json-schema.org/draft/2020-12/schema",
+					"properties": {
+						"code": {
+							"type": "string",
+							"description": "JavaScript async arrow function to execute a constrained Lexware API workflow"
+						},
+						"maxRequests": {
+							"default": 10,
+							"description": "Maximum number of HTTP attempts this execution may send to Lexware, including automatic 429 retries.",
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 50
+						}
+					},
+					"required": [
+						"code"
+					]
+				},
+				"annotations": {
+					"readOnlyHint": false,
+					"destructiveHint": true,
+					"idempotentHint": false,
+					"openWorldHint": true
+				}
+			}
+		]
+	}
+}
