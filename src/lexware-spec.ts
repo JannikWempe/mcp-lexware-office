@@ -149,6 +149,8 @@ const finalizeParam: LexwareParameter = {
 	description: 'If true, create and immediately finalize/publish the sales document. Finalized documents are locked for editing.',
 };
 
+const deprecatedDocumentNotes = ['Deprecated by Lexware (13.08.2025) and marked for removal. Use the /file subresource of the same voucher to download its PDF/XML instead.'];
+
 const precedingSalesVoucherParam: LexwareParameter = {
 	name: 'precedingSalesVoucherId',
 	in: 'query',
@@ -158,7 +160,7 @@ const precedingSalesVoucherParam: LexwareParameter = {
 
 const salesVoucherBody: LexwareRequestBody = {
 	contentType: 'application/json',
-	summary: 'Sales voucher JSON. Common fields: voucherDate, address/contactId, lineItems, totalPrice.currency, taxConditions, shippingConditions, paymentConditions, title, introduction, remark.',
+	summary: 'Sales voucher JSON. Common fields: voucherDate, address/contactId, lineItems, totalPrice.currency, taxConditions, shippingConditions, paymentConditions, title, introduction, remark. introduction, remark, and lineItems[].description support **bold**, __italic__, and "- " list lines.',
 	required: ['voucherDate', 'address', 'lineItems', 'taxConditions'],
 	shape: {
 		voucherDate: 'YYYY-MM-DD',
@@ -446,7 +448,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 		},
 		notes: [
 			'Lexware does not publish a complete official OpenAPI document; this catalog is curated from official docs plus the legacy MCP implementation.',
-			'The documented API host is https://api.lexware.io; the pre-rebranding https://api.lexoffice.io gateway was sunset in December 2025.',
+			'The documented API host is https://api.lexware.io; the pre-rebranding https://api.lexoffice.io gateway was only guaranteed until December 2025.',
 			'Responses are normally JSON. File endpoints can return PDF/XML/binary and need special handling to avoid token bloat.',
 			'Pagination is zero-based: page=0 is the first page. Paged list endpoints return response.data.content plus metadata such as last, totalPages, totalElements, number/page, and size; use lexware.paginate for complete traversal.',
 			'Voucherlist status semantics and reporting defaults live in spec.info.voucherStatusSemantics. Use them before choosing voucherStatus for finance/reporting workflows.',
@@ -583,9 +585,9 @@ export const lexwareSpec: LexwareApiCatalog = {
 					{ name: 'voucherDateFrom', in: 'query', type: 'date', description: 'Lower voucher date bound, format yyyy-MM-dd. References a full day in CET/CEST.' },
 					{ name: 'voucherDateTo', in: 'query', type: 'date', description: 'Upper voucher date bound, format yyyy-MM-dd. References a full day in CET/CEST.' },
 					{ name: 'createdDateFrom', in: 'query', type: 'date', description: 'Lower bound on the date the voucher was created, format yyyy-MM-dd.' },
-					{ name: 'createdDateTo', in: 'query', type: 'date', description: 'Upper bound on the date the voucher was created, format yyyy-MM-dd.' },
+					{ name: 'createdDateTo', in: 'query', type: 'date', description: 'Inclusive upper bound on the date the voucher was created, format yyyy-MM-dd.' },
 					{ name: 'updatedDateFrom', in: 'query', type: 'date', description: 'Lower bound on the date the voucher was last modified, format yyyy-MM-dd.' },
-					{ name: 'updatedDateTo', in: 'query', type: 'date', description: 'Upper bound on the date the voucher was last modified, format yyyy-MM-dd.' },
+					{ name: 'updatedDateTo', in: 'query', type: 'date', description: 'Inclusive upper bound on the date the voucher was last modified, format yyyy-MM-dd.' },
 					{ name: 'contactId', in: 'query', type: 'uuid', description: 'Filter by contact id.' },
 					{ name: 'voucherNumber', in: 'query', type: 'string', description: 'Filter by the voucher number.' },
 					{ name: 'archived', in: 'query', type: 'boolean', description: 'Filter by archived flag.' },
@@ -633,10 +635,10 @@ export const lexwareSpec: LexwareApiCatalog = {
 			},
 		},
 		'/v1/invoices/{id}/document': {
-			get: { operationId: 'getInvoiceDocumentMetadata', tags: ['invoices', 'documents', 'read'], summary: 'Retrieve invoice document metadata / render reference', parameters: [idParam('Invoice UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#invoices-endpoint-retrieve-an-invoice-document' },
+			get: { operationId: 'getInvoiceDocumentMetadata', tags: ['invoices', 'documents', 'read'], summary: 'Retrieve invoice document metadata / render reference', parameters: [idParam('Invoice UUID')], responses: documentResponses, notes: deprecatedDocumentNotes, docsUrl: 'https://developers.lexware.io/docs/#invoices-endpoint-render-an-invoice-document-pdf' },
 		},
 		'/v1/invoices/{id}/file': {
-			get: { operationId: 'downloadInvoicePdf', tags: ['invoices', 'files', 'documents', 'read'], summary: 'Download finalized invoice PDF', parameters: [idParam('Invoice UUID')], responses: { '200': 'PDF/binary file', '404': 'Not found or PDF not rendered/finalized yet' }, notes: ['May fail if the PDF has not been rendered/finalized. Avoid returning huge base64 payloads directly to the model.'], docsUrl: 'https://developers.lexware.io/docs/#invoices-endpoint-retrieve-an-invoice-file' },
+			get: { operationId: 'downloadInvoicePdf', tags: ['invoices', 'files', 'documents', 'read'], summary: 'Download finalized invoice PDF', parameters: [idParam('Invoice UUID')], responses: { '200': 'PDF/binary file', '404': 'Not found or PDF not rendered/finalized yet' }, notes: ['May fail if the PDF has not been rendered/finalized. Avoid returning huge base64 payloads directly to the model.'], docsUrl: 'https://developers.lexware.io/docs/#invoices-endpoint-download-an-invoice-file' },
 		},
 		'/v1/quotations': {
 			post: { operationId: 'createQuotation', tags: ['quotations', 'sales-documents', 'write'], summary: 'Create a draft or finalized quotation', parameters: [finalizeParam], requestBody: { ...salesVoucherBody, summary: 'Quotation JSON. Common sales voucher fields plus optional expirationDate.' }, responses: documentResponses, notes: ['Use /v1/voucherlist?voucherType=quotation... to list quotations.'], docsUrl: 'https://developers.lexware.io/docs/#quotations-endpoint-create-a-quotation' },
@@ -645,10 +647,10 @@ export const lexwareSpec: LexwareApiCatalog = {
 			get: { operationId: 'getQuotation', tags: ['quotations', 'sales-documents', 'read'], summary: 'Retrieve one quotation', parameters: [idParam('Quotation UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#quotations-endpoint-retrieve-a-quotation' },
 		},
 		'/v1/quotations/{id}/document': {
-			get: { operationId: 'getQuotationDocumentMetadata', tags: ['quotations', 'documents', 'read'], summary: 'Retrieve quotation document metadata / render reference', parameters: [idParam('Quotation UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#quotations-endpoint-retrieve-a-quotation-document' },
+			get: { operationId: 'getQuotationDocumentMetadata', tags: ['quotations', 'documents', 'read'], summary: 'Retrieve quotation document metadata / render reference', parameters: [idParam('Quotation UUID')], responses: documentResponses, notes: deprecatedDocumentNotes, docsUrl: 'https://developers.lexware.io/docs/#quotations-endpoint-render-a-quotation-document-pdf' },
 		},
 		'/v1/quotations/{id}/file': {
-			get: { operationId: 'downloadQuotationPdf', tags: ['quotations', 'files', 'documents', 'read'], summary: 'Download finalized quotation PDF', parameters: [idParam('Quotation UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#quotations-endpoint-retrieve-a-quotation-file' },
+			get: { operationId: 'downloadQuotationPdf', tags: ['quotations', 'files', 'documents', 'read'], summary: 'Download finalized quotation PDF', parameters: [idParam('Quotation UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#quotations-endpoint-download-a-quotation-file' },
 		},
 		'/v1/order-confirmations': {
 			post: { operationId: 'createOrderConfirmation', tags: ['order-confirmations', 'sales-documents', 'write'], summary: 'Create a draft or finalized order confirmation', parameters: [finalizeParam, precedingSalesVoucherParam], requestBody: salesVoucherBody, responses: documentResponses, notes: ['Use /v1/voucherlist?voucherType=orderconfirmation... to list order confirmations.'], docsUrl: 'https://developers.lexware.io/docs/#order-confirmations-endpoint-create-an-order-confirmation' },
@@ -657,10 +659,10 @@ export const lexwareSpec: LexwareApiCatalog = {
 			get: { operationId: 'getOrderConfirmation', tags: ['order-confirmations', 'sales-documents', 'read'], summary: 'Retrieve one order confirmation', parameters: [idParam('Order confirmation UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#order-confirmations-endpoint-retrieve-an-order-confirmation' },
 		},
 		'/v1/order-confirmations/{id}/document': {
-			get: { operationId: 'getOrderConfirmationDocumentMetadata', tags: ['order-confirmations', 'documents', 'read'], summary: 'Retrieve order confirmation document metadata / render reference', parameters: [idParam('Order confirmation UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#order-confirmations-endpoint-retrieve-an-order-confirmation-document' },
+			get: { operationId: 'getOrderConfirmationDocumentMetadata', tags: ['order-confirmations', 'documents', 'read'], summary: 'Retrieve order confirmation document metadata / render reference', parameters: [idParam('Order confirmation UUID')], responses: documentResponses, notes: deprecatedDocumentNotes, docsUrl: 'https://developers.lexware.io/docs/#order-confirmations-endpoint-render-an-order-confirmation-document-pdf' },
 		},
 		'/v1/order-confirmations/{id}/file': {
-			get: { operationId: 'downloadOrderConfirmationPdf', tags: ['order-confirmations', 'files', 'documents', 'read'], summary: 'Download finalized order confirmation PDF', parameters: [idParam('Order confirmation UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#order-confirmations-endpoint-retrieve-an-order-confirmation-file' },
+			get: { operationId: 'downloadOrderConfirmationPdf', tags: ['order-confirmations', 'files', 'documents', 'read'], summary: 'Download finalized order confirmation PDF', parameters: [idParam('Order confirmation UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#order-confirmations-endpoint-download-an-order-confirmation-file' },
 		},
 		'/v1/credit-notes': {
 			post: { operationId: 'createCreditNote', tags: ['credit-notes', 'sales-documents', 'write'], summary: 'Create a draft or finalized credit note', parameters: [finalizeParam, precedingSalesVoucherParam], requestBody: salesVoucherBody, responses: documentResponses, notes: ['Use /v1/voucherlist?voucherType=creditnote... to list credit notes. With precedingSalesVoucherId, the referenced voucher must be valid for credit-note creation.'], docsUrl: 'https://developers.lexware.io/docs/#credit-notes-endpoint-create-a-credit-note' },
@@ -669,10 +671,10 @@ export const lexwareSpec: LexwareApiCatalog = {
 			get: { operationId: 'getCreditNote', tags: ['credit-notes', 'sales-documents', 'read'], summary: 'Retrieve one credit note', parameters: [idParam('Credit note UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#credit-notes-endpoint-retrieve-a-credit-note' },
 		},
 		'/v1/credit-notes/{id}/document': {
-			get: { operationId: 'getCreditNoteDocumentMetadata', tags: ['credit-notes', 'documents', 'read'], summary: 'Retrieve credit note document metadata / render reference', parameters: [idParam('Credit note UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#credit-notes-endpoint-retrieve-a-credit-note-document' },
+			get: { operationId: 'getCreditNoteDocumentMetadata', tags: ['credit-notes', 'documents', 'read'], summary: 'Retrieve credit note document metadata / render reference', parameters: [idParam('Credit note UUID')], responses: documentResponses, notes: deprecatedDocumentNotes, docsUrl: 'https://developers.lexware.io/docs/#credit-notes-endpoint-render-a-credit-note-document-pdf' },
 		},
 		'/v1/credit-notes/{id}/file': {
-			get: { operationId: 'downloadCreditNotePdf', tags: ['credit-notes', 'files', 'documents', 'read'], summary: 'Download finalized credit note PDF', parameters: [idParam('Credit note UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#credit-notes-endpoint-retrieve-a-credit-note-file' },
+			get: { operationId: 'downloadCreditNotePdf', tags: ['credit-notes', 'files', 'documents', 'read'], summary: 'Download finalized credit note PDF', parameters: [idParam('Credit note UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#credit-notes-endpoint-download-a-credit-note-file' },
 		},
 		'/v1/delivery-notes': {
 			post: { operationId: 'createDeliveryNote', tags: ['delivery-notes', 'sales-documents', 'write'], summary: 'Create a draft or finalized delivery note', parameters: [finalizeParam, precedingSalesVoucherParam], requestBody: { ...salesVoucherBody, summary: 'Delivery note JSON. Line items usually omit unitPrice because this is a logistics document.' }, responses: documentResponses, notes: ['Use /v1/voucherlist?voucherType=deliverynote... to list delivery notes.'], docsUrl: 'https://developers.lexware.io/docs/#delivery-notes-endpoint-create-a-delivery-note' },
@@ -681,28 +683,28 @@ export const lexwareSpec: LexwareApiCatalog = {
 			get: { operationId: 'getDeliveryNote', tags: ['delivery-notes', 'sales-documents', 'read'], summary: 'Retrieve one delivery note', parameters: [idParam('Delivery note UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#delivery-notes-endpoint-retrieve-a-delivery-note' },
 		},
 		'/v1/delivery-notes/{id}/document': {
-			get: { operationId: 'getDeliveryNoteDocumentMetadata', tags: ['delivery-notes', 'documents', 'read'], summary: 'Retrieve delivery note document metadata / render reference', parameters: [idParam('Delivery note UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#delivery-notes-endpoint-retrieve-a-delivery-note-document' },
+			get: { operationId: 'getDeliveryNoteDocumentMetadata', tags: ['delivery-notes', 'documents', 'read'], summary: 'Retrieve delivery note document metadata / render reference', parameters: [idParam('Delivery note UUID')], responses: documentResponses, notes: deprecatedDocumentNotes, docsUrl: 'https://developers.lexware.io/docs/#delivery-notes-endpoint-render-a-delivery-note-document-pdf' },
 		},
 		'/v1/delivery-notes/{id}/file': {
-			get: { operationId: 'downloadDeliveryNotePdf', tags: ['delivery-notes', 'files', 'documents', 'read'], summary: 'Download finalized delivery note PDF', parameters: [idParam('Delivery note UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#delivery-notes-endpoint-retrieve-a-delivery-note-file' },
+			get: { operationId: 'downloadDeliveryNotePdf', tags: ['delivery-notes', 'files', 'documents', 'read'], summary: 'Download finalized delivery note PDF', parameters: [idParam('Delivery note UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#delivery-notes-endpoint-download-a-delivery-note-file' },
 		},
 		'/v1/dunnings': {
-			post: { operationId: 'createDunning', tags: ['dunnings', 'sales-documents', 'write'], summary: 'Create a dunning notice for an invoice', parameters: [{ ...precedingSalesVoucherParam, required: true }, finalizeParam], requestBody: salesVoucherBody, responses: documentResponses, notes: ['The API does not support listing dunnings.', 'Dunning creation requires an invoice as precedingSalesVoucherId.', 'Legacy MCP observation: Lexware returns voucherStatus:"draft" for dunnings regardless of finalize=true, while a PDF is generated immediately.'], docsUrl: 'https://developers.lexware.io/docs/#dunnings-endpoint-create-a-dunning' },
+			post: { operationId: 'createDunning', tags: ['dunnings', 'sales-documents', 'write'], summary: 'Create a dunning notice for an invoice', parameters: [{ ...precedingSalesVoucherParam, required: true }], requestBody: salesVoucherBody, responses: documentResponses, notes: ['The API does not support listing dunnings.', 'Dunning creation requires an invoice as precedingSalesVoucherId.', 'Dunnings are always created in draft mode and do not need to be finalized; a PDF is still available via /v1/dunnings/{id}/file.'], docsUrl: 'https://developers.lexware.io/docs/#dunnings-endpoint-create-a-dunning' },
 		},
 		'/v1/dunnings/{id}': {
 			get: { operationId: 'getDunning', tags: ['dunnings', 'sales-documents', 'read'], summary: 'Retrieve one dunning notice', parameters: [idParam('Dunning UUID')], responses: documentResponses, notes: ['No list endpoint exists. Find dunning ids through relatedVouchers on the referenced invoice.'], docsUrl: 'https://developers.lexware.io/docs/#dunnings-endpoint-retrieve-a-dunning' },
 		},
 		'/v1/dunnings/{id}/document': {
-			get: { operationId: 'getDunningDocumentMetadata', tags: ['dunnings', 'documents', 'read'], summary: 'Retrieve dunning document metadata / render reference', parameters: [idParam('Dunning UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#dunnings-endpoint-retrieve-a-dunning-document' },
+			get: { operationId: 'getDunningDocumentMetadata', tags: ['dunnings', 'documents', 'read'], summary: 'Retrieve dunning document metadata / render reference', parameters: [idParam('Dunning UUID')], responses: documentResponses, notes: deprecatedDocumentNotes, docsUrl: 'https://developers.lexware.io/docs/#dunnings-endpoint-render-a-dunning-document-pdf' },
 		},
 		'/v1/dunnings/{id}/file': {
-			get: { operationId: 'downloadDunningPdf', tags: ['dunnings', 'files', 'documents', 'read'], summary: 'Download dunning PDF', parameters: [idParam('Dunning UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#dunnings-endpoint-retrieve-a-dunning-file' },
+			get: { operationId: 'downloadDunningPdf', tags: ['dunnings', 'files', 'documents', 'read'], summary: 'Download dunning PDF', parameters: [idParam('Dunning UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#dunnings-endpoint-download-a-dunning-file' },
 		},
 		'/v1/down-payment-invoices/{id}': {
 			get: { operationId: 'getDownPaymentInvoice', tags: ['down-payment-invoices', 'sales-documents', 'read'], summary: 'Retrieve one down-payment invoice', parameters: [idParam('Down-payment invoice UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#down-payment-invoices-endpoint-retrieve-a-down-payment-invoice' },
 		},
 		'/v1/down-payment-invoices/{id}/file': {
-			get: { operationId: 'downloadDownPaymentInvoicePdf', tags: ['down-payment-invoices', 'files', 'documents', 'read'], summary: 'Download down-payment invoice PDF', parameters: [idParam('Down-payment invoice UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#down-payment-invoices-endpoint-retrieve-a-down-payment-invoice-file' },
+			get: { operationId: 'downloadDownPaymentInvoicePdf', tags: ['down-payment-invoices', 'files', 'documents', 'read'], summary: 'Download down-payment invoice PDF', parameters: [idParam('Down-payment invoice UUID')], responses: { '200': 'PDF/binary file' }, docsUrl: 'https://developers.lexware.io/docs/#down-payment-invoices-endpoint-download-a-down-payment-invoice-file' },
 		},
 		'/v1/vouchers': {
 			get: {
@@ -711,7 +713,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 				summary: 'Filter bookkeeping vouchers by voucher number',
 				parameters: [{ name: 'voucherNumber', in: 'query', type: 'string', description: 'Voucher number filter.' }, ...pageParams],
 				responses: pagedResponse('bookkeeping vouchers'),
-				notes: pagedNotes,
+				notes: ['Deprecated by Lexware: filter vouchers via /v1/voucherlist instead.', ...pagedNotes],
 				docsUrl: 'https://developers.lexware.io/docs/#vouchers-endpoint-filtering-vouchers',
 			},
 			post: {
@@ -727,7 +729,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 		},
 		'/v1/vouchers/{id}': {
 			get: { operationId: 'getVoucher', tags: ['vouchers', 'bookkeeping', 'read'], summary: 'Retrieve one bookkeeping voucher', parameters: [idParam('Voucher UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#vouchers-endpoint-retrieve-a-voucher' },
-			put: { operationId: 'updateVoucher', tags: ['vouchers', 'bookkeeping', 'write'], summary: 'Update a bookkeeping voucher', parameters: [idParam('Voucher UUID')], requestBody: { contentType: 'application/json', summary: 'Full voucher JSON including current version for optimistic locking.', required: ['version', 'type', 'voucherDate', 'totalGrossAmount', 'totalTaxAmount', 'taxType', 'voucherItems'] }, responses: documentResponses, notes: ['On 409 conflict, re-fetch the voucher and retry with its current version.'], docsUrl: 'https://developers.lexware.io/docs/#vouchers-endpoint-update-a-voucher' },
+			put: { operationId: 'updateVoucher', tags: ['vouchers', 'bookkeeping', 'write'], summary: 'Update a bookkeeping voucher', parameters: [idParam('Voucher UUID')], requestBody: { contentType: 'application/json', summary: 'Full voucher JSON including current version for optimistic locking.', required: ['version', 'type', 'voucherDate', 'totalGrossAmount', 'totalTaxAmount', 'taxType', 'voucherItems'] }, responses: documentResponses, notes: ['On 409 conflict, re-fetch the voucher and retry with its current version.', 'Vouchers with voucherStatus unchecked cannot be updated, except to finalize them by transitioning to open.'], docsUrl: 'https://developers.lexware.io/docs/#vouchers-endpoint-update-a-voucher' },
 		},
 		'/v1/vouchers/{id}/files': {
 			post: { operationId: 'uploadFileToVoucher', tags: ['vouchers', 'files', 'bookkeeping', 'write', 'upload'], summary: 'Upload and attach a file to a voucher', parameters: [idParam('Voucher UUID')], requestBody: { contentType: 'multipart/form-data', summary: 'Multipart file upload. Field: file.' }, responses: documentResponses, notes: ['Upload via the multipart request field of lexware.request, e.g. multipart: [{ name: "file", contentType: "application/pdf", contentPath: "/absolute/path/doc.pdf" }]. Use contentPath for files on the server machine, contentBase64 for bytes held as base64.'], examples: [{ multipart: [{ name: 'file', contentType: 'application/pdf', contentPath: '/absolute/path/to/receipt.pdf' }] }], docsUrl: 'https://developers.lexware.io/docs/#vouchers-endpoint-upload-a-file-to-a-voucher' },
@@ -739,7 +741,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 			post: { operationId: 'uploadFile', tags: ['files', 'documents', 'write', 'upload', 'beleg'], summary: 'Upload a file', requestBody: { contentType: 'multipart/form-data', summary: 'Multipart upload. Form fields: file (the binary file) and type (e.g. voucher). Both are multipart form fields, not query parameters.', required: ['file', 'type'], shape: { file: 'binary file content', type: 'voucher' } }, responses: documentResponses, notes: ['type=voucher is a multipart form field, not a query parameter. Send both file and type as form fields.', 'Upload via the multipart request field of lexware.request — never hand-roll boundaries or inline file bytes in code. For a file on the server machine use contentPath (absolute path; host reads it from disk). For bytes you already hold as base64 use contentBase64.', 'The response includes sent: { bytes, parts: [{ name, filename, bytes, sha256 }] } echoing the uploaded binary payload for integrity checks.'], examples: [{ multipart: [{ name: 'file', contentType: 'application/pdf', contentPath: '/absolute/path/to/receipt.pdf' }, { name: 'type', value: 'voucher' }] }], docsUrl: 'https://developers.lexware.io/docs/#files-endpoint-upload-a-file' },
 		},
 		'/v1/files/{id}': {
-			get: { operationId: 'downloadFile', tags: ['files', 'documents', 'read'], summary: 'Download a file by file id', parameters: [idParam('File UUID')], responses: { '200': 'Binary/PDF/XML file content', '404': 'File not found' }, notes: ['Accept can be application/pdf, application/xml, or */*. Return as resource/blob, not as large inline text.'], docsUrl: 'https://developers.lexware.io/docs/#files-endpoint-retrieve-a-file' },
+			get: { operationId: 'downloadFile', tags: ['files', 'documents', 'read'], summary: 'Download a file by file id', parameters: [idParam('File UUID')], responses: { '200': 'Binary/PDF/XML file content', '404': 'File not found' }, notes: ['Accept can be application/pdf, application/xml, or */*. Return as resource/blob, not as large inline text.', 'Only use this for bookkeeping voucher files. Downloading sales voucher documents here is deprecated; use the /file subresource of the sales voucher instead.'], docsUrl: 'https://developers.lexware.io/docs/#files-endpoint-download-a-file' },
 		},
 		'/v1/payments/{voucherId}': {
 			get: { operationId: 'getPayments', tags: ['payments', 'invoices', 'vouchers', 'read'], summary: 'Get payment information for a voucher/invoice', parameters: [{ name: 'voucherId', in: 'path', required: true, type: 'uuid', description: 'Voucher or invoice UUID.' }], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#payments-endpoint' },
@@ -748,13 +750,13 @@ export const lexwareSpec: LexwareApiCatalog = {
 			get: { operationId: 'listPaymentConditions', tags: ['payment-conditions', 'payment-terms', 'zahlungsbedingungen', 'reference-data', 'read'], summary: 'List payment conditions / payment terms (Zahlungsbedingungen)', responses: documentResponses, notes: ['Use /v1/payment-conditions for payment terms / Zahlungsbedingungen. Do not confuse with /v1/countries, which lists tax-classification reference data.', 'Use payment condition data as reference when creating invoices and other sales documents.'], docsUrl: 'https://developers.lexware.io/docs/#payment-conditions-endpoint' },
 		},
 		'/v1/recurring-templates': {
-			get: { operationId: 'listRecurringTemplates', tags: ['recurring-templates', 'invoices', 'read'], summary: 'List recurring invoice templates', parameters: [...pageParams, { name: 'sort', in: 'query', type: 'string', description: 'Sort expression, e.g. createdDate,DESC or nextExecutionDate,ASC.' }], responses: pagedResponse('recurring invoice templates'), notes: pagedNotes, docsUrl: 'https://developers.lexware.io/docs/#recurring-templates-endpoint-retrieve-and-filter-recurring-templates' },
+			get: { operationId: 'listRecurringTemplates', tags: ['recurring-templates', 'invoices', 'read'], summary: 'List recurring invoice templates', parameters: [...pageParams, { name: 'sort', in: 'query', type: 'string', description: 'Sort expression, e.g. createdDate,DESC or nextExecutionDate,ASC.' }], responses: pagedResponse('recurring invoice templates'), notes: pagedNotes, docsUrl: 'https://developers.lexware.io/docs/#recurring-templates-endpoint-retrieve-all-recurring-templates' },
 		},
 		'/v1/recurring-templates/{id}': {
 			get: { operationId: 'getRecurringTemplate', tags: ['recurring-templates', 'invoices', 'read'], summary: 'Retrieve one recurring invoice template', parameters: [idParam('Recurring template UUID')], responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#recurring-templates-endpoint-retrieve-a-recurring-template' },
 		},
 		'/v1/event-subscriptions': {
-			get: { operationId: 'listEventSubscriptions', tags: ['event-subscriptions', 'webhooks', 'read'], summary: 'List webhook event subscriptions', responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#event-subscriptions-endpoint-retrieve-event-subscriptions' },
+			get: { operationId: 'listEventSubscriptions', tags: ['event-subscriptions', 'webhooks', 'read'], summary: 'List webhook event subscriptions', responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#event-subscriptions-endpoint-retrieve-all-event-subscriptions' },
 			post: { operationId: 'createEventSubscription', tags: ['event-subscriptions', 'webhooks', 'write'], summary: 'Create a webhook event subscription', requestBody: { contentType: 'application/json', summary: 'Subscription JSON with eventType and callbackUrl.', required: ['eventType', 'callbackUrl'] }, responses: documentResponses, examples: [{ eventType: 'contact.changed', callbackUrl: 'https://example.org/webhook' }], docsUrl: 'https://developers.lexware.io/docs/#event-subscriptions-endpoint-create-an-event-subscription' },
 		},
 		'/v1/event-subscriptions/{subscriptionId}': {
@@ -896,7 +898,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 				{ method: 'GET', path: '/v1/dunnings/{id}' },
 				{ method: 'GET', path: '/v1/invoices/{id}' },
 			],
-			notes: ['Lexware may return voucherStatus:"draft" for dunnings regardless of finalize=true; this is expected according to the legacy MCP notes.'],
+			notes: ['Dunnings are always created in draft mode and do not need to be finalized; do not pass finalize.'],
 		},
 		updateWithOptimisticLocking: {
 			summary: 'Safely update versioned resources',
