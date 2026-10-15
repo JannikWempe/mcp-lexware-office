@@ -15,7 +15,7 @@ Lexware Office API docs: https://developers.lexware.io/docs/ (one page; each cat
 
 ## Conventions
 
-- Catalog entries in `lexware-spec.ts` must match official Lexware docs (docsUrl per operation)
+- Catalog entries in `lexware-spec.ts` must match official Lexware docs (docsUrl per operation); `pnpm run check:docs` (network) verifies anchors and flags changelog entries newer than `scripts/lexware-docs-baseline.json`
 - Optional fields use `!== undefined` guards, not falsy checks
 - Tests are `src/*.test.ts` (node:test); `pnpm test` builds then runs them; `pnpm run typecheck` for tsc only
 - `docs/guide.md` is user-facing and checked in; `src/docs-contract.test.ts` asserts parts of it
