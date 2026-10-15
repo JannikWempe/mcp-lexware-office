@@ -8,9 +8,6 @@ import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-s
 import { truncateText } from './truncate.js';
 import { VERSION } from './version.js';
 
-// Host-side HTTP client behind the sandbox's `lexware.request`. It alone holds the API key; guest
-// code reaches the API only through the host function in lexware-sandbox-sdk.ts.
-
 export type LexwareExecuteMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 type QueryScalar = string | number | boolean;
@@ -137,6 +134,10 @@ const DEFAULT_RATE_LIMIT_INTERVAL_MS = 500;
 const DEFAULT_MAX_RETRY_AFTER_MS = 5_000;
 const WRITE_METHODS = new Set<LexwareExecuteMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
 
+/**
+ * Host-side HTTP client behind the sandbox's `lexware.request`. It alone holds the API key; guest
+ * code reaches the API only through the host function in lexware-sandbox-sdk.ts.
+ */
 export class LexwareApiClient {
 	readonly writesEnabled: boolean;
 	private readonly apiKey?: string;
