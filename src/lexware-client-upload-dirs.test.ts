@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -24,12 +24,6 @@ interface Fixture {
 //   data2/secret.pdf prefix trick: shares the "data" prefix but is not inside it
 //   outside/secret.pdf
 async function withFixture(run: (fixture: Fixture) => Promise<void>): Promise<void> {
-	const originalReadOnly = process.env.LEXWARE_OFFICE_READ_ONLY;
-	const originalAllowWrites = process.env.LEXWARE_OFFICE_ALLOW_WRITES;
-	const originalUploadDirs = process.env.LEXWARE_OFFICE_UPLOAD_DIRS;
-	delete process.env.LEXWARE_OFFICE_READ_ONLY;
-	delete process.env.LEXWARE_OFFICE_UPLOAD_DIRS;
-	process.env.LEXWARE_OFFICE_ALLOW_WRITES = 'true';
 	const root = await mkdtemp(join(tmpdir(), 'lexware-upload-dirs-'));
 	try {
 		const allowed = join(root, 'data');
@@ -47,21 +41,16 @@ async function withFixture(run: (fixture: Fixture) => Promise<void>): Promise<vo
 		await run({ root, allowed, outside, sibling });
 	} finally {
 		await rm(root, { recursive: true, force: true });
-		if (originalReadOnly === undefined) delete process.env.LEXWARE_OFFICE_READ_ONLY;
-		else process.env.LEXWARE_OFFICE_READ_ONLY = originalReadOnly;
-		if (originalAllowWrites === undefined) delete process.env.LEXWARE_OFFICE_ALLOW_WRITES;
-		else process.env.LEXWARE_OFFICE_ALLOW_WRITES = originalAllowWrites;
-		if (originalUploadDirs === undefined) delete process.env.LEXWARE_OFFICE_UPLOAD_DIRS;
-		else process.env.LEXWARE_OFFICE_UPLOAD_DIRS = originalUploadDirs;
 	}
 }
 
-const uploadClient = (uploadDirs?: string[]) => {
+const uploadClient = (uploadDirs?: string[], writesEnabled = true) => {
 	let calls = 0;
 	const client = new LexwareApiClient({
 		apiKey: 'test-key',
 		baseUrl: 'https://example.test',
 		rateLimitIntervalMs: 0,
+		writesEnabled,
 		...(uploadDirs !== undefined && { uploadDirs }),
 		fetchImpl: async () => {
 			calls += 1;
@@ -114,11 +103,10 @@ test('files inside an allowed dir (including nested) are uploaded', async () => 
 	});
 });
 
-test('LEXWARE_OFFICE_UPLOAD_DIRS is split on the path delimiter and the option overrides it', async () => {
+test('every configured upload dir is allowed; only configured dirs are', async () => {
 	await withFixture(async ({ allowed, outside }) => {
-		process.env.LEXWARE_OFFICE_UPLOAD_DIRS = [outside, allowed].join(delimiter);
-		assert.equal((await uploadClient().upload(join(allowed, 'receipt.pdf'))).status, 200);
-		assert.equal((await uploadClient().upload(join(outside, 'secret.pdf'))).status, 200);
+		assert.equal((await uploadClient([outside, allowed]).upload(join(allowed, 'receipt.pdf'))).status, 200);
+		assert.equal((await uploadClient([outside, allowed]).upload(join(outside, 'secret.pdf'))).status, 200);
 
 		await assert.rejects(() => uploadClient([allowed]).upload(join(outside, 'secret.pdf')), /outside the allowed upload directories/);
 		await assert.rejects(() => uploadClient([]).upload(join(allowed, 'receipt.pdf')), /contentPath uploads are disabled/);
@@ -181,8 +169,7 @@ test('missing files and directories inside an allowed dir get specific errors', 
 
 test('write gate runs before the allowlist check', async () => {
 	await withFixture(async ({ outside }) => {
-		delete process.env.LEXWARE_OFFICE_ALLOW_WRITES;
-		await assert.rejects(() => uploadClient([]).upload(join(outside, 'secret.pdf')), /blocked: writes are disabled/);
+		await assert.rejects(() => uploadClient([], false).upload(join(outside, 'secret.pdf')), /blocked: writes are disabled/);
 	});
 });
 

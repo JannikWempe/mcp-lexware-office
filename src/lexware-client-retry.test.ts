@@ -69,21 +69,10 @@ test('GET 429 is returned without retry when Retry-After exceeds maxRetryAfterMs
 });
 
 test('writes are never retried on 429', async () => {
-	const originalReadOnly = process.env.LEXWARE_OFFICE_READ_ONLY;
-	const originalAllowWrites = process.env.LEXWARE_OFFICE_ALLOW_WRITES;
-	delete process.env.LEXWARE_OFFICE_READ_ONLY;
-	process.env.LEXWARE_OFFICE_ALLOW_WRITES = 'true';
-	try {
-		const { fetchImpl, sentAt } = sequenceFetch([() => tooManyRequests('0')]);
-		const response = await clientWithFetch(fetchImpl).request({ method: 'POST', path: '/v1/contacts', body: {} });
-		assert.equal(response.status, 429);
-		assert.equal(sentAt.length, 1);
-	} finally {
-		if (originalReadOnly === undefined) delete process.env.LEXWARE_OFFICE_READ_ONLY;
-		else process.env.LEXWARE_OFFICE_READ_ONLY = originalReadOnly;
-		if (originalAllowWrites === undefined) delete process.env.LEXWARE_OFFICE_ALLOW_WRITES;
-		else process.env.LEXWARE_OFFICE_ALLOW_WRITES = originalAllowWrites;
-	}
+	const { fetchImpl, sentAt } = sequenceFetch([() => tooManyRequests('0')]);
+	const response = await clientWithFetch(fetchImpl, { writesEnabled: true }).request({ method: 'POST', path: '/v1/contacts', body: {} });
+	assert.equal(response.status, 429);
+	assert.equal(sentAt.length, 1);
 });
 
 test('abort during the Retry-After wait cancels the retry without a second fetch', async () => {

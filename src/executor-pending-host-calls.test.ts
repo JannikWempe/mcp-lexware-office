@@ -16,13 +16,13 @@ import { QuickJsExecutor } from './executor.js';
 function executeWithSlowHost(code: string, delayMs: number, timeoutMs = 500): Promise<import('./executor.js').CodeExecutionResult> {
 	return new QuickJsExecutor().execute(
 		code,
-		{ spec: {} },
+		{},
 		{
 			timeoutMs,
 			hostFunctions: {
-				__lexwareRequestJson: (_payload) =>
+				hostCall: (_payload) =>
 					new Promise<string>((resolve) =>
-						setTimeout(() => resolve(JSON.stringify({ ok: true, data: {} })), delayMs),
+						setTimeout(() => resolve('{}'), delayMs),
 					),
 			},
 		},
@@ -35,7 +35,7 @@ test('unawaited host call: sandbox returns immediately without awaiting the host
 	// The executor must not crash the process and must complete without error.
 	const execution = await executeWithSlowHost(
 		// Fire and forget – no await
-		`async () => { globalThis.__lexwareRequestJson(JSON.stringify({})); return 'done'; }`,
+		`async () => { hostCall('{}'); return 'done'; }`,
 		50, // host resolves after 50 ms
 		200, // executor timeout well above host delay
 	);
@@ -49,7 +49,7 @@ test('host call resolves after executor timeout: returns structured timeout erro
 	// The sandbox awaits a host call that takes longer than the executor timeout.
 	// This was the primary crash scenario before the fix.
 	const execution = await executeWithSlowHost(
-		`async () => { return await lexware.request({ path: '/v1/countries' }); }`,
+		`async () => { return await hostCall('{}'); }`,
 		300, // host resolves after 300 ms
 		100, // executor times out at 100 ms — before host resolves
 	);
@@ -64,9 +64,9 @@ test('multiple slow host calls hit timeout: returns structured error, process st
 	const execution = await executeWithSlowHost(
 		`async () => {
 			const [a, b, c] = await Promise.all([
-				lexware.request({ path: '/v1/countries' }),
-				lexware.request({ path: '/v1/countries' }),
-				lexware.request({ path: '/v1/countries' }),
+				hostCall('{}'),
+				hostCall('{}'),
+				hostCall('{}'),
 			]);
 			return [a, b, c];
 		}`,
@@ -81,12 +81,12 @@ test('multiple slow host calls hit timeout: returns structured error, process st
 test('host call that rejects after timeout: returns structured error, process stays alive', async () => {
 	// The host function rejects (simulating a network error) after the executor timeout.
 	const execution = await new QuickJsExecutor().execute(
-		`async () => { return await lexware.request({ path: '/v1/countries' }); }`,
-		{ spec: {} },
+		`async () => { return await hostCall('{}'); }`,
+		{},
 		{
 			timeoutMs: 100,
 			hostFunctions: {
-				__lexwareRequestJson: (_payload) =>
+				hostCall: (_payload) =>
 					new Promise<string>((_resolve, reject) =>
 						setTimeout(() => reject(new Error('simulated network error')), 300),
 					),
@@ -110,7 +110,7 @@ test('never-settling guest promise: returns timeout error and does not hang tear
 	const executorPromise = new QuickJsExecutor().execute(
 		// Guest code awaits a promise that never settles.
 		`async () => await new Promise(() => {})`,
-		{ spec: {} },
+		{},
 		{ timeoutMs: 200 },
 	);
 

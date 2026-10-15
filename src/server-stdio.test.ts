@@ -9,9 +9,16 @@ import test from 'node:test';
 
 const serverEntry = join(dirname(fileURLToPath(import.meta.url)), 'index.js');
 
+interface ListedTool {
+	name: string;
+	description: string;
+	inputSchema: { properties: Record<string, { description?: string }> };
+	annotations: Record<string, boolean>;
+}
+
 interface JsonRpcResponse {
 	id: number;
-	result?: { structuredContent?: Record<string, unknown>; isError?: boolean };
+	result?: { structuredContent?: Record<string, unknown>; isError?: boolean; tools?: ListedTool[] };
 	error?: unknown;
 }
 
@@ -62,6 +69,32 @@ async function startMcp(baseUrl: string) {
 const callExecute = (mcp: Awaited<ReturnType<typeof startMcp>>, code: string) =>
 	mcp.request('tools/call', { name: 'execute', arguments: { code } });
 
+test('server lists exactly search and execute with docs and write-mode annotations', async () => {
+	const lexware = await startFakeLexware((_req, res) => res.end());
+	const mcp = await startMcp(lexware.baseUrl);
+	try {
+		const { result } = await mcp.request('tools/list', {}).response;
+		const tools = result?.tools ?? [];
+
+		assert.deepEqual(tools.map((tool) => tool.name), ['search', 'execute']);
+		const [search, execute] = tools;
+		assert.match(search.description, /spec\.info\.domainIndex: compact map/);
+		assert.match(search.description, /spec\.info\.writesEnabled/);
+		assert.match(execute.description, /lexware\.request returns all HTTP responses/);
+		assert.match(execute.description, /multipart\?: MultipartPart\[\]/);
+		assert.match(execute.description, /contentPath.*LEXWARE_OFFICE_UPLOAD_DIRS/);
+		assert.match(execute.description, /The tool result includes requests/);
+		assert.match(execute.description, /maxRequests bounds the HTTP attempts actually sent to Lexware, including automatic 429 retries/);
+		assert.match(execute.inputSchema.properties.maxRequests?.description ?? '', /including automatic 429 retries/);
+		// Started with LEXWARE_OFFICE_ALLOW_WRITES=false.
+		assert.equal(execute.annotations.readOnlyHint, true);
+		assert.equal(execute.annotations.destructiveHint, false);
+	} finally {
+		mcp.close();
+		lexware.close();
+	}
+});
+
 test('execute reports per-attempt requests on success', async () => {
 	const lexware = await startFakeLexware((_req, res) => {
 		res.writeHead(200, { 'content-type': 'application/json' }).end('[]');
@@ -99,7 +132,8 @@ test('failing execute still reports requests made before the error', async () =>
 
 		assert.equal(result?.isError, true);
 		assert.match(String(result?.structuredContent?.error), /boom/);
-		assert.equal(result?.structuredContent?.requestCount, 2);
+		// The blocked write was never sent, so it does not count.
+		assert.equal(result?.structuredContent?.requestCount, 1);
 		const requests = result?.structuredContent?.requests as Array<Record<string, unknown>>;
 		assert.deepEqual(requests.map(({ method, path, status, write }) => ({ method, path, status, write })), [
 			{ method: 'GET', path: '/v1/profile', status: 200, write: false },

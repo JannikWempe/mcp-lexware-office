@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { type FileHandle, lstat, open, realpath, stat } from 'node:fs/promises';
-import { basename, delimiter, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-spec.js';
@@ -44,8 +44,10 @@ export interface LexwareClientOptions {
 	rateLimitIntervalMs?: number;
 	// GET requests answered with 429 are retried once if Retry-After is at most this long.
 	maxRetryAfterMs?: number;
-	// Directories multipart contentPath may read from. Overrides LEXWARE_OFFICE_UPLOAD_DIRS; empty disables contentPath.
+	// Directories multipart contentPath may read from. Omitted or empty disables contentPath.
 	uploadDirs?: string[];
+	// POST/PUT/PATCH/DELETE are blocked unless true.
+	writesEnabled?: boolean;
 }
 
 export interface LexwareRequestOptions {
@@ -54,6 +56,9 @@ export interface LexwareRequestOptions {
 	// Called exactly once per attempt that passed input validation, including blocked writes,
 	// cancellations, and network errors (with `error`), for audit logging.
 	onSettled?: (entry: RequestLogEntry) => void;
+	// Called right before each attempt is handed to fetch, including 429 retries. Throwing
+	// fails that attempt unsent (logged with `error`, `sent: false`), e.g. to enforce a budget.
+	beforeSend?: () => void;
 }
 
 // Audit record for one request attempt. Never contains headers, bodies, query values, or the API key.
@@ -130,6 +135,7 @@ const DEFAULT_MAX_RETRY_AFTER_MS = 5_000;
 const WRITE_METHODS = new Set<LexwareExecuteMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export class LexwareApiClient {
+	readonly writesEnabled: boolean;
 	private readonly apiKey?: string;
 	private readonly baseUrl: string;
 	private readonly userAgent: string;
@@ -143,17 +149,16 @@ export class LexwareApiClient {
 	private rateLimitQueue: Promise<void> = Promise.resolve();
 
 	constructor(options: LexwareClientOptions = {}) {
-		this.apiKey = options.apiKey ?? process.env.LEXWARE_OFFICE_API_KEY;
-		this.baseUrl = options.baseUrl ?? process.env.LEXWARE_OFFICE_API_BASE_URL ?? DEFAULT_BASE_URL;
+		this.writesEnabled = options.writesEnabled ?? false;
+		this.apiKey = options.apiKey;
+		this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
 		this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
 		this.fetchImpl = options.fetchImpl ?? fetch;
 		this.maxResponseChars = options.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS;
 		this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		this.rateLimitIntervalMs = options.rateLimitIntervalMs ?? DEFAULT_RATE_LIMIT_INTERVAL_MS;
 		this.maxRetryAfterMs = options.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
-		this.uploadDirs = (options.uploadDirs ?? (process.env.LEXWARE_OFFICE_UPLOAD_DIRS ?? '').split(delimiter))
-			.map((dir) => dir.trim())
-			.filter((dir) => dir.length > 0);
+		this.uploadDirs = options.uploadDirs ?? [];
 	}
 
 	async request(input: unknown, options: LexwareRequestOptions = {}): Promise<LexwareResponse> {
@@ -187,7 +192,7 @@ export class LexwareApiClient {
 		});
 		let response: LexwareResponse;
 		try {
-			response = await this.send(normalized, apiKey, options.signal, delayMs, progress);
+			response = await this.send(normalized, apiKey, options, delayMs, progress);
 		} catch (error) {
 			// send() throws controlled messages; sanitize anyway so the log can never leak secrets.
 			log({ error: sanitizeFetchErrorMessage(error, apiKey) });
@@ -197,11 +202,12 @@ export class LexwareApiClient {
 		return response;
 	}
 
-	private async send(normalized: NormalizedRequest, apiKey: string, signal: AbortSignal | undefined, delayMs: number, progress: { sent: boolean }): Promise<LexwareResponse> {
-		if (WRITE_METHODS.has(normalized.method) && writesAreGloballyDisabled()) {
+	private async send(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number, progress: { sent: boolean }): Promise<LexwareResponse> {
+		if (WRITE_METHODS.has(normalized.method) && !this.writesEnabled) {
 			throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
 		}
 
+		const signal = options.signal;
 		const cancelledError = () => new Error(`Lexware API request cancelled for ${normalized.method} ${normalized.path}`);
 		if (signal?.aborted) throw cancelledError();
 
@@ -235,6 +241,7 @@ export class LexwareApiClient {
 
 			const { body, sent } = await serializeRequestBody(normalized, headers, this.uploadDirs);
 			if (signal?.aborted) throw cancelledError();
+			options.beforeSend?.();
 
 			let response: Response;
 			try {
@@ -770,17 +777,6 @@ function sanitizeFetchErrorMessage(error: unknown, apiKey: string): string {
 		.replaceAll(apiKey, '[redacted]')
 		.replace(/Bearer\s+[^\s]+/gi, 'Bearer [redacted]')
 		.replace(/https?:\/\/[^\s)]+/gi, '[url omitted]');
-}
-
-export function writesEnabled(): boolean {
-	return !writesAreGloballyDisabled();
-}
-
-function writesAreGloballyDisabled(): boolean {
-	// Hard block: READ_ONLY wins over everything.
-	if (process.env.LEXWARE_OFFICE_READ_ONLY === 'true') return true;
-	// Writes are blocked by default. Writes require explicit opt-in.
-	return process.env.LEXWARE_OFFICE_ALLOW_WRITES !== 'true';
 }
 
 function headersToObject(headers: Headers): Record<string, string> {
