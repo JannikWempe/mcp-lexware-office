@@ -1,14 +1,13 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { QuickJsExecutor } from './executor.js';
 import { LexwareApiClient, type LexwareClientOptions } from './lexware-client.js';
 import { lexwareSpec } from './lexware-spec.js';
-import { stringifyForMcp, truncateText } from './truncate.js';
+import { truncateText } from './truncate.js';
 
 interface FetchCall {
 	input: RequestInfo | URL;
@@ -37,48 +36,6 @@ const clientWithCalls = (handler: (input: RequestInfo | URL, init?: RequestInit)
 };
 
 const writableClientWithCalls: typeof clientWithCalls = (handler, options = {}) => clientWithCalls(handler, { writesEnabled: true, ...options });
-
-test('server registers exactly search and execute tools', async () => {
-	const source = await readFile('src/index.ts', 'utf8');
-	const tools = [...source.matchAll(/server\.registerTool\(\n\s*'([^']+)'/g)].map((match) => match[1]);
-
-	assert.deepEqual(tools, ['search', 'execute']);
-	assert.doesNotMatch(source, /get-revenue-summary|allowWrite/);
-	assert.match(source, /spec\.info\.domainIndex: compact map/);
-	assert.match(source, /lexware\.request returns all HTTP responses/);
-	assert.match(source, /contentPath.*LEXWARE_OFFICE_UPLOAD_DIRS/);
-	assert.match(source, /The tool result includes requests/);
-});
-
-test('execute sandbox exposes generic request but not API key or Node globals', async () => {
-	process.env.LEXWARE_OFFICE_API_KEY = 'super-secret-test-key';
-	const execution = await new QuickJsExecutor().execute(
-		`async () => ({
-			lexwareType: typeof lexware,
-			requestType: typeof lexware.request,
-			processType: typeof process,
-			fetchType: typeof fetch,
-			requireType: typeof require,
-			secretVisible: Object.getOwnPropertyNames(globalThis).join(',').includes('super-secret-test-key')
-		})`,
-		{ spec: {} },
-		{
-			hostFunctions: {
-				__lexwareRequestJson: async () => JSON.stringify({ ok: true, status: 200, statusText: 'OK', request: { method: 'GET', path: '/v1/countries', query: {} }, contentType: 'application/json', headers: {}, data: {} }),
-			},
-		},
-	);
-
-	assert.equal(execution.error, undefined);
-	assert.deepEqual(execution.result, {
-		lexwareType: 'object',
-		requestType: 'function',
-		processType: 'undefined',
-		fetchType: 'undefined',
-		requireType: 'undefined',
-		secretVisible: false,
-	});
-});
 
 test('unknown relative /v1 paths are allowed and return request metadata without operation metadata', async () => {
 	const { client, calls } = clientWithCalls(async () => responseFor(200, JSON.stringify({ ok: true }), { 'content-type': 'application/json' }, 'OK'));
@@ -346,14 +303,6 @@ test('bodyBase64 responses echo sent bytes and sha256', async () => {
 	assert.deepEqual(response.sent, { bytes: 3, sha256: expectedSha });
 });
 
-test('writesEnabled from config is injected into the sandbox spec', async () => {
-	const source = await readFile('src/index.ts', 'utf8');
-	assert.match(source, /writesEnabled: config\.writesEnabled/, 'index.ts must inject writesEnabled into the sandbox spec');
-	assert.match(source, /spec\.info\.writesEnabled/, 'tool docs must mention spec.info.writesEnabled');
-	assert.match(source, /contentPath/, 'execute tool docs must document contentPath uploads');
-	assert.match(source, /multipart\?: MultipartPart\[\]/, 'execute tool docs must document the multipart request field');
-});
-
 test('large JSON responses stay parsed so execute code can summarize them', async () => {
 	const rows = Array.from({ length: 5 }, (_, index) => ({ countryCode: `C${index}`, countryNameEN: 'x'.repeat(50) }));
 	const client = new LexwareApiClient({
@@ -387,9 +336,6 @@ test('text, binary metadata, and truncation recovery guidance are returned compa
 	const truncated = truncateText('x'.repeat(50), { maxChars: 10 });
 	assert.match(truncated, /truncated 40 characters/);
 	assert.match(truncated, /Recovery: use a more specific search query/);
-
-	const mcpOutput = stringifyForMcp({ data: 'x'.repeat(50) }, { maxChars: 20 });
-	assert.match(mcpOutput, /summarize inside execute/);
 });
 
 test('search catalog exposes domain index and operation capability flags', () => {

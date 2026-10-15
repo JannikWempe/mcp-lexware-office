@@ -100,7 +100,7 @@ async () => {
 - rejects absolute URLs and external hosts,
 - hides the API key from sandboxed code,
 - rate-limits host requests to 2 requests/second by default,
-- retries a `GET` once when Lexware answers `429` with `Retry-After` ≤ 5 s (writes are never retried; the wait counts against the 30 s `execute` timeout),
+- retries a `GET` once when Lexware answers `429` with `Retry-After` ≤ 5 s (writes are never retried; the wait counts against the 30 s `execute` timeout, the retry against `maxRequests`),
 - returns JSON/text or binary metadata,
 - adds operation metadata when the request matches the catalog,
 - allows unknown `/v1/...` paths for API coverage gaps.
@@ -129,7 +129,7 @@ Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount`
 { "method": "POST", "path": "/v1/invoices", "status": 201, "ok": true, "write": true, "sent": true, "durationMs": 412 }
 ```
 
-Failed attempts (blocked writes, network errors, timeouts, cancellations) carry `error` instead of `status`/`ok`; a retried `429` shows up as two entries. `sent` tells whether the request reached `fetch`: `false` means Lexware never saw it (blocked, or cancelled while queued). A write with `error` and `sent: true` also carries `"outcome": "unknown"` — it may have been applied by Lexware (e.g. aborted after sending), so reconcile with a `GET` before retrying it. Entries never contain headers, query values, bodies, or the API key. Use it after a failed execution to see which writes already succeeded before retrying. `requestCount` still counts `lexware.request` calls from the sandbox (limited by `maxRequests`).
+Failed attempts (blocked writes, network errors, timeouts, cancellations) carry `error` instead of `status`/`ok`; a retried `429` shows up as two entries. `sent` tells whether the request reached `fetch`: `false` means Lexware never saw it (blocked, or cancelled while queued). A write with `error` and `sent: true` also carries `"outcome": "unknown"` — it may have been applied by Lexware (e.g. aborted after sending), so reconcile with a `GET` before retrying it. Entries never contain headers, query values, bodies, or the API key. Use it after a failed execution to see which writes already succeeded before retrying. `requestCount` is the number of HTTP attempts actually sent to Lexware — the entries with `sent: true`, so a retried `429` counts twice. `maxRequests` (default 10, max 50) bounds exactly that: requests rejected before sending (invalid input, blocked writes, cancelled while queued) don't count, and an attempt beyond the budget is not sent and fails with `Execution exceeded maxRequests=N` (it appears in `requests` with that `error` and `sent: false`).
 
 Cancellation: when the client cancels a `search`/`execute` call, the execution ends with `Execution cancelled by client` and in-flight Lexware requests are aborted (they appear in `requests` with a cancelled `error`). The same happens when `execute` hits its 30 s timeout (`Execution timed out after 30000ms`). A single Lexware request times out after 25 s.
 
