@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { CodeMode, LEXWARE_REQUEST_TIMEOUT_MS } from './code-mode.js';
 import { loadConfig } from './config.js';
 import { LexwareApiClient } from './lexware-client.js';
+import { lexwareSdkDeclaration } from './lexware-sandbox-sdk.js';
 import { VERSION } from './version.js';
 
 const config = loadConfig();
@@ -86,54 +87,7 @@ Use search first when you need endpoint/domain guidance; do not guess Lexware pa
 Available globals:
 
 declare const spec: LexwareApiCatalog;
-declare const lexware: {
-  request<T = unknown>(input: LexwareRequest): Promise<LexwareResponse<T>>;
-  json(input: LexwareRequest): Promise<unknown>;
-  paginate<T = unknown>(input: LexwareRequest, options?: { maxPages?: number }): Promise<T[]>;
-  requireNumber(row: unknown, fieldPath: string): number;
-  requireMoney(row: unknown, fieldPath: string): number;
-  sumMoney(rows: unknown[], fieldPath: string): number;
-  formatMoney(cents: number, currency?: string): string;
-};
-
-type LexwareRequest = {
-  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-  path: string; // relative /v1/... only; no absolute URLs or // hosts
-  query?: Record<string, string | number | boolean | Array<string | number | boolean> | null | undefined>;
-  body?: unknown; // JSON by default; string when rawBody=true (UTF-8 encoded, NOT binary-safe)
-  bodyBase64?: string; // raw binary body as base64; the host decodes it outside the sandbox
-  multipart?: MultipartPart[]; // multipart/form-data uploads (e.g. POST /v1/files); host builds FormData
-  contentType?: string;
-  rawBody?: boolean;
-  accept?: string;
-};
-// At most one of body, bodyBase64, or multipart per request.
-
-type MultipartPart = {
-  name: string;
-  value?: string; // plain text form field
-  contentBase64?: string; // binary part content as base64; host decodes it
-  contentPath?: string; // absolute file path on the MCP server machine; host reads it directly (no base64 blowup). Only works if the server sets LEXWARE_OFFICE_UPLOAD_DIRS and the file is inside one of those dirs; otherwise use contentBase64
-  filename?: string; // defaults to the contentPath basename
-  contentType?: string;
-};
-// Exactly one of value, contentBase64, or contentPath per part.
-
-type LexwareResponse<T = unknown> = {
-  ok: boolean;
-  status: number;
-  statusText: string;
-  data?: T;
-  text?: string;
-  truncated?: boolean;
-  contentType: string;
-  headers: Record<string, string>;
-  errorCategory?: string;
-  retryAfterSeconds?: number;
-  operation?: { operationId: string; method: string; pathTemplate: string; summary: string };
-  request: { method: string; path: string; query: Record<string, string[]> };
-  sent?: { bytes: number; sha256?: string; parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }> }; // echo of uploaded binary payloads for integrity checks
-};
+${lexwareSdkDeclaration}
 
 lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. A GET answered with 429 and Retry-After <= 5s is retried once automatically.
 

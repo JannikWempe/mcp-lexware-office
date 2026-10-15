@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createLexwareSdk } from './lexware-sandbox-sdk.js';
 import { lexwareSpec } from './lexware-spec.js';
 
 /*
@@ -8,18 +9,7 @@ Optional live contract check before releasing reporting changes:
 Run a read-only /v1/voucherlist request with size=1 against a non-sensitive account and inspect only the returned field names. Confirm voucherlist rows still expose totalAmount and openAmount. Do not log customer data or amounts in CI.
 */
 
-type NumericRow = Record<string, unknown>;
-
-const sumRequiredNumber = (rows: NumericRow[], field: string): number => rows.reduce((sum, row) => {
-	if (!Object.prototype.hasOwnProperty.call(row, field)) {
-		throw new Error(`Missing expected field ${field}. Available fields: ${Object.keys(row).join(', ')}`);
-	}
-	const value = Number(row[field]);
-	if (!Number.isFinite(value)) {
-		throw new Error(`Expected numeric ${field}, got ${JSON.stringify(row[field])}`);
-	}
-	return sum + value;
-}, 0);
+const lexware = createLexwareSdk(async () => '{}');
 
 test('spec uses voucherlist summary fields', () => {
 	const semantics = lexwareSpec.info.financeReportingSemantics;
@@ -68,9 +58,14 @@ test('search catalog carries finance-safety invariants without silent zero-defau
 });
 
 test('strict fixture aggregate catches schema drift', () => {
-	assert.equal(sumRequiredNumber([{ totalAmount: 100, openAmount: 25 }], 'totalAmount'), 100);
+	assert.equal(lexware.sumMoney([{ totalAmount: 100, openAmount: 25 }], 'totalAmount'), 10000);
+	assert.equal(lexware.requireMoney({ totalAmount: '100.10', openAmount: 25 }, 'openAmount'), 2500);
 	assert.throws(
-		() => sumRequiredNumber([{ openAmount: 25 }], 'totalAmount'),
+		() => lexware.sumMoney([{ openAmount: 25 }], 'totalAmount'),
 		/Missing expected field totalAmount/,
+	);
+	assert.throws(
+		() => lexware.requireMoney({ totalAmount: null }, 'totalAmount'),
+		/Expected numeric totalAmount/,
 	);
 });

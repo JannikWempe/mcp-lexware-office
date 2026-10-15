@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { QuickJsExecutor, type SandboxHostFunction } from './executor.js';
 
-const requestCode = `async () => { return await lexware.request({ path: '/v1/countries' }); }`;
+const requestCode = `async () => { return await hostCall('{}'); }`;
 
 // Host function that only settles when its context signal aborts, like a fetch would.
 const abortAwareHost = (seen: AbortSignal[]): SandboxHostFunction => (_payload, { signal }) => {
@@ -18,10 +18,10 @@ test('already-aborted external signal ends execution without host calls', async 
 	controller.abort();
 	let hostCalls = 0;
 
-	const execution = await new QuickJsExecutor().execute(requestCode, { spec: {} }, {
+	const execution = await new QuickJsExecutor().execute(requestCode, {}, {
 		signal: controller.signal,
 		hostFunctions: {
-			__lexwareRequestJson: async () => {
+			hostCall: async () => {
 				hostCalls += 1;
 				return '{}';
 			},
@@ -38,12 +38,12 @@ test('external abort mid-run ends execution promptly and aborts the host signal'
 	const host = abortAwareHost(seen);
 	const startedAt = Date.now();
 
-	const execution = await new QuickJsExecutor().execute(requestCode, { spec: {} }, {
+	const execution = await new QuickJsExecutor().execute(requestCode, {}, {
 		timeoutMs: 5_000,
 		signal: controller.signal,
 		hostFunctions: {
 			// Abort once the host call is in flight; a wall-clock timer races QuickJS init on cold runners.
-			__lexwareRequestJson: (payload, context) => {
+			hostCall: (payload, context) => {
 				const pending = host(payload, context);
 				setTimeout(() => controller.abort(), 20);
 				return pending;
@@ -62,9 +62,9 @@ test('executor timeout aborts the host signal so teardown does not wait for in-f
 	const seen: AbortSignal[] = [];
 	const startedAt = Date.now();
 
-	const execution = await new QuickJsExecutor().execute(requestCode, { spec: {} }, {
+	const execution = await new QuickJsExecutor().execute(requestCode, {}, {
 		timeoutMs: 50,
-		hostFunctions: { __lexwareRequestJson: abortAwareHost(seen) },
+		hostFunctions: { hostCall: abortAwareHost(seen) },
 	});
 
 	assert.match(execution.error ?? '', /timed out/);
@@ -76,9 +76,9 @@ test('host signal is aborted once execution finishes, cancelling fire-and-forget
 	const seen: AbortSignal[] = [];
 
 	const execution = await new QuickJsExecutor().execute(
-		`async () => { globalThis.__lexwareRequestJson(JSON.stringify({})); return 'done'; }`,
-		{ spec: {} },
-		{ hostFunctions: { __lexwareRequestJson: abortAwareHost(seen) } },
+		`async () => { hostCall('{}'); return 'done'; }`,
+		{},
+		{ hostFunctions: { hostCall: abortAwareHost(seen) } },
 	);
 
 	assert.equal(execution.error, undefined);
@@ -91,16 +91,16 @@ test('guest retries after teardown rejection do not reach the host function', as
 	const execution = await new QuickJsExecutor().execute(
 		`async () => {
 			try {
-				return await lexware.request({ path: '/v1/countries' });
+				return await hostCall('{}');
 			} catch {
-				return await lexware.request({ path: '/v1/countries' });
+				return await hostCall('{}');
 			}
 		}`,
-		{ spec: {} },
+		{},
 		{
 			timeoutMs: 50,
 			hostFunctions: {
-				__lexwareRequestJson: (_payload, { signal }) => {
+				hostCall: (_payload, { signal }) => {
 					hostCalls += 1;
 					return new Promise<string>((_resolve, reject) => {
 						signal.addEventListener('abort', () => reject(new Error('host aborted')), { once: true });

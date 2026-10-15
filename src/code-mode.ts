@@ -2,6 +2,7 @@ import type { CallToolResult } from '@modelcontextprotocol/server';
 
 import { type CodeExecutor, QuickJsExecutor } from './executor.js';
 import type { LexwareApiClient, RequestLogEntry } from './lexware-client.js';
+import { lexwareSandbox } from './lexware-sandbox-sdk.js';
 import { lexwareSpec } from './lexware-spec.js';
 import { truncateText } from './truncate.js';
 
@@ -81,13 +82,7 @@ export class CodeMode {
 				maxStackSizeBytes: MAX_STACK_SIZE_BYTES,
 				filename: 'lexware-execute.js',
 				signal: options.signal,
-				hostFunctions: {
-					__lexwareRequestJson: async (payload, { signal }) => {
-						const request = JSON.parse(payload) as unknown;
-						const response = await this.client.request(request, { signal, beforeSend, onSettled: (entry) => requests.push(entry) });
-						return JSON.stringify(response);
-					},
-				},
+				...lexwareSandbox(this.client, { beforeSend, onSettled: (entry) => requests.push(entry) }),
 			},
 		);
 
