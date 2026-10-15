@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.0.1](https://github.com/JannikWempe/mcp-lexware-office/compare/v3.0.0...v3.0.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **spec:** sync catalog with current Lexware docs ([8c8f0d7](https://github.com/JannikWempe/mcp-lexware-office/commit/8c8f0d75929bf2efb99a5bbcc42cb6a9fee48988))
+* **spec:** sync catalog with current Lexware docs (anchors, deprecations, dunning finalize) ([5b4c8bc](https://github.com/JannikWempe/mcp-lexware-office/commit/5b4c8bc0dc53b7f442e74d24cd8234a7bf1df7e8))
+
 ## [3.0.0](https://github.com/JannikWempe/mcp-lexware-office/compare/v2.0.0...v3.0.0) (2026-10-14)
 
 
