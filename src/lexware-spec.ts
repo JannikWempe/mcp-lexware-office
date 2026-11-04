@@ -174,10 +174,11 @@ const salesVoucherBody: LexwareRequestBody = {
 
 const documentResponses = {
 	'200': 'JSON document detail or action result',
-	'400': 'Validation error',
+	'400': 'Malformed request',
 	'401': 'Missing or invalid API key',
 	'403': 'Insufficient permissions',
 	'404': 'Resource not found',
+	'406': 'Validation error (Lexware\'s validation status)',
 	'409': 'Optimistic locking version conflict',
 	'429': 'Rate limit exceeded',
 };

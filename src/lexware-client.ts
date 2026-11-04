@@ -748,9 +748,10 @@ function isJsonResponse(contentType: string, accept: string): boolean {
 }
 
 function categorizeStatus(status: number): LexwareResponse['errorCategory'] | undefined {
-	if (status === 400 || status === 422) return 'validation';
+	if (status === 400 || status === 406 || status === 422) return 'validation';
 	if (status === 401) return 'auth';
-	if (status === 403) return 'permission';
+	// 402: action not accessible due to a Lexware contract issue.
+	if (status === 402 || status === 403) return 'permission';
 	if (status === 404) return 'not_found';
 	if (status === 409) return 'conflict';
 	if (status === 429) return 'rate_limit';

@@ -41,8 +41,10 @@ test('401 JSON error is categorized as auth without exposing the API key', async
 
 test('HTTP error statuses are categorized for model recovery decisions', async () => {
 	const cases: Array<[number, string]> = [
+		[402, 'permission'],
 		[403, 'permission'],
 		[404, 'not_found'],
+		[406, 'validation'],
 		[409, 'conflict'],
 	];
 
