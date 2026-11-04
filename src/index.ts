@@ -4,18 +4,26 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 
 import { CodeMode, LEXWARE_REQUEST_TIMEOUT_MS } from './code-mode.js';
-import { loadConfig } from './config.js';
+import { loadConfig, type ServerConfig } from './config.js';
 import { LexwareApiClient } from './lexware-client.js';
 import { lexwareSdkDeclaration } from './lexware-sandbox-sdk.js';
 import { VERSION } from './version.js';
 
-const config = loadConfig();
+let config: ServerConfig;
+try {
+	config = loadConfig();
+} catch (error) {
+	// Misconfiguration (e.g. an unknown LEXWARE_OFFICE_WRITE_ALLOW entry) stops the server with a readable message.
+	console.error(`Lexware Office MCP server: ${error instanceof Error ? error.message : String(error)}`);
+	process.exit(1);
+}
 const codeMode = new CodeMode({
 	client: new LexwareApiClient({
 		apiKey: config.apiKey,
 		baseUrl: config.baseUrl,
 		uploadDirs: config.uploadDirs,
 		writesEnabled: config.writesEnabled,
+		writeAllow: config.writeAllow,
 		requestTimeoutMs: LEXWARE_REQUEST_TIMEOUT_MS,
 	}),
 });
@@ -34,7 +42,7 @@ function createServer(): McpServer {
 		{
 			instructions: `Lexware Office API via Code Mode: \`search\` explores a curated API catalog, \`execute\` runs a sandboxed JS workflow against the live API.
 Always call \`search\` to discover endpoints, parameters, and workflows before \`execute\`; do not guess /v1 paths from memory.
-The server is read-only unless started with LEXWARE_OFFICE_ALLOW_WRITES=true; check spec.info.writesEnabled before planning writes.
+The server is read-only unless started with LEXWARE_OFFICE_ALLOW_WRITES=true; check spec.info.writesEnabled before planning writes, and spec.info.writePolicy.allow for which writes are permitted.
 Summarize, filter, and aggregate inside \`execute\` and return only what is needed — large results are truncated.`,
 		},
 	);
@@ -54,6 +62,7 @@ declare const spec: LexwareApiCatalog;
 Useful starting points:
 - spec.info.domainIndex: compact map from business domains to endpoint lists
 - spec.info.writesEnabled: whether this server currently allows POST/PUT/PATCH/DELETE — check before planning writes
+- spec.info.writePolicy: { enabled, allow } — allow is 'all' or the only permitted writes, e.g. ['POST /v1/files', 'PUT /v1/vouchers/{id}']
 - spec.paths: path -> method -> operation catalog with params, requestBody, responses, examples, capabilities, docsUrl
 - spec.workflows: curated recipes for reporting, sales documents, files/uploads, webhooks, and API quirks
 - spec.info.voucherStatusSemantics and financeReportingSemantics: finance/status guidance for revenue/Umsatz/profit questions
@@ -99,7 +108,7 @@ The tool result includes requests: one { method, path, status?, ok?, error?, wri
 
 maxRequests bounds the HTTP attempts actually sent to Lexware, including automatic 429 retries; requestCount counts every sent attempt, including reads collapsed into readsSummary. Requests rejected before sending (invalid input, blocked writes) do not count. An attempt beyond the budget is not sent and fails with "Execution exceeded maxRequests=N".
 
-This server is read-only by default. POST, PUT, PATCH, and DELETE are blocked unless the server is started with LEXWARE_OFFICE_ALLOW_WRITES=true. Setting LEXWARE_OFFICE_READ_ONLY=true is a hard block that overrides ALLOW_WRITES. Check spec.info.writesEnabled to branch before attempting a write.
+This server is read-only by default. POST, PUT, PATCH, and DELETE are blocked unless the server is started with LEXWARE_OFFICE_ALLOW_WRITES=true. Setting LEXWARE_OFFICE_READ_ONLY=true is a hard block that overrides ALLOW_WRITES. Check spec.info.writesEnabled to branch before attempting a write. LEXWARE_OFFICE_WRITE_ALLOW can further restrict writes to a list: spec.info.writePolicy.allow is then the only writes permitted ('METHOD /v1/template'; a '?finalize' suffix also allows finalize=true, otherwise sales documents can only be created as drafts). Writes outside it are rejected before sending.
 
 Example:
 

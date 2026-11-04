@@ -4,6 +4,7 @@ import type { CallToolResult } from '@modelcontextprotocol/server';
 
 import { CodeMode } from './code-mode.js';
 import { LexwareApiClient, type LexwareClientOptions } from './lexware-client.js';
+import { parseWriteAllow } from './write-policy.js';
 
 const jsonResponse = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), {
 	status,
@@ -51,6 +52,28 @@ test('search runs against the catalog and reports writesEnabled from the client'
 		assert.deepEqual(payloadOf(result), { ok: true, result: { writesEnabled, hasContacts: true, lexware: 'undefined' }, logs: [] });
 		assert.equal(fetched.length, 0);
 	}
+});
+
+test('execute exposes writePolicy and rejects non-allowlisted writes unsent and without consuming budget', async () => {
+	const { codeMode, fetched } = codeModeWith(() => jsonResponse(202, { id: 'file' }), { writesEnabled: true, writeAllow: parseWriteAllow('POST /v1/vouchers/{id}/files') });
+
+	const result = await codeMode.execute(`async () => {
+		const policy = spec.info.writePolicy;
+		const blocked = await lexware.request({ method: 'POST', path: '/v1/contacts', body: {} }).catch((error) => error.message);
+		const allowed = await lexware.request({ method: 'POST', path: '/v1/vouchers/v1/files', multipart: [{ name: 'file', filename: 'a.pdf', contentBase64: 'JVBERg==' }] });
+		return { policy, blocked, allowedStatus: allowed.status };
+	}`, { maxRequests: 1 });
+
+	const payload = payloadOf(result);
+	assert.deepEqual(payload.result.policy, { enabled: true, allow: ['POST /v1/vouchers/{id}/files'] });
+	assert.match(payload.result.blocked, /POST \/v1\/contacts is blocked: not in LEXWARE_OFFICE_WRITE_ALLOW/);
+	assert.equal(payload.result.allowedStatus, 202);
+	assert.equal(payload.requestCount, 1);
+	assert.deepEqual(payload.requests.map(({ method, path, write, sent }: Record<string, unknown>) => ({ method, path, write, sent })), [
+		{ method: 'POST', path: '/v1/contacts', write: true, sent: false },
+		{ method: 'POST', path: '/v1/vouchers/v1/files', write: true, sent: true },
+	]);
+	assert.deepEqual(fetched, ['POST /v1/vouchers/v1/files']);
 });
 
 test('execute exposes writesEnabled in the sandbox spec', async () => {

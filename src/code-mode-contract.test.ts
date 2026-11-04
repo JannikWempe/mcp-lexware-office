@@ -8,6 +8,7 @@ import test from 'node:test';
 import { LexwareApiClient, type LexwareClientOptions } from './lexware-client.js';
 import { lexwareSpec } from './lexware-spec.js';
 import { truncateText } from './truncate.js';
+import { parseWriteAllow } from './write-policy.js';
 
 interface FetchCall {
 	input: RequestInfo | URL;
@@ -87,6 +88,40 @@ test('client sends writes when writesEnabled is true', async () => {
 	const response = await client.request({ method: 'PATCH', path: '/v1/custom-resource/123', body: { archived: true } });
 	assert.equal(response.status, 204);
 	assert.equal(calls[0]?.init?.method, 'PATCH');
+});
+
+test('with a write allowlist, only listed writes are sent; reads are unaffected', async () => {
+	const { client, calls } = writableClientWithCalls(async () => responseFor(200, '{}', { 'content-type': 'application/json' }), {
+		writeAllow: parseWriteAllow('PUT /v1/vouchers/{id}, POST /v1/invoices'),
+	});
+
+	assert.equal((await client.request({ method: 'PUT', path: '/v1/vouchers/abc', body: {} })).status, 200);
+	assert.equal((await client.request({ method: 'POST', path: '/v1/invoices', query: { finalize: false }, body: {} })).status, 200);
+	assert.equal((await client.request({ path: '/v1/contacts' })).status, 200);
+	assert.equal(calls.length, 3);
+
+	await assert.rejects(() => client.request({ method: 'POST', path: '/v1/contacts', body: {} }), /POST \/v1\/contacts is blocked: not in LEXWARE_OFFICE_WRITE_ALLOW\. Allowed: PUT \/v1\/vouchers\/\{id\}, POST \/v1\/invoices\./);
+	await assert.rejects(() => client.request({ method: 'DELETE', path: '/v1/vouchers/abc' }), /not in LEXWARE_OFFICE_WRITE_ALLOW/);
+	await assert.rejects(() => client.request({ method: 'PATCH', path: '/v1/custom-resource/123', body: {} }), /not in LEXWARE_OFFICE_WRITE_ALLOW/);
+	await assert.rejects(() => client.request({ method: 'POST', path: '/v1/invoices', query: { finalize: true }, body: {} }), /finalize=true is blocked/);
+	await assert.rejects(() => client.request({ method: 'POST', path: '/v1/invoices?finalize=true', body: {} }), /finalize=true is blocked/);
+	assert.equal(calls.length, 3);
+});
+
+test('writePolicy reports the allowlist, or all when none is set', () => {
+	assert.deepEqual(new LexwareApiClient({ writesEnabled: true }).writePolicy, { enabled: true, allow: 'all' });
+	assert.deepEqual(new LexwareApiClient({}).writePolicy, { enabled: false, allow: 'all' });
+	assert.deepEqual(new LexwareApiClient({ writesEnabled: true, writeAllow: parseWriteAllow('uploadFile, createInvoice?finalize') }).writePolicy, {
+		enabled: true,
+		allow: ['POST /v1/files', 'POST /v1/invoices?finalize'],
+	});
+});
+
+test('writes stay blocked when writes are disabled, even if allowlisted', async () => {
+	const { client, calls } = clientWithCalls(async () => responseFor(200, '{}'), { writeAllow: parseWriteAllow('POST /v1/contacts') });
+
+	await assert.rejects(() => client.request({ method: 'POST', path: '/v1/contacts', body: {} }), /writes are disabled by default/);
+	assert.equal(calls.length, 0);
 });
 
 test('JSON, custom content type, and raw body serialization are supported', async () => {

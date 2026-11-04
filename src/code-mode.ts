@@ -93,9 +93,9 @@ export class CodeMode {
 		return toolResult({ ok: true, result: execution.result, logs: execution.logs ?? [], requestCount, ...requestLog });
 	}
 
-	// Inject the write mode so callers can branch before attempting a write.
+	// Inject the write mode and allowlist so callers can branch before attempting a write.
 	private sandboxSpec() {
-		return { ...lexwareSpec, info: { ...lexwareSpec.info, writesEnabled: this.client.writesEnabled } };
+		return { ...lexwareSpec, info: { ...lexwareSpec.info, writesEnabled: this.client.writesEnabled, writePolicy: this.client.writePolicy } };
 	}
 }
 
