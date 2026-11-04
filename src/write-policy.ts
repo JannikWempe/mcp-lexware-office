@@ -1,9 +1,12 @@
+import type { LexwareExecuteMethod } from './lexware-client.js';
 import { lexwareSpec, type HttpMethod } from './lexware-spec.js';
 
-// One parsed LEXWARE_OFFICE_WRITE_ALLOW entry, resolved against the catalog.
+export const WRITE_METHODS: ReadonlySet<LexwareExecuteMethod> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+// One LEXWARE_OFFICE_WRITE_ALLOW entry, resolved against the catalog.
 export interface WriteAllowRule {
 	operationId: string;
-	method: string;
+	method: LexwareExecuteMethod;
 	pathTemplate: string;
 	// Also allows finalize=true on sales documents. Without it, only drafts may be created.
 	finalize: boolean;
@@ -15,30 +18,24 @@ export interface WritePolicy {
 	allow: string[] | 'all';
 }
 
-interface CatalogWrite {
-	operationId: string;
-	method: string;
-	pathTemplate: string;
-	finalizable: boolean;
-}
+type CatalogWrite = Omit<WriteAllowRule, 'finalize'> & { finalizable: boolean };
 
-const WRITE_METHODS: HttpMethod[] = ['post', 'put', 'patch', 'delete'];
 const FINALIZE_SUFFIX = '?finalize';
 
 const catalogWrites: CatalogWrite[] = Object.entries(lexwareSpec.paths).flatMap(([pathTemplate, methods]) =>
-	WRITE_METHODS.flatMap((method) => {
-		const operation = methods[method];
-		if (!operation) return [];
+	[...WRITE_METHODS].flatMap((method) => {
+		const operation = methods[method.toLowerCase() as HttpMethod];
+		if (operation === undefined) return [];
 		return [{
 			operationId: operation.operationId,
-			method: method.toUpperCase(),
+			method,
 			pathTemplate,
 			finalizable: operation.parameters?.some((parameter) => parameter.name === 'finalize') ?? false,
 		}];
 	}));
 
 // Path parameter names differ across the catalog ({id}, {voucherId}, {subscriptionId}), so compare templates without them.
-const templateKey = (template: string) => template.replace(/\{[^/}]*\}/g, '{}');
+const withoutParamNames = (template: string) => template.replace(/\{[^/}]*\}/g, '{}');
 
 // Parses a comma- or newline-separated list of `METHOD /v1/template` or `operationId` entries, each
 // optionally suffixed with `?finalize`. Throws on entries that don't name a cataloged write.
@@ -54,39 +51,51 @@ function parseEntry(entry: string): WriteAllowRule {
 	const finalize = entry.endsWith(FINALIZE_SUFFIX);
 	const target = finalize ? entry.slice(0, -FINALIZE_SUFFIX.length).trim() : entry;
 	const write = findCatalogWrite(target);
-	if (!write) {
+	if (write === undefined) {
 		throw new Error(`LEXWARE_OFFICE_WRITE_ALLOW entry "${entry}" does not match a cataloged write. Use "METHOD /v1/path/{id}" or an operationId. Known writes: ${catalogWrites.map(describeWrite).join(', ')}.`);
 	}
 	if (finalize && !write.finalizable) {
 		throw new Error(`LEXWARE_OFFICE_WRITE_ALLOW entry "${entry}": ${describeWrite(write)} has no finalize parameter.`);
 	}
-	return { operationId: write.operationId, method: write.method, pathTemplate: write.pathTemplate, finalize };
+	const { finalizable: _, ...rule } = write;
+	return { ...rule, finalize };
 }
 
 function findCatalogWrite(target: string): CatalogWrite | undefined {
 	const match = /^([A-Za-z]+)\s+(\/\S*)$/.exec(target);
-	if (!match) return catalogWrites.find((write) => write.operationId === target);
+	if (match === null) return catalogWrites.find((write) => write.operationId === target);
 	const [, method, path] = match;
-	return catalogWrites.find((write) => write.method === method.toUpperCase() && templateKey(write.pathTemplate) === templateKey(path));
+	return catalogWrites.find((write) => write.method === method.toUpperCase() && withoutParamNames(write.pathTemplate) === withoutParamNames(path));
 }
 
 const describeWrite = (write: { method: string; pathTemplate: string }) => `${write.method} ${write.pathTemplate}`;
 
-export const describeWriteAllowRule = (rule: WriteAllowRule) => `${describeWrite(rule)}${rule.finalize ? FINALIZE_SUFFIX : ''}`;
+const describeRule = (rule: WriteAllowRule) => `${describeWrite(rule)}${rule.finalize ? FINALIZE_SUFFIX : ''}`;
 
-// Lexware reads finalize as a boolean; treat anything but an explicit false as finalizing.
-export const requestsFinalize = (query: URLSearchParams) => query.getAll('finalize').some((value) => value.trim().toLowerCase() !== 'false');
+export const describeWritePolicy = (enabled: boolean, rules: WriteAllowRule[] | undefined): WritePolicy => ({
+	enabled,
+	allow: rules !== undefined ? rules.map(describeRule) : 'all',
+});
+
+// Lexware reads finalize as a boolean; treat anything but an explicit false as finalizing. Key
+// spellings a server might also bind (FINALIZE, finalize[]) count too.
+export const requestsFinalize = (query: URLSearchParams) => [...query].some(([key, value]) =>
+	key.toLowerCase().replace(/\[\]$/, '') === 'finalize' && value.trim().toLowerCase() !== 'false');
 
 // Returns why the allowlist blocks this write, or undefined if a rule allows it. `operationId` is the
 // cataloged operation the request matched; uncataloged writes never match a rule.
 export function writeAllowViolation(rules: WriteAllowRule[], request: { method: string; path: string; query: URLSearchParams; operationId?: string }): string | undefined {
+	const allowed = `Allowed: ${rules.map(describeRule).join(', ')}. See spec.info.writePolicy.`;
+	// A path parameter with an encoded separator matches a template here but might route elsewhere upstream.
+	if (/%(2f|5c)/i.test(request.path)) {
+		return `${request.method} ${request.path} is blocked: LEXWARE_OFFICE_WRITE_ALLOW rejects encoded '/' or '\\' in write paths. ${allowed}`;
+	}
 	const matching = rules.filter((rule) => rule.operationId === request.operationId);
-	const allowed = `Allowed: ${rules.map(describeWriteAllowRule).join(', ')}. See spec.info.writePolicy.`;
 	if (matching.length === 0) {
 		return `${request.method} ${request.path} is blocked: not in LEXWARE_OFFICE_WRITE_ALLOW. ${allowed}`;
 	}
 	if (requestsFinalize(request.query) && !matching.some((rule) => rule.finalize)) {
-		return `${request.method} ${request.path} with finalize=true is blocked: LEXWARE_OFFICE_WRITE_ALLOW only allows drafts here (add "${describeWrite(matching[0])}${FINALIZE_SUFFIX}" to allow finalizing). ${allowed}`;
+		return `${request.method} ${request.path} with finalize=true is blocked: LEXWARE_OFFICE_WRITE_ALLOW only allows drafts here; create a draft instead, or ask the server operator to add "${describeWrite(matching[0])}${FINALIZE_SUFFIX}". ${allowed}`;
 	}
 	return undefined;
 }

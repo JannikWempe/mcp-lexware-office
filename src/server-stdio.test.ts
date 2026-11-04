@@ -126,6 +126,20 @@ test('instructions and tools/list match the snapshot in read-only and writes-ena
 	);
 });
 
+test('execute stays destructive when writes are narrowed by LEXWARE_OFFICE_WRITE_ALLOW', async () => {
+	const lexware = await startFakeLexware((_req, res) => res.end());
+	const mcp = await startMcp(lexware.baseUrl, { LEXWARE_OFFICE_ALLOW_WRITES: 'true', LEXWARE_OFFICE_WRITE_ALLOW: 'uploadFile' });
+	try {
+		const { result } = await mcp.request('tools/list', {}).response;
+		const execute = result?.tools?.find((tool) => tool.name === 'execute');
+		assert.equal(execute?.annotations.readOnlyHint, false);
+		assert.equal(execute?.annotations.destructiveHint, true);
+	} finally {
+		mcp.close();
+		lexware.close();
+	}
+});
+
 test('server exits at startup with a readable error for an invalid LEXWARE_OFFICE_WRITE_ALLOW', () => {
 	const result = spawnSync(process.execPath, [serverEntry], {
 		env: { ...process.env, LEXWARE_OFFICE_ALLOW_WRITES: 'true', LEXWARE_OFFICE_WRITE_ALLOW: 'POST /v1/files, PUT /v1/nope' },

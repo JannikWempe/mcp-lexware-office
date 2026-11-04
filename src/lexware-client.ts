@@ -8,7 +8,7 @@ import { type LexwareIssue, normalizeIssues } from './lexware-issues.js';
 import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-spec.js';
 import { truncateText } from './truncate.js';
 import { VERSION } from './version.js';
-import { describeWriteAllowRule, type WriteAllowRule, type WritePolicy, writeAllowViolation } from './write-policy.js';
+import { describeWritePolicy, WRITE_METHODS, type WriteAllowRule, type WritePolicy, writeAllowViolation } from './write-policy.js';
 
 export type LexwareExecuteMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
@@ -145,7 +145,6 @@ const DEFAULT_RATE_LIMIT_INTERVAL_MS = 600;
 const DEFAULT_MAX_RETRY_AFTER_MS = 5_000;
 const RETRY_BACKOFF_MS = 1_000;
 const RETRY_JITTER_MS = 1_000;
-const WRITE_METHODS = new Set<LexwareExecuteMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
 // Response headers worth the model's context; the rest (AWS gateway ids, security policies)
 // cost ~1.5 KB per returned response.
 const RESPONSE_HEADER_ALLOWLIST = new Set(['content-type', 'content-length', 'content-disposition', 'location', 'retry-after', 'x-request-id']);
@@ -174,7 +173,7 @@ export class LexwareApiClient {
 	constructor(options: LexwareClientOptions = {}) {
 		this.writesEnabled = options.writesEnabled ?? false;
 		this.writeAllow = options.writeAllow;
-		this.writePolicy = { enabled: this.writesEnabled, allow: this.writeAllow !== undefined ? this.writeAllow.map(describeWriteAllowRule) : 'all' };
+		this.writePolicy = describeWritePolicy(this.writesEnabled, this.writeAllow);
 		this.apiKey = options.apiKey;
 		this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
 		this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
@@ -236,11 +235,13 @@ export class LexwareApiClient {
 	}
 
 	private async send(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number, progress: { sent: boolean }): Promise<LexwareResponse> {
-		if (WRITE_METHODS.has(normalized.method) && !this.writesEnabled) {
-			throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
-		}
-		if (WRITE_METHODS.has(normalized.method) && this.writeAllow !== undefined) {
-			const violation = writeAllowViolation(this.writeAllow, { ...normalized, operationId: normalized.matched?.operation.operationId });
+		if (WRITE_METHODS.has(normalized.method)) {
+			if (!this.writesEnabled) {
+				throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
+			}
+			const violation = this.writeAllow !== undefined
+				? writeAllowViolation(this.writeAllow, { ...normalized, operationId: normalized.matched?.operation.operationId })
+				: undefined;
 			if (violation !== undefined) throw new Error(violation);
 		}
 

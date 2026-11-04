@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { describeWriteAllowRule, parseWriteAllow, requestsFinalize, writeAllowViolation } from './write-policy.js';
+import { describeWritePolicy, parseWriteAllow, requestsFinalize, writeAllowViolation } from './write-policy.js';
 
 const query = (search = '') => new URLSearchParams(search);
 
 test('METHOD path and operationId entries resolve to the same rule; ?finalize is kept', () => {
 	assert.deepEqual(parseWriteAllow('POST /v1/invoices'), parseWriteAllow('createInvoice'));
-	assert.deepEqual(parseWriteAllow('createInvoice?finalize').map(describeWriteAllowRule), ['POST /v1/invoices?finalize']);
-	assert.deepEqual(parseWriteAllow('DELETE /v1/event-subscriptions/{id}').map(describeWriteAllowRule), ['DELETE /v1/event-subscriptions/{subscriptionId}']);
+	assert.deepEqual(describeWritePolicy(true, parseWriteAllow('createInvoice?finalize')).allow, ['POST /v1/invoices?finalize']);
+	assert.deepEqual(describeWritePolicy(true, parseWriteAllow('DELETE /v1/event-subscriptions/{id}')).allow, ['DELETE /v1/event-subscriptions/{subscriptionId}']);
 });
 
 test('invalid entries name the entry in the error', () => {
@@ -28,6 +28,13 @@ test('only writes matching a rule by operationId are allowed', () => {
 	assert.match(writeAllowViolation(rules, { method: 'PATCH', path: '/v1/custom/1', query: query() }) ?? '', /not in LEXWARE_OFFICE_WRITE_ALLOW/);
 });
 
+test('encoded path separators are blocked even when the template matches', () => {
+	const rules = parseWriteAllow('PUT /v1/vouchers/{id}');
+	for (const path of ['/v1/vouchers/abc%2f..%2fcontacts', '/v1/vouchers/abc%2F', '/v1/vouchers/abc%5Cdef']) {
+		assert.match(writeAllowViolation(rules, { method: 'PUT', path, query: query(), operationId: 'updateVoucher' }) ?? '', /rejects encoded '\/' or '\\'/, path);
+	}
+});
+
 test('finalize requires a ?finalize rule; drafts are allowed by either', () => {
 	const drafts = parseWriteAllow('POST /v1/invoices');
 	const finalize = parseWriteAllow('POST /v1/invoices?finalize');
@@ -35,8 +42,8 @@ test('finalize requires a ?finalize rule; drafts are allowed by either', () => {
 
 	assert.equal(writeAllowViolation(drafts, request('')), undefined);
 	assert.equal(writeAllowViolation(drafts, request('finalize=false')), undefined);
-	for (const search of ['finalize=true', 'finalize=TRUE', 'finalize=1', 'finalize', 'finalize=false&finalize=true']) {
-		assert.match(writeAllowViolation(drafts, request(search)) ?? '', /finalize=true is blocked.*add "POST \/v1\/invoices\?finalize"/, search);
+	for (const search of ['finalize=true', 'finalize=TRUE', 'finalize=1', 'finalize', 'finalize=false&finalize=true', 'FINALIZE=true', 'Finalize=true', 'finalize[]=true']) {
+		assert.match(writeAllowViolation(drafts, request(search)) ?? '', /finalize=true is blocked.*ask the server operator to add "POST \/v1\/invoices\?finalize"/, search);
 		assert.equal(writeAllowViolation(finalize, request(search)), undefined, search);
 	}
 	assert.equal(writeAllowViolation(finalize, request('')), undefined);
@@ -48,4 +55,7 @@ test('requestsFinalize treats anything but an explicit false as finalizing', () 
 	assert.equal(requestsFinalize(query('finalize= False ')), false);
 	assert.equal(requestsFinalize(query('finalize=true')), true);
 	assert.equal(requestsFinalize(query('finalize=')), true);
+	assert.equal(requestsFinalize(query('FINALIZE=true')), true);
+	assert.equal(requestsFinalize(query('finalize[]=true')), true);
+	assert.equal(requestsFinalize(query('finalized=true')), false);
 });
