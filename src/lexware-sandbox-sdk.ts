@@ -347,8 +347,8 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		}
 		const timeoutMs = typeof waitForExtraction === 'object' && waitForExtraction.timeoutMs !== undefined ? Number(waitForExtraction.timeoutMs) : 15_000;
 		// Capped so that one waiting upload fits into the 30 s execute timeout together with its requests.
-		if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 20_000) {
-			throw new Error('lexware.uploadVoucherFile input.waitForExtraction.timeoutMs must be 0 to 20000 ms');
+		if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 15_000) {
+			throw new Error('lexware.uploadVoucherFile input.waitForExtraction.timeoutMs must be 0 to 15000 ms');
 		}
 		const response = await request({ method: 'POST', path: '/v1/files', multipart: [part, { name: 'type', value: 'voucher' }] });
 		const data = assertOkJsonResponse(response, 'lexware.uploadVoucherFile');
@@ -491,7 +491,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 				return exactCandidates;
 			}
 			if (!hasWindow) {
-				throw new Error('lexware.findVouchers: no voucher has the exact number ' + JSON.stringify(voucherNumber) + '. Pass criteria.dateFrom and dateTo to also search differently formatted numbers in that voucherDate window.');
+				throw new Error('lexware.findVouchers: no candidate has the exact number ' + JSON.stringify(voucherNumber) + '. Pass criteria.dateFrom and dateTo to also search differently formatted numbers in that voucherDate window.');
 			}
 		}
 		// Scanning only part of the window could miss a duplicate, so a window with more than maxPages pages throws.
@@ -500,7 +500,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		if (!firstPage || typeof firstPage !== 'object' || !Array.isArray(firstPage.content)) {
 			throw new Error('lexware.findVouchers expected response.data.content to be an array');
 		}
-		const totalPages = typeof firstPage.totalPages === 'number' ? firstPage.totalPages : firstPage.last === false ? maxPages + 1 : 1;
+		const totalPages = typeof firstPage.totalPages === 'number' ? firstPage.totalPages : firstPage.last === true ? 1 : maxPages + 1;
 		if (totalPages > maxPages) {
 			throw new Error('lexware.findVouchers: the voucherDate window ' + dateFrom + '..' + dateTo + ' has ' + (typeof firstPage.totalPages === 'number' ? totalPages : 'more than ' + maxPages) + ' voucherlist pages, more than options.maxPages=' + maxPages + '. Narrow the window, or raise options.maxPages and the execute maxRequests (1 + pages requests).');
 		}
@@ -536,7 +536,7 @@ export const lexwareSdkDeclaration = `declare const lexware: {
   // GET, shallow-merge patch (read-only fields dropped, files and version kept), PUT, GET to verify: 3 requests. Throws
   // without writing on an expectedVersion mismatch or if files would lose an id (unless allowFileRemoval). Details: spec PUT /v1/vouchers/{id} notes.
   updateVoucher(id: string, patch: Record<string, unknown>, options?: { expectedVersion?: number; allowFileRemoval?: boolean }): Promise<{ before: unknown; after: unknown; changed: string[] }>;
-  // POST /v1/files (type=voucher), then polls the voucher after 2, 4, 8 s until it is no longer blank (timeoutMs default 15000, max 20000):
+  // POST /v1/files (type=voucher), then polls the voucher after 2, 4, 8 s until it is no longer blank (timeoutMs default and max 15000):
   // up to 5 requests. One waiting upload per execute call (30 s timeout); for batches pass waitForExtraction: false. Never re-uploads;
   // extraction 'pending' on timeout means GET /v1/vouchers/{voucherId} later.
   uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped' }>;

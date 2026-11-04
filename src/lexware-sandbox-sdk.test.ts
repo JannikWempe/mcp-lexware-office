@@ -342,10 +342,6 @@ test('lexware.uploadVoucherFile returns pending on timeout without uploading aga
 	assert.equal(result.extraction, 'pending');
 	assert.deepEqual(result.voucher, { id: 'v-9', voucherStatus: 'blank' });
 
-	const longest = uploadHost(['blank']);
-	await longest.sdk.uploadVoucherFile({ contentPath: '/data/a.xml', waitForExtraction: { timeoutMs: 20000 } });
-	assert.deepEqual(longest.sleeps, [2000, 4000, 8000, 6000], 'every step stays within the lexware.sleep cap');
-
 	const short = uploadHost(['blank']);
 	await short.sdk.uploadVoucherFile({ contentPath: '/data/a.xml', waitForExtraction: { timeoutMs: 3000 } });
 	assert.deepEqual(short.sleeps, [2000, 1000]);
@@ -392,8 +388,8 @@ test('lexware upload helpers validate the file input before sending', async () =
 		[{ contentBase64: 'AA==' }, /needs a filename with contentBase64/],
 		[{ contentPath: '/data/notes.txt' }, /cannot infer contentType from "\/data\/notes\.txt"/],
 		[{ contentPath: '/data/a.pdf', waitForExtraction: 'yes' }, /input\.waitForExtraction must be a boolean or \{ timeoutMs \}/],
-		[{ contentPath: '/data/a.pdf', waitForExtraction: { timeoutMs: -1 } }, /timeoutMs must be 0 to 20000 ms/],
-		[{ contentPath: '/data/a.pdf', waitForExtraction: { timeoutMs: 20001 } }, /timeoutMs must be 0 to 20000 ms/],
+		[{ contentPath: '/data/a.pdf', waitForExtraction: { timeoutMs: -1 } }, /timeoutMs must be 0 to 15000 ms/],
+		[{ contentPath: '/data/a.pdf', waitForExtraction: { timeoutMs: 15001 } }, /timeoutMs must be 0 to 15000 ms/],
 	] as const) {
 		await assert.rejects(() => sdk.uploadVoucherFile(input as never), message);
 	}
@@ -511,7 +507,7 @@ test('lexware.findVouchers ignores leading zeros, matches RegExp contacts and sk
 test('lexware.findVouchers scans voucherlist only within a date window', async () => {
 	const { sdk, inputs } = voucherlistHost();
 
-	await assert.rejects(() => sdk.findVouchers({ voucherNumber: '123 456 7890' }), /no voucher has the exact number "123 456 7890"\. Pass criteria\.dateFrom and dateTo/);
+	await assert.rejects(() => sdk.findVouchers({ voucherNumber: '123 456 7890' }), /no candidate has the exact number "123 456 7890"\. Pass criteria\.dateFrom and dateTo/);
 	assert.equal(inputs.length, 1, 'only the exact query ran');
 	await assert.rejects(() => sdk.findVouchers({ amount: 119, dateFrom: '2026-03-01' }), /needs criteria\.dateFrom and dateTo/);
 	await assert.rejects(() => sdk.findVouchers({ dateFrom: '2026-03-01', dateTo: '2026-03-31' }), /at least one of criteria\.voucherNumber, contactName or amount/);

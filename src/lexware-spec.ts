@@ -1056,7 +1056,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 				'Extract voucherNumber, contactName, amount (gross total), currency and voucherDate from the document.',
 				'Call lexware.findVouchers({ voucherNumber, contactName, amount, currency, dateFrom, dateTo }) in execute with a voucherDate window around the document date, e.g. ±30 days. It queries the exact voucherNumber first (1 request) and, if that finds no candidate, pages /v1/voucherlist in the window (1 + pages requests). A window with more than options.maxPages pages (default 4) throws instead of being checked partially.',
 				'Inspect the ranked candidates { row, score, matched }: voucherNumber 8, amount 4, contactName 2, date 1. Present likely duplicates to the user; the helper never decides.',
-				'Upload only when no candidate is a duplicate (see workflow fileHandling).',
+				'Upload only when no candidate is a duplicate (see workflow fileHandling), in a separate execute call: a waiting lexware.uploadVoucherFile needs most of the 30 s timeout.',
 			],
 			relatedEndpoints: [
 				{ method: 'GET', path: '/v1/voucherlist' },
