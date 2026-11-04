@@ -185,6 +185,10 @@ export class LexwareApiClient {
 		this.uploadDirs = options.uploadDirs ?? [];
 	}
 
+	get hasApiKey(): boolean {
+		return Boolean(this.apiKey);
+	}
+
 	async request(input: unknown, options: LexwareRequestOptions = {}): Promise<LexwareResponse> {
 		const apiKey = this.apiKey;
 		if (!apiKey) {
@@ -329,7 +333,7 @@ export class LexwareApiClient {
 }
 
 // Resolves with `promise`, or rejects as soon as `signal` aborts.
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
 	if (signal === undefined) return promise;
 	signal.throwIfAborted();
 	return new Promise<T>((resolve, reject) => {

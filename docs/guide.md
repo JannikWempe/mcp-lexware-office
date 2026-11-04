@@ -74,6 +74,27 @@ async () => {
 
 The `search` sandbox receives only the catalog. It does not receive the Lexware API key, Node globals, filesystem access, `fetch`, imports, or arbitrary network access.
 
+### Connected account: `spec.info.account`
+
+Both sandboxes see which Lexware organization the server is connected to in `spec.info.account`, so the model can confirm the account before reading or writing, and answer tax questions without calling `/v1/profile`:
+
+```json
+{
+  "label": "Firma A",
+  "organizationId": "aa93e8a8-2aa3-470b-b914-caad8a255dd8",
+  "companyName": "Testfirma GmbH",
+  "taxType": "net",
+  "smallBusiness": false,
+  "distanceSalesPrinciple": "DESTINATION",
+  "businessFeatures": ["INVOICING", "BOOKKEEPING"]
+}
+```
+
+- The server fetches `GET /v1/profile` on the first `search` or `execute` call and caches it for the process lifetime. The request doesn't count against `maxRequests` and doesn't appear in `requests`.
+- The name and email of the user who created the API key (`profile.created`) are left out.
+- On failure the profile fields are replaced by `error`, e.g. `"profile unavailable: auth (HTTP 401)"`; the lookup is retried after a minute. Without `LEXWARE_OFFICE_API_KEY`, `search` still works and no request is made.
+- `label` is `LEXWARE_OFFICE_ACCOUNT_LABEL`, if set. Use it to tell several server instances apart, e.g. one per company.
+
 ### `execute`
 
 `execute` uses the same sandbox plus one host capability: `lexware.request`.
@@ -144,7 +165,7 @@ Tools carry MCP annotations and titles so clients can label and gate them:
 - `search` — `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 - `execute` — `openWorldHint: true`, `idempotentHint: false`; `readOnlyHint`/`destructiveHint` follow the write mode at server startup (`readOnlyHint: true` when writes are blocked, `destructiveHint: true` when `LEXWARE_OFFICE_ALLOW_WRITES=true`, also with a write allowlist).
 
-The server also sends short `instructions` at initialization (search before execute, check `spec.info.writesEnabled` and `spec.info.writePolicy`, aggregate inside `execute`). It is built on MCP TypeScript SDK v2 and negotiates both the 2025-era `initialize` handshake and protocol revision 2026-07-28.
+The server also sends short `instructions` at initialization (search before execute, check `spec.info.account`, `spec.info.writesEnabled` and `spec.info.writePolicy`, aggregate inside `execute`). It is built on MCP TypeScript SDK v2 and negotiates both the 2025-era `initialize` handshake and protocol revision 2026-07-28.
 
 ## Binary-safe file uploads
 

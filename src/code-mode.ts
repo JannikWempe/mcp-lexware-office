@@ -1,7 +1,8 @@
 import type { CallToolResult } from '@modelcontextprotocol/server';
 
+import { AccountProfile, type AccountInfo } from './account.js';
 import { type CodeExecutor, QuickJsExecutor } from './executor.js';
-import type { LexwareApiClient, RequestLogEntry } from './lexware-client.js';
+import { type LexwareApiClient, type RequestLogEntry, untilAborted } from './lexware-client.js';
 import { lexwareSandbox } from './lexware-sandbox-sdk.js';
 import { lexwareSpec } from './lexware-spec.js';
 import { truncateJson } from './truncate.js';
@@ -20,6 +21,8 @@ const MAX_LISTED_READS = 5;
 export interface CodeModeOptions {
 	client: LexwareApiClient;
 	executor?: CodeExecutor;
+	// Shown as spec.info.account; defaults to a profile lookup through `client`.
+	account?: Pick<AccountProfile, 'get'>;
 }
 
 export interface RunOptions {
@@ -35,16 +38,18 @@ export interface ExecuteOptions extends RunOptions {
 export class CodeMode {
 	private readonly client: LexwareApiClient;
 	private readonly executor: CodeExecutor;
+	private readonly account: Pick<AccountProfile, 'get'>;
 
 	constructor(options: CodeModeOptions) {
 		this.client = options.client;
 		this.executor = options.executor ?? new QuickJsExecutor();
+		this.account = options.account ?? new AccountProfile(options.client);
 	}
 
 	async search(code: string, options: RunOptions = {}): Promise<CallToolResult> {
 		const execution = await this.executor.execute(
 			code,
-			{ spec: this.sandboxSpec() },
+			{ spec: await this.sandboxSpec(options.signal) },
 			{
 				timeoutMs: SEARCH_TIMEOUT_MS,
 				memoryLimitBytes: MEMORY_LIMIT_BYTES,
@@ -75,7 +80,7 @@ export class CodeMode {
 		};
 		const execution = await this.executor.execute(
 			code,
-			{ spec: this.sandboxSpec() },
+			{ spec: await this.sandboxSpec(options.signal) },
 			{
 				timeoutMs: EXECUTE_TIMEOUT_MS,
 				memoryLimitBytes: MEMORY_LIMIT_BYTES,
@@ -93,9 +98,12 @@ export class CodeMode {
 		return toolResult({ ok: true, result: execution.result, logs: execution.logs ?? [], requestCount, ...requestLog });
 	}
 
-	// Inject the write mode and allowlist so callers can branch before attempting a write.
-	private sandboxSpec() {
-		return { ...lexwareSpec, info: { ...lexwareSpec.info, writesEnabled: this.client.writesEnabled, writePolicy: this.client.writePolicy } };
+	// Inject the write mode and allowlist so callers can branch before attempting a write, and
+	// the connected organization so they can confirm the account. When cancelled before or while
+	// the profile loads, it is skipped; the executor then reports the cancellation.
+	private async sandboxSpec(signal: AbortSignal | undefined) {
+		const account: AccountInfo | undefined = signal?.aborted ? undefined : await untilAborted(this.account.get(), signal).catch(() => undefined);
+		return { ...lexwareSpec, info: { ...lexwareSpec.info, writesEnabled: this.client.writesEnabled, writePolicy: this.client.writePolicy, account } };
 	}
 }
 

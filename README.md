@@ -184,6 +184,19 @@ See [docs/guide.md#permissions](docs/guide.md#permissions) for the detailed perm
 
 Files must resolve (after following symlinks) to a path inside one of these directories, including subdirectories. Anything else is rejected. `contentBase64` uploads work without this setting.
 
+### Multiple organizations
+
+Run one server instance per Lexware organization, each with its own API key. The model sees the connected organization (company name, tax type, Kleinunternehmer status) in `spec.info.account`. Set `LEXWARE_OFFICE_ACCOUNT_LABEL` to add your own label to it:
+
+```json
+{
+  "LEXWARE_OFFICE_API_KEY": "KEY_FOR_FIRMA_A",
+  "LEXWARE_OFFICE_ACCOUNT_LABEL": "Firma A"
+}
+```
+
+See [docs/guide.md#connected-account-specinfoaccount](docs/guide.md#connected-account-specinfoaccount) for details.
+
 ## Docker
 
 Build the image:

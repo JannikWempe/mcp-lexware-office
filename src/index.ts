@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 
+import { AccountProfile } from './account.js';
 import { CodeMode, LEXWARE_REQUEST_TIMEOUT_MS } from './code-mode.js';
 import { loadConfig, type ServerConfig } from './config.js';
 import { LexwareApiClient } from './lexware-client.js';
@@ -17,16 +18,15 @@ try {
 	console.error(`Lexware Office MCP server: ${error instanceof Error ? error.message : String(error)}`);
 	process.exit(1);
 }
-const codeMode = new CodeMode({
-	client: new LexwareApiClient({
-		apiKey: config.apiKey,
-		baseUrl: config.baseUrl,
-		uploadDirs: config.uploadDirs,
-		writesEnabled: config.writesEnabled,
-		writeAllow: config.writeAllow,
-		requestTimeoutMs: LEXWARE_REQUEST_TIMEOUT_MS,
-	}),
+const client = new LexwareApiClient({
+	apiKey: config.apiKey,
+	baseUrl: config.baseUrl,
+	uploadDirs: config.uploadDirs,
+	writesEnabled: config.writesEnabled,
+	writeAllow: config.writeAllow,
+	requestTimeoutMs: LEXWARE_REQUEST_TIMEOUT_MS,
 });
+const codeMode = new CodeMode({ client, account: new AccountProfile(client, { label: config.accountLabel }) });
 
 /**
  * One McpServer per connection; serveStdio picks the protocol era (2025-era initialize or 2026-07-28 server/discover).
@@ -42,6 +42,7 @@ function createServer(): McpServer {
 		{
 			instructions: `Lexware Office API via Code Mode: \`search\` explores a curated API catalog, \`execute\` runs a sandboxed JS workflow against the live API.
 Always call \`search\` to discover endpoints, parameters, and workflows before \`execute\`; do not guess /v1 paths from memory.
+Check spec.info.account to confirm which Lexware organization you are connected to (companyName, taxType, smallBusiness) before reading or writing.
 The server is read-only unless started with LEXWARE_OFFICE_ALLOW_WRITES=true; check spec.info.writesEnabled before planning writes, and spec.info.writePolicy.allow for which writes are permitted.
 Summarize, filter, and aggregate inside \`execute\` and return only what is needed — large results are truncated.`,
 		},
@@ -61,6 +62,7 @@ declare const spec: LexwareApiCatalog;
 
 Useful starting points:
 - spec.info.domainIndex: compact map from business domains to endpoint lists
+- spec.info.account: the connected organization — { label?, organizationId, companyName, taxType, smallBusiness, distanceSalesPrinciple?, businessFeatures } or { label?, error } — check it to confirm which organization you are connected to; no need to call /v1/profile
 - spec.info.writesEnabled: whether this server currently allows POST/PUT/PATCH/DELETE — check before planning writes
 - spec.info.writePolicy: { enabled, allow } — allow is 'all' or the only permitted writes, e.g. ['POST /v1/files', 'PUT /v1/vouchers/{id}']
 - spec.paths: path -> method -> operation catalog with params, requestBody, responses, examples, capabilities, docsUrl

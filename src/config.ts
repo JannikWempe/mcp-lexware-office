@@ -5,6 +5,8 @@ import { parseWriteAllow, type WriteAllowRule } from './write-policy.js';
 export interface ServerConfig {
 	apiKey?: string;
 	baseUrl?: string;
+	// Human label for this instance, shown in spec.info.account.
+	accountLabel?: string;
 	// Directories multipart contentPath may read from; empty disables contentPath.
 	uploadDirs: string[];
 	writesEnabled: boolean;
@@ -17,6 +19,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 	return {
 		apiKey: env.LEXWARE_OFFICE_API_KEY,
 		baseUrl: env.LEXWARE_OFFICE_API_BASE_URL,
+		accountLabel: env.LEXWARE_OFFICE_ACCOUNT_LABEL,
 		uploadDirs: (env.LEXWARE_OFFICE_UPLOAD_DIRS ?? '')
 			.split(delimiter)
 			.map((dir) => dir.trim())
