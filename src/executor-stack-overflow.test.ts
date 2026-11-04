@@ -64,6 +64,21 @@ test('logging a deep value does not abort the process', async () => {
 	await assertStillWorks(executor);
 });
 
+test('guest code cannot start host calls after an engine failure', async () => {
+	let hostCalls = 0;
+
+	const execution = await new QuickJsExecutor().execute(
+		`async () => { ${deep(100_000)} console.log(v); for (let i = 0; i < 5; i++) await hostCall('{}').catch(() => {}); return 'done'; }`,
+		{},
+		{ hostFunctions: { hostCall: async () => { hostCalls += 1; return '{}'; } } },
+	);
+
+	if (execution.error !== undefined) {
+		assert.match(execution.error, /nested too deeply/);
+		assert.equal(hostCalls, 0);
+	}
+});
+
 test('runaway guest recursion is a catchable QuickJS stack overflow', async () => {
 	const executor = new QuickJsExecutor();
 

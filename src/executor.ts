@@ -19,7 +19,6 @@ export type SandboxHostFunction = (payload: string, context: SandboxHostCallCont
 export interface CodeExecutorOptions {
 	timeoutMs?: number;
 	memoryLimitBytes?: number;
-	maxStackSizeBytes?: number;
 	maxLogEntries?: number;
 	maxLogChars?: number;
 	filename?: string;
@@ -42,8 +41,9 @@ const DEFAULT_TIMEOUT_MS = 1_000;
 const DEFAULT_MEMORY_LIMIT_BYTES = 32 * 1024 * 1024;
 // QuickJS checks this limit against the WASM shadow stack, but its native recursion also uses the
 // host (V8) stack, which overflows first above roughly 512 KB. Stay below that, so runaway guest
-// recursion is a catchable QuickJS InternalError instead of a host stack overflow.
-const DEFAULT_MAX_STACK_SIZE_BYTES = 256 * 1024;
+// recursion is a catchable QuickJS InternalError instead of a host stack overflow. Not configurable
+// for that reason; deeper native recursion (vm.dump of deep values) is handled by markEngineFailed.
+const MAX_STACK_SIZE_BYTES = 256 * 1024;
 const DEFAULT_MAX_LOG_ENTRIES = 25;
 const DEFAULT_MAX_LOG_CHARS = 8_000;
 const CANCELLED_MESSAGE = 'Execution cancelled by client';
@@ -70,7 +70,7 @@ export class QuickJsExecutor implements CodeExecutor {
 		if (options.signal?.aborted) return { error: `Error: ${CANCELLED_MESSAGE}`, logs: [] };
 
 		// A fresh WASM module per execution (a few ms) isolates failures: when an engine call breaks
-		// (see `fail` below), this run's module is dropped without touching runs on other modules.
+		// (see `markEngineFailed` below), this run's module is dropped without touching runs on other modules.
 		const QuickJS = await newQuickJSWASMModule();
 		// Recheck: the signal may have aborted while QuickJS was loading. Everything below runs
 		// synchronously up to evalCode, so no later abort can slip in before guest code starts.
@@ -86,24 +86,24 @@ export class QuickJsExecutor implements CodeExecutor {
 		// `Assertion failed: list_empty(&rt->gc_obj_list)`. A broken runtime is therefore never
 		// touched again; it is garbage-collected along with this execution's module.
 		let engineFailure: string | undefined;
-		let rejectEngineFailure!: (error: Error) => void;
-		const engineFailed = new Promise<never>((_resolve, reject) => { rejectEngineFailure = reject; });
-		engineFailed.catch(() => { /* raced below; may fire after execution has ended */ });
-		const fail = (error: unknown) => {
+		let rejectEngineFailed!: (error: Error) => void;
+		const engineFailedPromise = new Promise<never>((_resolve, reject) => { rejectEngineFailed = reject; });
+		engineFailedPromise.catch(() => { /* raced below; may fire after execution has ended */ });
+		const markEngineFailed = (error: unknown) => {
 			if (engineFailure !== undefined) return;
 			engineFailure = isHostStackOverflow(error) ? HOST_STACK_OVERFLOW_MESSAGE : `Sandbox engine failure: ${stringifyHostError(error)}`;
-			rejectEngineFailure(new Error(engineFailure));
+			rejectEngineFailed(new Error(engineFailure));
 		};
+		const engineFailureResult = (): CodeExecutionResult => ({ error: `Error: ${engineFailure}`, logs });
 
 		const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		const memoryLimitBytes = options.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES;
-		const maxStackSizeBytes = options.maxStackSizeBytes ?? DEFAULT_MAX_STACK_SIZE_BYTES;
 		const maxLogEntries = options.maxLogEntries ?? DEFAULT_MAX_LOG_ENTRIES;
 		const maxLogChars = options.maxLogChars ?? DEFAULT_MAX_LOG_CHARS;
 		const filename = options.filename ?? 'sandbox.js';
 
 		runtime.setMemoryLimit(memoryLimitBytes);
-		runtime.setMaxStackSize(maxStackSizeBytes);
+		runtime.setMaxStackSize(MAX_STACK_SIZE_BYTES);
 		const deadlinePassed = shouldInterruptAfterDeadline(Date.now() + timeoutMs);
 		// Also stop guest code still running on a runtime that has already failed.
 		runtime.setInterruptHandler((rt) => engineFailure !== undefined || deadlinePassed(rt));
@@ -138,9 +138,10 @@ export class QuickJsExecutor implements CodeExecutor {
 					const payload = vm.getString(payloadHandle);
 					const deferred = vm.newPromise();
 
-					// Guest code can still call host functions while teardown drains its
-					// continuations; reject those immediately instead of starting new work.
-					if (hostCallController.signal.aborted) {
+					// Guest code can still call host functions while teardown drains its continuations,
+					// or until the interrupt handler stops it after an engine failure; reject those
+					// immediately instead of starting new work.
+					if (hostCallController.signal.aborted || engineFailure !== undefined) {
 						const errorHandle = vm.newError({ name: 'Error', message: 'Sandbox execution has ended' });
 						deferred.reject(errorHandle);
 						errorHandle.dispose();
@@ -163,7 +164,7 @@ export class QuickJsExecutor implements CodeExecutor {
 										resultHandle.dispose();
 										runtime.executePendingJobs();
 									} catch (error) {
-										fail(error);
+										markEngineFailed(error);
 									}
 								}
 							},
@@ -176,7 +177,7 @@ export class QuickJsExecutor implements CodeExecutor {
 										errorHandle.dispose();
 										runtime.executePendingJobs();
 									} catch (engineError) {
-										fail(engineError);
+										markEngineFailed(engineError);
 									}
 								}
 							},
@@ -199,8 +200,8 @@ export class QuickJsExecutor implements CodeExecutor {
 				try {
 					message = args.map((arg) => stringifyLogValue(vm.dump(arg))).join(' ');
 				} catch (error) {
-					// Thrown errors would be rethrown into the guest, which must not keep running.
-					fail(error);
+					// Not rethrown into the guest, which must not handle it: the interrupt handler stops it.
+					markEngineFailed(error);
 					return;
 				}
 				logs.push(message.length > maxLogChars ? `${message.slice(0, maxLogChars)}...[truncated]` : message);
@@ -233,7 +234,7 @@ ${options.prelude ?? ''}
 `;
 
 			const evaluation = vm.evalCode(wrappedCode, filename, { type: 'global' });
-			if (engineFailure !== undefined) return { error: `Error: ${engineFailure}`, logs };
+			if (engineFailure !== undefined) return engineFailureResult();
 			if (evaluation.error) {
 				const error = stringifyQuickJsError(vm.dump(evaluation.error));
 				evaluation.error.dispose();
@@ -244,7 +245,7 @@ ${options.prelude ?? ''}
 			const nativePromise = vm.resolvePromise(promiseHandle);
 			sandboxNativePromise = nativePromise;
 			const pendingJobsResult = runtime.executePendingJobs();
-			if (engineFailure !== undefined) return { error: `Error: ${engineFailure}`, logs };
+			if (engineFailure !== undefined) return engineFailureResult();
 			if (pendingJobsResult.error) {
 				const error = stringifyQuickJsError(vm.dump(pendingJobsResult.error));
 				pendingJobsResult.error.dispose();
@@ -254,7 +255,7 @@ ${options.prelude ?? ''}
 
 			let resolved;
 			try {
-				resolved = await withTimeoutAndCancel(Promise.race([nativePromise, engineFailed]), timeoutMs, options.signal);
+				resolved = await withTimeoutAndCancel(Promise.race([nativePromise, engineFailedPromise]), timeoutMs, options.signal);
 				sandboxNativePromise = undefined;
 			} catch (error) {
 				return { error: String(error), logs };
@@ -272,8 +273,10 @@ ${options.prelude ?? ''}
 			resolved.value.dispose();
 			return { result, logs };
 		} catch (error) {
-			fail(error);
-			return { error: `Error: ${engineFailure}`, logs };
+			// Everything in this block drives QuickJS, so an unexpected throw leaves the runtime in an
+			// unknown state; treat it as broken rather than risk aborting the process on dispose.
+			markEngineFailed(error);
+			return engineFailureResult();
 		} finally {
 			// Signal host callbacks not to touch the VM anymore.
 			vmDisposed = true;
@@ -291,7 +294,7 @@ ${options.prelude ?? ''}
 					shutdownError.dispose();
 					runtime.executePendingJobs();
 				} catch (error) {
-					fail(error);
+					markEngineFailed(error);
 				}
 			}
 			unsettledDeferreds.clear();
@@ -333,7 +336,7 @@ ${options.prelude ?? ''}
 				await Promise.allSettled(pendingHostCalls);
 			}
 
-			// A failed runtime is left for the garbage collector together with its module (see `fail`).
+			// A failed runtime is left for the garbage collector together with its module (see `markEngineFailed`).
 			if (engineFailure === undefined) {
 				vm.dispose();
 				runtime.dispose();
