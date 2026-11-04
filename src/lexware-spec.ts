@@ -21,7 +21,7 @@ export interface LexwareApiCatalog {
 export interface LexwareErrorResponsesInfo {
 	summary: string;
 	legacy: { endpoints: string[]; shape: unknown; notes: string[] };
-	regular: { endpoints: string; shape: unknown; notes: string[] };
+	regular: { endpoints: string[]; shape: unknown; notes: string[] };
 	normalized: { field: string; shape: unknown; notes: string[] };
 	docsUrl: string;
 }
@@ -493,17 +493,17 @@ export const lexwareSpec: LexwareApiCatalog = {
 			legacy: {
 				endpoints: ['/v1/contacts', '/v1/files', '/v1/vouchers'],
 				shape: { IssueList: [{ i18nKey: 'missing_entity', source: 'company.name', type: 'validation_failure', additionalData: null, args: null }] },
-				notes: ['i18nKey is the error code, source the field (for bad_request_error a message such as "size must be between 3 and 255"), type the category.'],
+				notes: ['i18nKey is the error code and type the category. source names the field for type validation_failure; for bad_request_error and technical_error it holds a message such as "size must be between 3 and 255".'],
 			},
 			regular: {
-				endpoints: 'all other endpoints',
+				endpoints: ['all other endpoints, e.g. /v1/invoices, /v1/voucherlist, /v1/profile, /v1/event-subscriptions'],
 				shape: { timestamp: '2023-05-11T17:12:31.233+02:00', status: 406, error: 'Not Acceptable', path: '/v1/invoices', traceId: '90d78d0777be', message: 'Validation failed for request. Please see details list for specific causes.', details: [{ violation: 'NOTNULL', field: 'lineItems[0].unitPrice.taxRatePercentage', message: 'darf nicht leer sein' }] },
 				notes: ['details is optional. message texts are not meant for end users and can be German.'],
 			},
 			normalized: {
 				field: 'response.issues',
 				shape: [{ field: 'voucherItems[0].taxAmount', code: 'invalid_taxamount', message: 'string (optional)', hint: 'how to fix it (known codes only)' }],
-				notes: ['Set on non-OK JSON responses with an IssueList or details array (legacy: source → field, i18nKey → code; regular: field, violation → code, message), and on every 409 with a re-fetch-and-retry hint.', 'lexware.json and lexware.paginate include the issues and hints in the error they throw.'],
+				notes: ['Set on non-OK JSON responses with an IssueList or details array (legacy: source → field or message, i18nKey → code; regular: field, violation → code, message), and on 409 responses to PUT (optimistic locking) with a re-fetch-and-retry hint. Other 409s keep their own meaning, see the operation responses.', 'lexware.json and lexware.paginate include the issues and hints in the error they throw.'],
 			},
 			docsUrl: 'https://developers.lexware.io/docs/#error-codes',
 		},

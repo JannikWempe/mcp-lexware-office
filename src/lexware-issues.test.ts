@@ -1,16 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { LexwareApiClient } from './lexware-client.js';
+import { LexwareApiClient, type LexwareRequestInput } from './lexware-client.js';
 import { normalizeIssues } from './lexware-issues.js';
+import { createLexwareSdk } from './lexware-sandbox-sdk.js';
 
-const requestWith = (status: number, body: string, contentType = 'application/json') => new LexwareApiClient({
+const clientAnswering = (status: number, body: string, contentType = 'application/json') => new LexwareApiClient({
 	apiKey: 'test-key',
 	baseUrl: 'https://example.test',
 	rateLimitIntervalMs: 0,
 	writesEnabled: true,
 	fetchImpl: async () => new Response(body, { status, headers: { 'content-type': contentType } }),
-}).request({ method: 'POST', path: '/v1/vouchers', body: {} });
+});
+
+const requestWith = (status: number, body: string, contentType?: string, input: LexwareRequestInput = { method: 'POST', path: '/v1/vouchers', body: {} }) => clientAnswering(status, body, contentType).request(input);
 
 test('legacy IssueList bodies normalize into issues with hints for known codes', async () => {
 	const response = await requestWith(406, JSON.stringify({
@@ -47,29 +50,49 @@ test('regular details bodies normalize into issues', async () => {
 	assert.match(response.issues?.[0]?.hint ?? '', /mandatory/);
 });
 
-test('bad_request_error keeps its source as the message, not as a field', () => {
-	assert.deepEqual(normalizeIssues(400, { IssueList: [{ i18nKey: 'bad_request_error', source: 'size must be between 3 and 255', type: 'bad_request_error' }] })?.map(({ hint: _hint, ...issue }) => issue), [
+test('legacy sources that hold a message instead of a field become the message', () => {
+	const issues = normalizeIssues(400, 'GET', { IssueList: [
+		{ i18nKey: 'bad_request_error', source: 'size must be between 3 and 255', type: 'bad_request_error' },
+		{ i18nKey: 'technical_error', source: 'contact_vendor_info_not_assigned', type: 'technical_error' },
+	] });
+	assert.deepEqual(issues?.map(({ hint: _hint, ...issue }) => issue), [
 		{ code: 'bad_request_error', message: 'size must be between 3 and 255' },
+		{ code: 'technical_error', message: 'contact_vendor_info_not_assigned' },
 	]);
 });
 
-test('409 always carries the optimistic locking hint', () => {
-	const [withoutBody] = normalizeIssues(409, { message: 'conflict' }) ?? [];
-	assert.match(withoutBody?.hint ?? '', /re-fetch the resource/);
+test('409 on PUT carries the optimistic locking hint; other 409s do not', async () => {
+	const [withoutShape] = normalizeIssues(409, 'PUT', { message: 'conflict' }) ?? [];
+	assert.match(withoutShape?.hint ?? '', /re-fetch the resource/);
 
-	const [withDetails] = normalizeIssues(409, { details: [{ field: 'version', violation: 'STALE' }] }) ?? [];
+	const [withDetails] = normalizeIssues(409, 'PUT', { details: [{ field: 'version', violation: 'STALE' }] }) ?? [];
 	assert.equal(withDetails?.field, 'version');
 	assert.match(withDetails?.hint ?? '', /re-fetch the resource/);
+
+	// e.g. GET /v1/invoices/{id}/file on a draft, or POST of a duplicate event subscription.
+	assert.equal(normalizeIssues(409, 'GET', { message: 'draft' }), undefined);
+	assert.equal(normalizeIssues(409, 'POST', { message: 'duplicate' }), undefined);
+
+	const text = await requestWith(409, 'Conflict', 'text/plain', { method: 'PUT', path: '/v1/vouchers/abc', body: {} });
+	assert.match(text.issues?.[0]?.hint ?? '', /re-fetch the resource/);
 });
 
 test('bodies without either shape, prototype keys, and successful responses get no issues', async () => {
-	assert.equal(normalizeIssues(404, { message: 'not found' }), undefined);
-	assert.equal(normalizeIssues(406, null), undefined);
-	assert.equal(normalizeIssues(406, ['IssueList']), undefined);
-	assert.deepEqual(normalizeIssues(406, { IssueList: [{ i18nKey: 'constructor' }, 'junk'] }), [{ code: 'constructor' }]);
+	assert.equal(normalizeIssues(404, 'GET', { message: 'not found' }), undefined);
+	assert.equal(normalizeIssues(406, 'POST', null), undefined);
+	assert.equal(normalizeIssues(406, 'POST', ['IssueList']), undefined);
+	assert.deepEqual(normalizeIssues(406, 'POST', { IssueList: [{ i18nKey: 'constructor' }, 'junk'] }), [{ code: 'constructor' }]);
 
 	const ok = await requestWith(200, JSON.stringify({ IssueList: [{ i18nKey: 'missing_entity' }] }));
 	assert.equal(Object.prototype.hasOwnProperty.call(ok, 'issues'), false);
 	const text = await requestWith(406, 'not json', 'text/plain');
 	assert.equal(Object.prototype.hasOwnProperty.call(text, 'issues'), false);
+});
+
+test('lexware.json and lexware.paginate errors carry the hints of a real client response', async () => {
+	const client = clientAnswering(406, JSON.stringify({ IssueList: [{ i18nKey: 'Missing_ContactId', source: 'contactId', type: 'validation_failure' }] }));
+	const sdk = createLexwareSdk(async (payload) => JSON.stringify(await client.request(JSON.parse(payload))));
+
+	await assert.rejects(() => sdk.json({ method: 'POST', path: '/v1/vouchers', body: {} }), /Issues: \[contactId Missing_ContactId \(hint: Set contactId to an existing contact/);
+	await assert.rejects(() => sdk.paginate({ path: '/v1/contacts' }), /Issues: \[contactId Missing_ContactId \(hint: Set contactId to an existing contact/);
 });

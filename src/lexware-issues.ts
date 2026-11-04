@@ -17,15 +17,16 @@ const CODE_HINTS = new Map<string, string>(Object.entries({
 	invalid_taxamount: 'Per item, taxAmount must match amount and taxRatePercent. For taxType gross: taxAmount = round(amount × rate / (100 + rate), 2). Split items if the document\'s rounding differs. totalTaxAmount must equal the sum of item taxAmounts.',
 	missing_entity: 'The field must not be null or empty: set a value for it.',
 	notnull: 'The field is mandatory: set a non-null value for it.',
-	bad_request_error: 'The request is malformed: check the query parameters and the JSON body against the catalog. The contacts email and name filters need at least 3 characters.',
+	bad_request_error: 'The request is malformed: check the query parameters and the JSON body against the catalog (e.g. the contacts email and name filters need at least 3 characters).',
 }));
 
 const CONFLICT_HINT = 'Optimistic locking conflict: re-fetch the resource, re-apply your change to the current version, and retry only if the change is still identical.';
 
-// Returns undefined when the body has neither shape and the status has no generic hint.
-export function normalizeIssues(status: number, data: unknown): LexwareIssue[] | undefined {
+// Returns undefined when the body has neither shape and no generic hint applies. Only PUTs get
+// the locking hint: other 409s mean something else (e.g. a draft has no file, a duplicate webhook).
+export function normalizeIssues(status: number, method: string, data: unknown): LexwareIssue[] | undefined {
 	const issues = issuesFromBody(data);
-	if (status === 409) {
+	if (status === 409 && method === 'PUT') {
 		if (issues.length === 0) issues.push({ hint: CONFLICT_HINT });
 		for (const issue of issues) issue.hint ??= CONFLICT_HINT;
 	}
@@ -36,41 +37,34 @@ function issuesFromBody(data: unknown): LexwareIssue[] {
 	if (!isRecord(data)) return [];
 	if (Array.isArray(data.IssueList)) {
 		return data.IssueList.filter(isRecord).map((entry) => {
-			const code = stringOrUndefined(entry.i18nKey);
 			const source = stringOrUndefined(entry.source);
-			// bad_request_error carries a message such as "size must be between 3 and 255" in source.
-			const sourceIsMessage = code?.toLowerCase() === 'bad_request_error';
-			return withHint({
-				...(source !== undefined && !sourceIsMessage && { field: source }),
-				...(code !== undefined && { code }),
-				...(source !== undefined && sourceIsMessage && { message: source }),
-			});
+			// Only validation failures name a field in source; bad_request_error and technical_error
+			// put a message there, e.g. "size must be between 3 and 255".
+			const sourceIsField = entry.type === undefined || entry.type === 'validation_failure';
+			return toIssue(sourceIsField ? source : undefined, stringOrUndefined(entry.i18nKey), sourceIsField ? undefined : source);
 		});
 	}
 	if (Array.isArray(data.details)) {
-		return data.details.filter(isRecord).map((entry) => {
-			const field = stringOrUndefined(entry.field);
-			const code = stringOrUndefined(entry.violation);
-			const message = stringOrUndefined(entry.message);
-			return withHint({
-				...(field !== undefined && { field }),
-				...(code !== undefined && { code }),
-				...(message !== undefined && { message }),
-			});
-		});
+		return data.details.filter(isRecord).map((entry) => toIssue(stringOrUndefined(entry.field), stringOrUndefined(entry.violation), stringOrUndefined(entry.message)));
 	}
 	return [];
 }
 
-function withHint(issue: LexwareIssue): LexwareIssue {
-	const hint = issue.code !== undefined ? CODE_HINTS.get(issue.code.toLowerCase()) : undefined;
-	return hint !== undefined ? { ...issue, hint } : issue;
+function toIssue(field: string | undefined, code: string | undefined, message: string | undefined): LexwareIssue {
+	const hint = code !== undefined ? CODE_HINTS.get(code.toLowerCase()) : undefined;
+	return {
+		...(field !== undefined && { field }),
+		...(code !== undefined && { code }),
+		...(message !== undefined && { message }),
+		...(hint !== undefined && { hint }),
+	};
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+// Empty strings carry no information for an issue, so they are dropped like missing values.
 function stringOrUndefined(value: unknown): string | undefined {
 	return typeof value === 'string' && value.length > 0 ? value : undefined;
 }

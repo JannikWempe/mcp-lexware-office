@@ -100,7 +100,7 @@ export interface LexwareResponse {
 	headers: Record<string, string>;
 	errorCategory?: 'auth' | 'permission' | 'validation' | 'not_found' | 'conflict' | 'rate_limit' | 'server' | 'network' | 'unknown';
 	retryAfterSeconds?: number;
-	// Non-OK JSON responses only: both Lexware error body shapes normalized, with hints.
+	// Non-OK responses only: both Lexware error body shapes normalized, with hints.
 	issues?: LexwareIssue[];
 	data?: unknown;
 	text?: string;
@@ -745,22 +745,25 @@ async function parseResponse(response: Response, request: NormalizedRequest, max
 	// Strip UTF-8 BOM (﻿) that some servers prepend; JSON.parse rejects it.
 	const text = rawText.charCodeAt(0) === 0xfeff ? rawText.slice(1) : rawText;
 
+	const withIssues = (data: unknown) => {
+		const issues = response.ok ? undefined : normalizeIssues(response.status, request.method, data);
+		return issues !== undefined ? { ...base, issues } : base;
+	};
+
 	if (isJsonResponse(contentType, request.accept)) {
+		// Stays undefined only when parsing fails: JSON.parse never returns undefined.
 		let data: unknown;
 		try {
 			data = text.length > 0 ? JSON.parse(text) : null;
 		} catch {
 			// Fall through to compact text handling for malformed JSON responses.
 		}
-		if (data !== undefined) {
-			const issues = response.ok ? undefined : normalizeIssues(response.status, data);
-			return { ...base, ...(issues !== undefined && { issues }), data };
-		}
+		if (data !== undefined) return { ...withIssues(data), data };
 	}
 
 	const truncated = text.length > maxResponseChars;
 	const safeText = truncated ? truncateText(text, { maxChars: maxResponseChars }) : text;
-	return { ...base, text: safeText, truncated };
+	return { ...withIssues(undefined), text: safeText, truncated };
 }
 
 function isTextualResponse(contentType: string, accept: string): boolean {

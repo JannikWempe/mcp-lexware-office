@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { QuickJsExecutor } from './executor.js';
 import type { LexwareRequestInput, LexwareRequestOptions, LexwareResponse, MultipartPart } from './lexware-client.js';
+import type { LexwareIssue } from './lexware-issues.js';
 import { createLexwareSdk, lexwareSandbox, lexwareSdkDeclaration } from './lexware-sandbox-sdk.js';
 
 const okResponse = (data: unknown, overrides: Partial<LexwareResponse> = {}): LexwareResponse => ({
@@ -246,10 +247,13 @@ const declaredFields = (typeName: string) => {
 // Records over keyof make tsc fail when the client types gain or lose fields.
 const requestFields: Record<keyof LexwareRequestInput, true> = { method: true, path: true, query: true, body: true, bodyBase64: true, multipart: true, contentType: true, rawBody: true, accept: true, includeAllHeaders: true };
 const multipartFields: Record<keyof MultipartPart, true> = { name: true, value: true, filename: true, contentType: true, contentBase64: true, contentPath: true };
+const issueFields: Record<keyof LexwareIssue, true> = { field: true, code: true, message: true, hint: true };
 const responseFields: Record<keyof LexwareResponse, true> = { ok: true, status: true, statusText: true, operation: true, request: true, contentType: true, headers: true, errorCategory: true, retryAfterSeconds: true, issues: true, data: true, text: true, truncated: true, sent: true };
 
 test('declared request, multipart, and response types list the client fields', () => {
 	assert.deepEqual(declaredFields('LexwareRequest'), Object.keys(requestFields).sort());
 	assert.deepEqual(declaredFields('MultipartPart'), Object.keys(multipartFields).sort());
 	assert.deepEqual(declaredFields('LexwareResponse'), Object.keys(responseFields).sort());
+	const declaredIssueFields = lexwareSdkDeclaration.match(/^ {2}issues\?: Array<\{ ([^}]*) \}>;/m)?.[1];
+	assert.deepEqual(declaredIssueFields?.split('; ').map((field) => field.split('?:')[0]).sort(), Object.keys(issueFields).sort());
 });
