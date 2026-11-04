@@ -141,8 +141,13 @@ declare const lexware: {
   sumMoney(rows: unknown[], fieldPath: string): number;
   formatMoney(cents: number, currency?: string): string;
   updateVoucher(id: string, patch: Record<string, unknown>, options?: { expectedVersion?: number; allowFileRemoval?: boolean }): Promise<{ before: unknown; after: unknown; changed: string[] }>;
+  uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped' }>;
+  attachFileToVoucher(voucherId: string, input: FileInput): Promise<{ fileId: string; sent: UploadSent }>;
+  sleep(ms: number): Promise<void>;
 };
 ```
+
+`lexware.sleep(ms)` waits inside the sandbox, e.g. between polls. One call waits at most 10,000 ms; the 30 s `execute` timeout bounds the total, and cancelling the call ends the wait. `uploadVoucherFile` and `attachFileToVoucher` are described in [Upload helpers](#upload-helpers-uploadvoucherfile-and-attachfiletovoucher).
 
 `lexware.updateVoucher` updates a bookkeeping voucher without the usual `PUT /v1/vouchers/{id}` pitfalls, in 3 requests (`GET`, `PUT`, `GET`) against `maxRequests`:
 
@@ -185,6 +190,28 @@ Tools carry MCP annotations and titles so clients can label and gate them:
 The server also sends short `instructions` at initialization (search before execute, check `spec.info.account`, `spec.info.writesEnabled` and `spec.info.writePolicy`, aggregate inside `execute`). It is built on MCP TypeScript SDK v2 and negotiates both the 2025-era `initialize` handshake and protocol revision 2026-07-28.
 
 ## Binary-safe file uploads
+
+### Upload helpers: `uploadVoucherFile` and `attachFileToVoucher`
+
+Uploading a Beleg creates a bookkeeping voucher that starts in status `blank` until Lexware's text recognition fills in number, date, contact and amounts (observed: a few seconds, up to about 15 s). `lexware.uploadVoucherFile` uploads and waits for that within one `execute` call:
+
+```js
+async () => {
+  const { fileId, voucherId, extraction, voucher, sent } = await lexware.uploadVoucherFile({ contentPath: '/absolute/path/to/receipt.pdf' });
+  return { fileId, voucherId, extraction, status: voucher?.voucherStatus, sent };
+}
+```
+
+- Pass `contentPath`, or `contentBase64` with a `filename`. `contentType` defaults from the extension: `pdf`, `jpg`/`jpeg`, `png`, `xml`.
+- It `POST`s `/v1/files` with `type=voucher` and throws if the upload fails or returns no `voucherId`.
+- It then polls `GET /v1/vouchers/{voucherId}` after 2, 4 and 8 s and once more at the timeout (`waitForExtraction: { timeoutMs }`, default 15,000) until the status is no longer `blank`. That's up to 5 requests, so raise `maxRequests` when uploading several files.
+- `extraction` is `done` (`voucher` holds the recognized voucher), `pending` (still `blank` at the timeout: `GET` the voucher in a later call) or `skipped` (`waitForExtraction: false`). It never uploads again. If a poll fails, the error names the `fileId` and `voucherId`, because the upload itself went through.
+
+`lexware.attachFileToVoucher(voucherId, { contentPath })` attaches a file to an existing voucher via `POST /v1/vouchers/{id}/files` (1 request) and returns `{ fileId, sent }`. Later voucher updates must keep that file id; `lexware.updateVoucher` does that for you.
+
+Both helpers are writes and follow the same rules as the raw request modes below.
+
+### Request modes
 
 Three binary-safe upload modes are supported in addition to the legacy `rawBody=true` string-based multipart. Prefer `multipart` with `contentPath` — the file's bytes never pass through the model or the sandbox.
 

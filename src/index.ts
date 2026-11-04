@@ -119,18 +119,11 @@ async () => {
   return { status: response.status, request: response.request, data: response.data };
 }
 
-File upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath (requires LEXWARE_OFFICE_UPLOAD_DIRS, see MultipartPart) and the host reads it from disk:
+File upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath (requires LEXWARE_OFFICE_UPLOAD_DIRS, see MultipartPart) and the host reads it from disk. uploadVoucherFile waits inside the call for Lexware's text recognition (set maxRequests >= 5 per upload):
 
 async () => {
-  const response = await lexware.request({
-    method: 'POST',
-    path: '/v1/files',
-    multipart: [
-      { name: 'file', contentType: 'application/pdf', contentPath: '/absolute/path/to/receipt.pdf' },
-      { name: 'type', value: 'voucher' },
-    ],
-  });
-  return { status: response.status, id: response.data?.id, sent: response.sent };
+  const { fileId, voucherId, extraction, voucher, sent } = await lexware.uploadVoucherFile({ contentPath: '/absolute/path/to/receipt.pdf' });
+  return { fileId, voucherId, extraction, status: voucher?.voucherStatus, voucherNumber: voucher?.voucherNumber, sent };
 }`,
 			inputSchema: z.object({
 				code: z.string().describe('JavaScript async arrow function to execute a constrained Lexware API workflow'),

@@ -5,8 +5,12 @@ import type { LexwareApiClient, LexwareRequestOptions, LexwareResponse } from '.
 // serialized into the guest prelude), the host binding it calls, and the declarations the
 // execute tool description shows to the model. `src/lexware-sandbox-sdk.test.ts` guards drift.
 
-// Global the executor installs; the guest SDK sends JSON-encoded LexwareRequestInput through it.
+// Globals the executor installs; the guest SDK sends JSON-encoded LexwareRequestInput through the
+// first, and a delay in milliseconds through the second.
 const HOST_FUNCTION = '__lexwareRequestJson';
+const SLEEP_HOST_FUNCTION = '__lexwareSleep';
+// lexware.sleep rejects longer waits; the execute timeout (which aborts the signal) bounds the total.
+export const MAX_SLEEP_MS = 10_000;
 
 export interface LexwareSandbox {
 	prelude: string;
@@ -17,22 +21,50 @@ export interface LexwareSandbox {
 // client.request with the per-call options plus the executor's abort signal.
 export function lexwareSandbox(client: Pick<LexwareApiClient, 'request'>, options: Omit<LexwareRequestOptions, 'signal'> = {}): LexwareSandbox {
 	return {
-		prelude: `const lexware = (${createLexwareSdk.toString()})(globalThis.${HOST_FUNCTION});`,
+		prelude: `const lexware = (${createLexwareSdk.toString()})(globalThis.${HOST_FUNCTION}, globalThis.${SLEEP_HOST_FUNCTION});`,
 		hostFunctions: {
 			[HOST_FUNCTION]: async (payload, { signal }) => {
 				const request = JSON.parse(payload) as unknown;
 				const response = await client.request(request, { ...options, signal });
 				return JSON.stringify(response);
 			},
+			[SLEEP_HOST_FUNCTION]: (payload, { signal }) => sleep(Number(payload), signal),
 		},
 	};
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<string> {
+	if (!Number.isFinite(ms) || ms < 0 || ms > MAX_SLEEP_MS) {
+		return Promise.reject(new Error(`lexware.sleep expects 0 to ${MAX_SLEEP_MS} ms, got ${ms}`));
+	}
+	return new Promise((resolve, reject) => {
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(new Error('lexware.sleep was aborted: the execution ended'));
+		};
+		const timer = setTimeout(() => {
+			signal.removeEventListener('abort', onAbort);
+			resolve('');
+		}, ms);
+		if (signal.aborted) {
+			onAbort();
+			return;
+		}
+		signal.addEventListener('abort', onAbort, { once: true });
+	});
 }
 
 // Builds the guest `lexware` object on top of a host function taking and returning JSON.
 // Runs inside QuickJS via Function.prototype.toString(), so it must stay self-contained:
 // no references to imports or module-scope values (type-only references are fine).
-export function createLexwareSdk(requestJson: (payload: string) => Promise<string>) {
+export function createLexwareSdk(requestJson: (payload: string) => Promise<string>, sleepHost?: (payload: string) => Promise<string>) {
 	const request = async (input?: unknown): Promise<LexwareResponse> => JSON.parse(await requestJson(JSON.stringify(input ?? {})));
+	const sleep = async (ms: number): Promise<void> => {
+		if (!sleepHost) {
+			throw new Error('lexware.sleep is not available in this sandbox');
+		}
+		await sleepHost(String(ms));
+	};
 	const assertOkJsonResponse = (response: LexwareResponse, helperName: string): unknown => {
 		if (!response || typeof response !== 'object') {
 			throw new Error(helperName + ' expected lexware.request to return a LexwareResponse object');
@@ -272,6 +304,91 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 			.filter((key) => key !== 'version' && key !== 'updatedDate' && JSON.stringify(before[key]) !== JSON.stringify(afterRecord[key]));
 		return { before, after, changed };
 	};
+	const uploadContentTypes: Record<string, string> = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', xml: 'application/xml' };
+	type FileInput = { contentPath?: string; contentBase64?: string; filename?: string; contentType?: string };
+	const filePart = (input: FileInput, helperName: string): Record<string, unknown> => {
+		if (!isObjectLike(input) || Array.isArray(input)) {
+			throw new Error(helperName + ' expects an object: { contentPath | contentBase64, filename?, contentType? }');
+		}
+		if ((input.contentPath === undefined) === (input.contentBase64 === undefined)) {
+			throw new Error(helperName + ' expects exactly one of contentPath or contentBase64');
+		}
+		if (input.contentBase64 !== undefined && input.filename === undefined) {
+			throw new Error(helperName + ' needs a filename with contentBase64, e.g. receipt.pdf');
+		}
+		let contentType = input.contentType;
+		if (contentType === undefined) {
+			const name = String(input.filename !== undefined ? input.filename : input.contentPath);
+			const extension = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '';
+			contentType = uploadContentTypes[extension];
+			if (contentType === undefined) {
+				throw new Error(helperName + ' cannot infer contentType from ' + JSON.stringify(name) + '; pass contentType (Lexware accepts pdf, jpg, png and xml)');
+			}
+		}
+		const part: Record<string, unknown> = { name: 'file', contentType };
+		for (const field of ['contentPath', 'contentBase64', 'filename'] as const) {
+			if (input[field] !== undefined) part[field] = input[field];
+		}
+		return part;
+	};
+	// POST /v1/files, then poll the created voucher after 2, 4 and 8 s (capped by timeoutMs) until text recognition has
+	// replaced status blank: 1 + up to 4 requests. Never re-uploads; a timeout returns extraction 'pending'.
+	const uploadVoucherFile = async (input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{
+		fileId: string;
+		voucherId: string;
+		sent: unknown;
+		voucher?: unknown;
+		extraction: 'done' | 'pending' | 'skipped';
+	}> => {
+		const part = filePart(input, 'lexware.uploadVoucherFile');
+		const wait = input.waitForExtraction === undefined ? true : input.waitForExtraction;
+		if (typeof wait !== 'boolean' && !(isObjectLike(wait) && !Array.isArray(wait))) {
+			throw new Error('lexware.uploadVoucherFile waitForExtraction must be a boolean or { timeoutMs }');
+		}
+		const timeoutMs = typeof wait === 'object' && wait.timeoutMs !== undefined ? Number(wait.timeoutMs) : 15_000;
+		if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+			throw new Error('lexware.uploadVoucherFile waitForExtraction.timeoutMs must be a non-negative number');
+		}
+		const response = await request({ method: 'POST', path: '/v1/files', multipart: [part, { name: 'type', value: 'voucher' }] });
+		const data = assertOkJsonResponse(response, 'lexware.uploadVoucherFile');
+		if (!isObjectLike(data) || typeof data.id !== 'string' || typeof data.voucherId !== 'string') {
+			throw new Error('lexware.uploadVoucherFile expected POST /v1/files to return { id, voucherId }, got status ' + response.status + ': ' + JSON.stringify(data));
+		}
+		const uploaded = { fileId: data.id, voucherId: data.voucherId, sent: response.sent };
+		if (wait === false) {
+			return { ...uploaded, extraction: 'skipped' };
+		}
+		let voucher: unknown;
+		let waited = 0;
+		for (const delayMs of [2_000, 4_000, 8_000, Infinity]) {
+			const stepMs = Math.min(delayMs, timeoutMs - waited);
+			if (stepMs <= 0) break;
+			await sleep(stepMs);
+			waited += stepMs;
+			try {
+				voucher = assertOkJsonResponse(await request({ path: '/v1/vouchers/' + encodeURIComponent(data.voucherId) }), 'lexware.uploadVoucherFile');
+			} catch (error) {
+				throw new Error('lexware.uploadVoucherFile: the upload succeeded (fileId ' + data.id + ', voucherId ' + data.voucherId + '), but polling the voucher failed. Do not upload again; GET /v1/vouchers/' + data.voucherId + ' later. Cause: ' + (error instanceof Error ? error.message : String(error)));
+			}
+			if (isObjectLike(voucher) && voucher.voucherStatus !== 'blank') {
+				return { ...uploaded, voucher, extraction: 'done' };
+			}
+		}
+		return { ...uploaded, ...(voucher !== undefined && { voucher }), extraction: 'pending' };
+	};
+	// POST /v1/vouchers/{id}/files: 1 request. Later voucher PUTs must keep the returned fileId.
+	const attachFileToVoucher = async (voucherId: string, input: FileInput): Promise<{ fileId: string; sent: unknown }> => {
+		if (typeof voucherId !== 'string' || voucherId.length === 0) {
+			throw new Error('lexware.attachFileToVoucher expects a non-empty voucher id string');
+		}
+		const part = filePart(input, 'lexware.attachFileToVoucher');
+		const response = await request({ method: 'POST', path: '/v1/vouchers/' + encodeURIComponent(voucherId) + '/files', multipart: [part] });
+		const data = assertOkJsonResponse(response, 'lexware.attachFileToVoucher');
+		if (!isObjectLike(data) || typeof data.id !== 'string') {
+			throw new Error('lexware.attachFileToVoucher expected POST /v1/vouchers/{id}/files to return { id }, got status ' + response.status + ': ' + JSON.stringify(data));
+		}
+		return { fileId: data.id, sent: response.sent };
+	};
 	return Object.freeze({
 		request,
 		json,
@@ -281,6 +398,9 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		sumMoney,
 		formatMoney,
 		updateVoucher,
+		uploadVoucherFile,
+		attachFileToVoucher,
+		sleep,
 	});
 }
 
@@ -294,10 +414,15 @@ export const lexwareSdkDeclaration = `declare const lexware: {
   requireMoney(row: unknown, fieldPath: string): number;
   sumMoney(rows: unknown[], fieldPath: string): number;
   formatMoney(cents: number, currency?: string): string;
+  // GET, shallow-merge patch (read-only fields dropped, files and version kept), PUT, GET to verify: 3 requests. Throws
+  // without writing on an expectedVersion mismatch or if files would lose an id (unless allowFileRemoval). Details: spec PUT /v1/vouchers/{id} notes.
   updateVoucher(id: string, patch: Record<string, unknown>, options?: { expectedVersion?: number; allowFileRemoval?: boolean }): Promise<{ before: unknown; after: unknown; changed: string[] }>;
+  // POST /v1/files (type=voucher), then polls the voucher after 2, 4, 8 s until it is no longer blank (timeoutMs default 15000):
+  // up to 5 requests. Never re-uploads; extraction 'pending' on timeout means GET /v1/vouchers/{voucherId} later.
+  uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped' }>;
+  attachFileToVoucher(voucherId: string, input: FileInput): Promise<{ fileId: string; sent: UploadSent }>; // POST /v1/vouchers/{id}/files, 1 request
+  sleep(ms: number): Promise<void>; // 0-10000 ms per call; the 30 s execute timeout bounds the total
 };
-// updateVoucher: GET, shallow-merge patch (read-only fields dropped, files and version kept), PUT, GET to verify: 3 requests.
-// Throws without writing on an expectedVersion mismatch or if files would lose an id (unless allowFileRemoval). Details: spec PUT /v1/vouchers/{id} notes.
 
 type LexwareRequest = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -322,6 +447,16 @@ type MultipartPart = {
   contentType?: string;
 };
 // Exactly one of value, contentBase64, or contentPath per part.
+
+type FileInput = {
+  contentPath?: string; // as in MultipartPart; requires LEXWARE_OFFICE_UPLOAD_DIRS
+  contentBase64?: string; // needs filename
+  filename?: string;
+  contentType?: string; // default from the filename/contentPath extension: pdf, jpg/jpeg, png, xml
+};
+// Exactly one of contentPath or contentBase64.
+
+type UploadSent = { bytes: number; parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }> };
 
 type LexwareResponse<T = unknown> = {
   ok: boolean;

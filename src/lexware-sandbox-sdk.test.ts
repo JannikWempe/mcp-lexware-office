@@ -4,7 +4,7 @@ import test from 'node:test';
 import { QuickJsExecutor } from './executor.js';
 import type { LexwareRequestInput, LexwareRequestOptions, LexwareResponse, MultipartPart } from './lexware-client.js';
 import type { LexwareIssue } from './lexware-issues.js';
-import { createLexwareSdk, lexwareSandbox, lexwareSdkDeclaration } from './lexware-sandbox-sdk.js';
+import { createLexwareSdk, lexwareSandbox, lexwareSdkDeclaration, MAX_SLEEP_MS } from './lexware-sandbox-sdk.js';
 
 const okResponse = (data: unknown, overrides: Partial<LexwareResponse> = {}): LexwareResponse => ({
 	ok: true,
@@ -35,15 +35,20 @@ const rateLimited = okResponse({ message: 'too many requests' }, {
 	request: { method: 'GET', path: '/v1/voucherlist', query: { page: ['0'], size: ['250'] } },
 });
 
-// SDK whose host answers every request with `respond(input)`; `inputs` records the requests.
+// SDK whose host answers every request with `respond(input)`; `inputs` records the requests and `sleeps` the
+// lexware.sleep delays, which resolve immediately.
 const sdkWith = (respond: (input: Record<string, any>) => LexwareResponse = () => okResponse({})) => {
 	const inputs: Record<string, any>[] = [];
+	const sleeps: number[] = [];
 	const sdk = createLexwareSdk(async (payload) => {
 		const input = JSON.parse(payload) as Record<string, any>;
 		inputs.push(input);
 		return JSON.stringify(respond(input));
+	}, async (payload) => {
+		sleeps.push(Number(payload));
+		return '';
 	});
-	return { sdk, inputs };
+	return { sdk, inputs, sleeps };
 };
 
 const { sdk: lexware } = sdkWith();
@@ -291,6 +296,156 @@ test('sandbox lexware.updateVoucher merges and verifies inside QuickJS', async (
 	assert.equal(execution.error, undefined);
 	assert.deepEqual(execution.result, ['remark']);
 	assert.deepEqual(puts, [{ type: 'purchaseinvoice', voucherNumber: 'RE-1', contactId: 'c-1', version: 3, files: ['f-1', 'f-2'], remark: 'x' }]);
+});
+
+const uploadAccepted = okResponse({ id: 'file-1', voucherId: 'v-9' }, {
+	status: 202,
+	statusText: 'Accepted',
+	sent: { bytes: 3, parts: [{ name: 'file', filename: 'receipt.pdf', bytes: 3, sha256: 'abc' }] },
+});
+
+// Upload host: POST answers `upload`, the voucher GETs answer the statuses in turn (the last one repeats).
+const uploadHost = (statuses: string[], upload: LexwareResponse = uploadAccepted) => {
+	let reads = 0;
+	return sdkWith((input) => {
+		if (input.method === 'POST') return upload;
+		const voucherStatus = statuses[Math.min(reads, statuses.length - 1)];
+		reads += 1;
+		return okResponse({ id: 'v-9', voucherStatus, ...(voucherStatus !== 'blank' && { voucherNumber: 'RE-9' }) });
+	});
+};
+
+test('lexware.uploadVoucherFile uploads type=voucher and polls until text recognition is done', async () => {
+	const { sdk, inputs, sleeps } = uploadHost(['blank', 'unchecked']);
+
+	const result = await sdk.uploadVoucherFile({ contentPath: '/data/Receipt.PDF' });
+
+	assert.deepEqual(inputs[0], {
+		method: 'POST',
+		path: '/v1/files',
+		multipart: [{ name: 'file', contentType: 'application/pdf', contentPath: '/data/Receipt.PDF' }, { name: 'type', value: 'voucher' }],
+	});
+	assert.deepEqual(inputs.slice(1).map((input) => [input.method ?? 'GET', input.path]), [['GET', '/v1/vouchers/v-9'], ['GET', '/v1/vouchers/v-9']]);
+	assert.deepEqual(sleeps, [2000, 4000]);
+	assert.deepEqual(result, { fileId: 'file-1', voucherId: 'v-9', sent: uploadAccepted.sent, voucher: { id: 'v-9', voucherStatus: 'unchecked', voucherNumber: 'RE-9' }, extraction: 'done' });
+});
+
+test('lexware.uploadVoucherFile returns pending on timeout without uploading again', async () => {
+	const { sdk, inputs, sleeps } = uploadHost(['blank']);
+
+	const result = await sdk.uploadVoucherFile({ contentBase64: 'AAEC', filename: 'scan.png' });
+
+	assert.equal(inputs.filter((input) => input.method === 'POST').length, 1);
+	assert.equal(inputs[0].multipart[0].contentType, 'image/png');
+	assert.deepEqual(sleeps, [2000, 4000, 8000, 1000], 'waits 15 s in total by default');
+	assert.equal(inputs.length, 5, 'one upload plus four polls');
+	assert.equal(result.extraction, 'pending');
+	assert.deepEqual(result.voucher, { id: 'v-9', voucherStatus: 'blank' });
+
+	const short = uploadHost(['blank']);
+	await short.sdk.uploadVoucherFile({ contentPath: '/data/a.xml', waitForExtraction: { timeoutMs: 3000 } });
+	assert.deepEqual(short.sleeps, [2000, 1000]);
+});
+
+test('lexware.uploadVoucherFile skips polling with waitForExtraction: false', async () => {
+	const { sdk, inputs, sleeps } = uploadHost(['blank']);
+
+	const result = await sdk.uploadVoucherFile({ contentPath: '/data/a.jpg', contentType: 'image/jpeg', waitForExtraction: false });
+
+	assert.equal(inputs.length, 1);
+	assert.deepEqual(sleeps, []);
+	assert.deepEqual(result, { fileId: 'file-1', voucherId: 'v-9', sent: uploadAccepted.sent, extraction: 'skipped' });
+});
+
+test('lexware.uploadVoucherFile throws on a failed upload or a response without voucherId', async () => {
+	const rejected = okResponse({ message: 'invalid file' }, { ok: false, status: 406, statusText: 'Not Acceptable', errorCategory: 'validation' });
+	await assert.rejects(() => uploadHost(['blank'], rejected).sdk.uploadVoucherFile({ contentPath: '/data/a.pdf' }), /Lexware API request failed: 406 Not Acceptable/);
+
+	const { sdk, inputs } = uploadHost(['blank'], okResponse({ id: 'file-1' }, { status: 202 }));
+	await assert.rejects(() => sdk.uploadVoucherFile({ contentPath: '/data/a.pdf' }), /expected POST \/v1\/files to return \{ id, voucherId \}, got status 202: \{"id":"file-1"\}/);
+	assert.equal(inputs.length, 1);
+});
+
+test('lexware.uploadVoucherFile says the upload succeeded when polling fails', async () => {
+	const { sdk } = sdkWith((input) => (input.method === 'POST' ? uploadAccepted : rateLimited));
+
+	await assert.rejects(() => sdk.uploadVoucherFile({ contentPath: '/data/a.pdf' }), /the upload succeeded \(fileId file-1, voucherId v-9\), but polling the voucher failed\. Do not upload again.*429/);
+});
+
+test('lexware upload helpers validate the file input before sending', async () => {
+	const { sdk, inputs } = sdkWith();
+	for (const [input, message] of [
+		[{}, /exactly one of contentPath or contentBase64/],
+		[{ contentPath: '/a.pdf', contentBase64: 'AA==' }, /exactly one of contentPath or contentBase64/],
+		[{ contentBase64: 'AA==' }, /needs a filename with contentBase64/],
+		[{ contentPath: '/data/notes.txt' }, /cannot infer contentType from "\/data\/notes\.txt"/],
+		[{ contentPath: '/data/a.pdf', waitForExtraction: 'yes' }, /waitForExtraction must be a boolean or \{ timeoutMs \}/],
+		[{ contentPath: '/data/a.pdf', waitForExtraction: { timeoutMs: -1 } }, /timeoutMs must be a non-negative number/],
+	] as const) {
+		await assert.rejects(() => sdk.uploadVoucherFile(input as never), message);
+	}
+	await assert.rejects(() => sdk.attachFileToVoucher('', { contentPath: '/data/a.pdf' }), /non-empty voucher id/);
+	assert.equal(inputs.length, 0);
+});
+
+test('lexware.attachFileToVoucher posts the file part to the voucher', async () => {
+	const { sdk, inputs } = sdkWith(() => okResponse({ id: 'file-2' }, { status: 202, sent: uploadAccepted.sent }));
+
+	const result = await sdk.attachFileToVoucher('v-1', { contentPath: '/data/b.pdf', filename: 'invoice.pdf' });
+
+	assert.deepEqual(inputs, [{ method: 'POST', path: '/v1/vouchers/v-1/files', multipart: [{ name: 'file', contentType: 'application/pdf', contentPath: '/data/b.pdf', filename: 'invoice.pdf' }] }]);
+	assert.deepEqual(result, { fileId: 'file-2', sent: uploadAccepted.sent });
+});
+
+test('sandbox lexware.sleep waits, rejects delays above the cap, and rejects on abort', async () => {
+	const execution = await runInSandbox(`async () => {
+		const started = Date.now();
+		await lexware.sleep(20);
+		const waited = Date.now() - started;
+		const tooLong = await lexware.sleep(${MAX_SLEEP_MS + 1}).then(() => 'resolved', (error) => error.message);
+		const negative = await lexware.sleep(-1).then(() => 'resolved', (error) => error.message);
+		return { waited: waited >= 15, tooLong, negative };
+	}`);
+	assert.equal(execution.error, undefined);
+	assert.deepEqual(execution.result, { waited: true, tooLong: `lexware.sleep expects 0 to ${MAX_SLEEP_MS} ms, got ${MAX_SLEEP_MS + 1}`, negative: `lexware.sleep expects 0 to ${MAX_SLEEP_MS} ms, got -1` });
+
+	const sleepHost = Object.entries(lexwareSandbox({ request: async () => okResponse({}) }).hostFunctions).find(([name]) => name.includes('Sleep'))![1];
+	const controller = new AbortController();
+	const pending = sleepHost('5000', { signal: controller.signal });
+	controller.abort();
+	await assert.rejects(pending, /lexware\.sleep was aborted/);
+	const aborted = new AbortController();
+	aborted.abort();
+	await assert.rejects(sleepHost('10', { signal: aborted.signal }), /aborted/);
+});
+
+test('the execute timeout ends a pending lexware.sleep', async () => {
+	const started = Date.now();
+	const execution = await new QuickJsExecutor().execute(`async () => { await lexware.sleep(${MAX_SLEEP_MS}); return 'slept'; }`, {}, { timeoutMs: 100, ...lexwareSandbox({ request: async () => okResponse({}) }) });
+
+	assert.match(execution.error ?? '', /timed out after 100ms/);
+	assert.ok(Date.now() - started < 2000, 'does not wait for the sleep to finish');
+});
+
+test('sandbox lexware.uploadVoucherFile polls with the host sleep', async () => {
+	let reads = 0;
+	const client = {
+		request: async (input: unknown) => {
+			if ((input as Record<string, unknown>).method === 'POST') return uploadAccepted;
+			reads += 1;
+			return okResponse({ id: 'v-9', voucherStatus: reads === 1 ? 'blank' : 'unchecked' });
+		},
+	};
+
+	const execution = await new QuickJsExecutor().execute(
+		`async () => { const { extraction, voucherId } = await lexware.uploadVoucherFile({ contentPath: '/data/a.pdf', waitForExtraction: { timeoutMs: 60 } }); return { extraction, voucherId }; }`,
+		{},
+		{ timeoutMs: 5000, ...lexwareSandbox(client) },
+	);
+
+	assert.equal(execution.error, undefined);
+	assert.deepEqual(execution.result, { extraction: 'pending', voucherId: 'v-9' }, 'a 60 ms budget ends after one blank poll');
+	assert.equal(reads, 1);
 });
 
 test('lexware.request returns non-OK envelopes without throwing', async () => {
