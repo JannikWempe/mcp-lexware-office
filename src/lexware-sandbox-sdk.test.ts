@@ -152,6 +152,115 @@ test('lexware.paginate collects content across pages and stops on last', async (
 	await assert.rejects(() => sdk.paginate({ path: '/v1/contacts' }, { maxPages: 0 }), /maxPages must be a positive integer/);
 });
 
+const storedVoucher = {
+	id: 'v-1',
+	organizationId: 'org-1',
+	type: 'purchaseinvoice',
+	voucherStatus: 'unchecked',
+	voucherNumber: 'RE-1',
+	contactId: 'c-1',
+	contactName: 'Supplier GmbH',
+	createdDate: '2026-11-01T10:00:00.000+01:00',
+	updatedDate: '2026-11-01T10:00:00.000+01:00',
+	version: 3,
+	files: ['f-1', 'f-2'],
+};
+
+// Fake voucher store: GET returns the stored voucher, PUT answers `put(body)` and, if OK, stores the body like Lexware would.
+const voucherHost = (put: (body: Record<string, any>) => LexwareResponse = () => okResponse({ id: 'v-1', version: 4 })) => {
+	let voucher: Record<string, any> = structuredClone(storedVoucher);
+	return sdkWith((input) => {
+		if (input.method === 'PUT') {
+			const response = put(input.body);
+			if (response.ok) {
+				voucher = { ...voucher, ...input.body, version: voucher.version + 1, updatedDate: '2026-11-04T10:00:00.000+01:00' };
+				delete voucher.useCollectiveContact;
+				if (input.body.useCollectiveContact === true) {
+					voucher.contactId = 'collective';
+				}
+			}
+			return response;
+		}
+		return okResponse(structuredClone(voucher));
+	});
+};
+
+test('lexware.updateVoucher PUTs the merged voucher with files and version, without read-only fields', async () => {
+	const { sdk, inputs } = voucherHost();
+
+	const result = await sdk.updateVoucher('v-1', { voucherNumber: 'RE-2', voucherStatus: 'open' }, { expectedVersion: 3 });
+
+	assert.deepEqual(inputs.map((input) => [input.method ?? 'GET', input.path]), [['GET', '/v1/vouchers/v-1'], ['PUT', '/v1/vouchers/v-1'], ['GET', '/v1/vouchers/v-1']]);
+	assert.deepEqual(inputs[1].body, { type: 'purchaseinvoice', voucherNumber: 'RE-2', voucherStatus: 'open', contactId: 'c-1', version: 3, files: ['f-1', 'f-2'] });
+	assert.deepEqual(result.before, storedVoucher);
+	assert.equal((result.after as Record<string, unknown>).version, 4);
+	assert.deepEqual(result.changed, ['voucherStatus', 'voucherNumber']);
+});
+
+test('lexware.updateVoucher drops contactId when switching to the collective contact', async () => {
+	const { sdk, inputs } = voucherHost();
+
+	await sdk.updateVoucher('v-1', { useCollectiveContact: true });
+
+	assert.equal(inputs[1].body.useCollectiveContact, true);
+	assert.equal(Object.hasOwn(inputs[1].body, 'contactId'), false);
+});
+
+test('lexware.updateVoucher does not write on a version mismatch, a patch version, or dropped files', async () => {
+	for (const [patch, options, message] of [
+		[{ remark: 'x' }, { expectedVersion: 2 }, /voucher v-1 is at version 3, expected 2\. Nothing was written/],
+		[{ version: 2 }, {}, /use options\.expectedVersion instead of patch\.version/],
+		[{ files: ['f-1'] }, {}, /would permanently delete file\(s\) f-2 from voucher v-1\. Nothing was written/],
+		[{ files: null }, {}, /would permanently delete file\(s\) f-1, f-2/],
+	] as const) {
+		const { sdk, inputs } = voucherHost();
+		await assert.rejects(() => sdk.updateVoucher('v-1', patch as Record<string, unknown>, options), message);
+		assert.ok(inputs.every((input) => input.method !== 'PUT'), `no PUT for ${JSON.stringify(patch)}`);
+	}
+	await assert.rejects(() => sdkWith().sdk.updateVoucher('', {}), /non-empty voucher id/);
+});
+
+test('lexware.updateVoucher removes files only with allowFileRemoval', async () => {
+	const { sdk, inputs } = voucherHost();
+
+	const result = await sdk.updateVoucher('v-1', { files: ['f-1'] }, { allowFileRemoval: true });
+
+	assert.deepEqual(inputs[1].body.files, ['f-1']);
+	assert.deepEqual(result.changed, ['files']);
+});
+
+test('lexware.updateVoucher throws with the Lexware issues when the PUT fails', async () => {
+	const { sdk, inputs } = voucherHost(() => okResponse({ IssueList: [{ i18nKey: 'invalid_taxamount', source: 'voucherItems[0].taxAmount' }] }, {
+		ok: false,
+		status: 406,
+		statusText: 'Not Acceptable',
+		errorCategory: 'validation',
+		operation: { operationId: 'updateVoucher', method: 'PUT', pathTemplate: '/v1/vouchers/{id}', summary: 'Update a bookkeeping voucher' },
+		issues: [{ field: 'voucherItems[0].taxAmount', code: 'invalid_taxamount' }],
+	}));
+
+	await assert.rejects(() => sdk.updateVoucher('v-1', { remark: 'x' }), /406 Not Acceptable for updateVoucher \(PUT \/v1\/vouchers\/\{id\}\)\. Category: validation\. Issues: \[voucherItems\[0\]\.taxAmount invalid_taxamount\]/);
+	assert.equal(inputs.length, 2, 'no verification GET after a failed PUT');
+});
+
+test('lexware.updateVoucher throws when the re-read voucher lost a file', async () => {
+	let reads = 0;
+	const { sdk } = sdkWith((input) => {
+		if (input.method === 'PUT') return okResponse({ id: 'v-1', version: 4 });
+		reads += 1;
+		return okResponse(reads === 1 ? storedVoucher : { ...storedVoucher, version: 4, files: ['f-1'] });
+	});
+
+	await assert.rejects(() => sdk.updateVoucher('v-1', { remark: 'x' }), /PUT succeeded but voucher v-1 no longer lists file\(s\) f-2/);
+});
+
+test('sandbox lexware.updateVoucher runs inside QuickJS', async () => {
+	const execution = await runInSandbox(`async () => (await lexware.updateVoucher('v-1', { remark: 'x' })).changed`, () => okResponse(storedVoucher));
+
+	assert.equal(execution.error, undefined);
+	assert.deepEqual(execution.result, []);
+});
+
 test('lexware.request returns non-OK envelopes without throwing', async () => {
 	const { sdk } = sdkWith(() => unauthorized);
 

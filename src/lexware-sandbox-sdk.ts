@@ -196,6 +196,70 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		}
 		return items;
 	};
+	const fileIdsOf = (voucher: unknown): string[] => {
+		const files = isObjectLike(voucher) ? voucher.files : undefined;
+		return Array.isArray(files) ? files.map((file) => String(file)) : [];
+	};
+	// GET, merge, PUT with the current version, GET again: 3 requests. Throws instead of writing when the
+	// merged body would drop a current file id, because Lexware deletes omitted files permanently.
+	const updateVoucher = async (
+		id: string,
+		patch: Record<string, unknown>,
+		options: { expectedVersion?: number; allowFileRemoval?: boolean } = {},
+	): Promise<{ before: unknown; after: unknown; changed: string[] }> => {
+		if (typeof id !== 'string' || id.length === 0) {
+			throw new Error('lexware.updateVoucher expects a non-empty voucher id string');
+		}
+		if (!isObjectLike(patch) || Array.isArray(patch)) {
+			throw new Error('lexware.updateVoucher patch must be an object');
+		}
+		if (options == null || typeof options !== 'object' || Array.isArray(options)) {
+			throw new Error('lexware.updateVoucher options must be an object when provided');
+		}
+		if (Object.prototype.hasOwnProperty.call(patch, 'version')) {
+			throw new Error('lexware.updateVoucher sends the current version itself; use options.expectedVersion instead of patch.version');
+		}
+		const path = '/v1/vouchers/' + encodeURIComponent(id);
+		const before = assertOkJsonResponse(await request({ path }), 'lexware.updateVoucher');
+		if (!isObjectLike(before)) {
+			throw new Error('lexware.updateVoucher expected GET ' + path + ' to return a voucher object');
+		}
+		if (options.expectedVersion !== undefined && before.version !== options.expectedVersion) {
+			throw new Error('lexware.updateVoucher: voucher ' + id + ' is at version ' + JSON.stringify(before.version) + ', expected ' + JSON.stringify(options.expectedVersion) + '. Nothing was written; re-read the voucher before updating.');
+		}
+		const body: Record<string, unknown> = { ...before };
+		for (const field of ['id', 'organizationId', 'voucherStatus', 'contactName', 'createdDate', 'updatedDate']) {
+			delete body[field];
+		}
+		Object.assign(body, patch);
+		if (patch.useCollectiveContact === true) {
+			delete body.contactId;
+		}
+		body.version = before.version;
+		const previousFileIds = fileIdsOf(before);
+		if (!Array.isArray(body.files)) {
+			body.files = [];
+		}
+		const keptFileIds = fileIdsOf(body);
+		const droppedFileIds = previousFileIds.filter((fileId) => !keptFileIds.includes(fileId));
+		if (droppedFileIds.length > 0 && options.allowFileRemoval !== true) {
+			throw new Error('lexware.updateVoucher: the update would permanently delete file(s) ' + droppedFileIds.join(', ') + ' from voucher ' + id + '. Nothing was written; keep them in patch.files or pass { allowFileRemoval: true }.');
+		}
+		const putResponse = await request({ method: 'PUT', path, body });
+		if (!putResponse || putResponse.ok !== true) {
+			assertOkJsonResponse(putResponse, 'lexware.updateVoucher');
+		}
+		const after = assertOkJsonResponse(await request({ path }), 'lexware.updateVoucher');
+		const afterFileIds = fileIdsOf(after);
+		const lostFileIds = keptFileIds.filter((fileId) => !afterFileIds.includes(fileId));
+		if (lostFileIds.length > 0) {
+			throw new Error('lexware.updateVoucher: the PUT succeeded but voucher ' + id + ' no longer lists file(s) ' + lostFileIds.join(', ') + '. Check the voucher and re-attach the files via POST /v1/vouchers/{id}/files.');
+		}
+		const afterRecord = isObjectLike(after) ? after : {};
+		const changed = Object.keys({ ...before, ...afterRecord })
+			.filter((key) => key !== 'version' && key !== 'updatedDate' && JSON.stringify(before[key]) !== JSON.stringify(afterRecord[key]));
+		return { before, after, changed };
+	};
 	return Object.freeze({
 		request,
 		json,
@@ -204,6 +268,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		requireMoney,
 		sumMoney,
 		formatMoney,
+		updateVoucher,
 	});
 }
 
@@ -217,7 +282,13 @@ export const lexwareSdkDeclaration = `declare const lexware: {
   requireMoney(row: unknown, fieldPath: string): number;
   sumMoney(rows: unknown[], fieldPath: string): number;
   formatMoney(cents: number, currency?: string): string;
+  updateVoucher(id: string, patch: Record<string, unknown>, options?: { expectedVersion?: number; allowFileRemoval?: boolean }): Promise<{ before: unknown; after: unknown; changed: string[] }>;
 };
+// updateVoucher: safe PUT /v1/vouchers/{id} in 3 requests (GET, PUT, GET). Starts from the current voucher, drops read-only
+// fields (id, organizationId, voucherStatus, contactName, createdDate, updatedDate), applies patch shallowly (arrays such as
+// voucherItems are replaced whole), drops contactId when patch.useCollectiveContact is true, and sends the current version.
+// Throws without writing on an expectedVersion mismatch or when files would lose a current id (unless allowFileRemoval);
+// throws with the Lexware issues on a non-OK PUT, and when the re-read voucher lost a kept file. changed: top-level keys that differ.
 
 type LexwareRequest = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
