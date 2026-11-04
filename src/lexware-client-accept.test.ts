@@ -32,6 +32,7 @@ test('explicit accept always wins', async () => {
 
 test('every GET file download operation declares defaultAccept */*', () => {
 	const downloadPaths = Object.keys(lexwareSpec.paths).filter((path) => path.endsWith('/{id}/file') || path === '/v1/files/{id}');
+	// 7 sales-document /{id}/file downloads plus GET /v1/files/{id}.
 	assert.equal(downloadPaths.length, 8);
 	for (const path of downloadPaths) {
 		assert.equal(lexwareSpec.paths[path]?.get?.defaultAccept, '*/*', path);

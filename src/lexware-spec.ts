@@ -193,7 +193,7 @@ const bookkeepingVoucherShape = {
 const bookkeepingVoucherNotes = [
 	'voucherNumber, voucherDate, totalGrossAmount, totalTaxAmount and voucherItems are optional only for voucherStatus unchecked; mandatory otherwise.',
 	'Provide contactId or useCollectiveContact=true. Missing both was observed to fail with 406 Missing_ContactId.',
-	'taxType is net or gross only. The API prohibits unchecked net vouchers: use taxType=gross or create the voucher as open.',
+	'taxType is net or gross only. The API prohibits unchecked net vouchers: use taxType=gross or set voucherStatus to open.',
 	'Use /v1/posting-categories to find valid voucherItems[].categoryId values.',
 ];
 
@@ -209,7 +209,7 @@ const documentResponses = {
 };
 
 const draftFileResponse = { '409': 'Document is a draft; drafts have no file' };
-const binaryFileNote = 'Binary bodies (PDF, images) come back as metadata only ({ binary: true, contentType, bytes, omitted: true }), not file content; XML comes back as response.text.';
+const binaryFileNote = 'Binary bodies (PDF, images) come back as metadata only ({ binary: true, contentType, bytes or bytesUnknown, omitted: true }), not file content; XML comes back as response.text.';
 const pdfFileResponses = {
 	'200': 'PDF file (binary, returned as metadata only)',
 	'404': 'Document not found',
@@ -772,7 +772,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 				operationId: 'createVoucher',
 				tags: ['vouchers', 'bookkeeping', 'write'],
 				summary: 'Create a bookkeeping voucher',
-				requestBody: { contentType: 'application/json', summary: 'Bookkeeping voucher JSON. Omit version (the docs contradict themselves between 0 and 1) and read-only fields.', required: bookkeepingVoucherRequired, shape: bookkeepingVoucherShape },
+				requestBody: { contentType: 'application/json', summary: 'Bookkeeping voucher JSON. Omit version (the docs require 1 if it is sent) and read-only fields.', required: bookkeepingVoucherRequired, shape: bookkeepingVoucherShape },
 				examples: [{ type: 'purchaseinvoice', voucherNumber: 'RE-2026-001', voucherDate: '2026-01-31', totalGrossAmount: 119, totalTaxAmount: 19, taxType: 'gross', useCollectiveContact: true, voucherItems: [{ amount: 119, taxAmount: 19, taxRatePercent: 19, categoryId: '...' }] }],
 				responses: documentResponses,
 				notes: bookkeepingVoucherNotes,
@@ -784,7 +784,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 			put: { operationId: 'updateVoucher', tags: ['vouchers', 'bookkeeping', 'write'], summary: 'Update a bookkeeping voucher', parameters: [idParam('Voucher UUID')], requestBody: { contentType: 'application/json', summary: 'Full voucher JSON from GET /v1/vouchers/{id} with your changes merged in, including the current version and the complete current files array.', required: ['version', 'files', ...bookkeepingVoucherRequired], shape: { ...bookkeepingVoucherShape, voucherStatus: 'omit, or open to finalize an unchecked voucher', version: 'current version from GET', files: ['every current file UUID'] } }, responses: documentResponses, notes: ['WARNING: send the complete current files array; omitted file ids are deleted permanently. A PUT without files removes all attached files.', 'On 409 conflict, re-fetch the voucher and retry with its current version.', 'unchecked vouchers: the docs restrict updates to the status transition to open (changelog 14.07.2026), but PUTs on unchecked vouchers were observed (Oct/Nov 2026) to return 200 and keep field changes (voucherNumber, voucherDate, totals, voucherItems, useCollectiveContact) while the status stayed unchecked. Omit voucherStatus unless finalizing to open, then GET the voucher to verify the changes stuck.', 'Vouchers in status blank (text recognition after POST /v1/files still running) are read-only; wait until GET shows unchecked.', ...bookkeepingVoucherNotes], docsUrl: 'https://developers.lexware.io/docs/#vouchers-endpoint-update-a-voucher' },
 		},
 		'/v1/vouchers/{id}/files': {
-			post: { operationId: 'uploadFileToVoucher', tags: ['vouchers', 'files', 'bookkeeping', 'write', 'upload'], summary: 'Upload and attach a file to a voucher', parameters: [idParam('Voucher UUID')], requestBody: { contentType: 'multipart/form-data', summary: 'Multipart file upload. Field: file.' }, responses: { '202': 'Accepted: JSON { id } of the attached file (observed)', '400': 'Validation error', '401': 'Missing or invalid API key', '404': 'Voucher not found', '406': 'Invalid file content', '429': 'Rate limit exceeded' }, notes: ['The new file id joins the voucher\'s files array. Later PUT /v1/vouchers/{id} calls must keep it, or the file is deleted permanently.', 'Each file can be assigned to only one voucher. Uploading identical content again (checksum) returns the existing file id.', 'Formats: pdf, jpg, png, xml. The docs give no size limit for this endpoint; assume the 5 MB limit of POST /v1/files.', 'Upload via the multipart request field of lexware.request, e.g. multipart: [{ name: "file", contentType: "application/pdf", contentPath: "/absolute/path/doc.pdf" }]. Use contentPath for files on the server machine, contentBase64 for bytes held as base64.'], examples: [{ multipart: [{ name: 'file', contentType: 'application/pdf', contentPath: '/absolute/path/to/receipt.pdf' }] }], docsUrl: 'https://developers.lexware.io/docs/#vouchers-endpoint-upload-a-file-to-a-voucher' },
+			post: { operationId: 'uploadFileToVoucher', tags: ['vouchers', 'files', 'bookkeeping', 'write', 'upload'], summary: 'Upload and attach a file to a voucher', parameters: [idParam('Voucher UUID')], requestBody: { contentType: 'multipart/form-data', summary: 'Multipart file upload. Field: file.' }, responses: { '202': 'Accepted: JSON { id } of the attached file (observed)', '400': 'Malformed request', '401': 'Missing or invalid API key', '404': 'Voucher not found', '406': 'Invalid file content', '429': 'Rate limit exceeded' }, notes: ['The new file id joins the voucher\'s files array. Later PUT /v1/vouchers/{id} calls must keep it, or the file is deleted permanently.', 'Each file can be assigned to only one voucher. Uploading identical content again (checksum) returns the existing file id.', 'Formats: pdf, jpg, png, xml. The docs give no size limit for this endpoint; POST /v1/files allows 5 MB.', 'Upload via the multipart request field of lexware.request, e.g. multipart: [{ name: "file", contentType: "application/pdf", contentPath: "/absolute/path/doc.pdf" }]. Use contentPath for files on the server machine, contentBase64 for bytes held as base64.'], examples: [{ multipart: [{ name: 'file', contentType: 'application/pdf', contentPath: '/absolute/path/to/receipt.pdf' }] }], docsUrl: 'https://developers.lexware.io/docs/#vouchers-endpoint-upload-a-file-to-a-voucher' },
 		},
 		'/v1/posting-categories': {
 			get: { operationId: 'listPostingCategories', tags: ['posting-categories', 'bookkeeping', 'reference-data', 'read'], summary: 'List bookkeeping posting categories', responses: documentResponses, notes: ['Use returned category ids when creating/updating bookkeeping vouchers.'], docsUrl: 'https://developers.lexware.io/docs/#posting-categories-endpoint' },
