@@ -252,6 +252,26 @@ test('truncation never cuts write entries from the requests audit log', async ()
 	assert.match(payload.result, /…\[truncated: \d+ chars\]$/);
 });
 
+test('a too deeply nested result fails cleanly and still reports the requests audit log', async () => {
+	const { codeMode } = codeModeWith();
+
+	const result = await codeMode.execute(`async () => {
+		await lexware.request({ path: '/v1/profile' });
+		let v = 0;
+		for (let i = 0; i < 10000; i++) v = { a: v };
+		return v;
+	}`, { maxRequests: 1 });
+
+	assert.equal(result.isError, true);
+	const payload = payloadOf(result);
+	assert.equal(payload.ok, false);
+	assert.match(payload.error, /nested too deeply/);
+	assert.equal(payload.requestCount, 1);
+	assert.deepEqual(payload.requests.map(({ method, path, status }: Record<string, unknown>) => ({ method, path, status })), [
+		{ method: 'GET', path: '/v1/profile', status: 200 },
+	]);
+});
+
 test('a non-serializable result still reports the requests audit log, within the limit', async () => {
 	const { codeMode } = codeModeWith();
 

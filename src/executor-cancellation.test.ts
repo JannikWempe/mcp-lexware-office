@@ -116,7 +116,7 @@ test('guest retries after teardown rejection do not reach the host function', as
 
 test('abort right after execute() starts prevents any guest execution', async () => {
 	const executor = new QuickJsExecutor();
-	await executor.execute(`async () => 1`, {}); // warm up getQuickJS so its promise is cached
+	await executor.execute(`async () => 1`, {}); // warm up the WASM so module loading is fast
 	const controller = new AbortController();
 	const startedAt = Date.now();
 
@@ -130,4 +130,31 @@ test('abort right after execute() starts prevents any guest execution', async ()
 	assert.match(execution.error ?? '', /Execution cancelled by client/);
 	assert.deepEqual(execution.logs, []);
 	assert.ok(Date.now() - startedAt < 1_000, 'guest code must not run until the executor timeout');
+});
+
+test('external abort stops guest code spinning in a teardown continuation', async () => {
+	const controller = new AbortController();
+	const seen: AbortSignal[] = [];
+	const host = abortAwareHost(seen);
+	const startedAt = Date.now();
+
+	// The rejected host call resumes the guest during teardown, where it spins forever.
+	const execution = await new QuickJsExecutor().execute(
+		`async () => { try { await hostCall('{}'); } catch {} while (true) {} }`,
+		{},
+		{
+			timeoutMs: 3_000,
+			signal: controller.signal,
+			hostFunctions: {
+				hostCall: (payload, context) => {
+					const pending = host(payload, context);
+					setTimeout(() => controller.abort(), 20);
+					return pending;
+				},
+			},
+		},
+	);
+
+	assert.match(execution.error ?? '', /Execution cancelled by client/);
+	assert.ok(Date.now() - startedAt < 1_000, 'teardown must not run the guest until the executor timeout');
 });
