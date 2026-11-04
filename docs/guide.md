@@ -147,10 +147,10 @@ declare const lexware: {
 `lexware.updateVoucher` updates a bookkeeping voucher without the usual `PUT /v1/vouchers/{id}` pitfalls, in 3 requests (`GET`, `PUT`, `GET`) against `maxRequests`:
 
 - It starts from the current voucher, drops the read-only fields (`id`, `organizationId`, `voucherStatus`, `contactName`, `createdDate`, `updatedDate`) and applies `patch` shallowly: arrays such as `voucherItems` are replaced as a whole. Set `voucherStatus: 'open'` in `patch` to finalize an `unchecked` voucher.
-- `useCollectiveContact: true` in `patch` also drops `contactId`.
+- `useCollectiveContact: true` in `patch` also drops `contactId`; a `contactId` in `patch` without `useCollectiveContact` drops a current `useCollectiveContact`.
 - It sends the current `version`; `patch.version` is rejected. With `expectedVersion` set, a voucher at a different version throws without writing.
 - Lexware permanently deletes files left out of a PUT. The helper keeps `files` and throws without writing if the merged `files` would drop a current file id, unless `allowFileRemoval: true`.
-- A non-OK PUT throws with the normalized Lexware `issues`. After a successful PUT it re-reads the voucher, throws if a kept file is gone, and returns `before`, `after` and the top-level keys that `changed` (ignoring `version` and `updatedDate`).
+- A non-OK PUT throws with the normalized Lexware `issues`. If the re-read after a successful PUT fails (e.g. `maxRequests` is used up), the error says the PUT went through; don't repeat it. After a successful PUT it re-reads the voucher, throws if a kept file is gone, and returns `before`, `after` and the top-level keys that `changed` (ignoring `version` and `updatedDate`).
 
 ```js
 async () => {

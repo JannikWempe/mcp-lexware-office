@@ -167,9 +167,9 @@ const storedVoucher = {
 };
 
 // Fake voucher store: GET returns the stored voucher, PUT answers `put(body)` and, if OK, stores the body like Lexware would.
-const voucherHost = (put: (body: Record<string, any>) => LexwareResponse = () => okResponse({ id: 'v-1', version: 4 })) => {
+const voucherStore = (put: (body: Record<string, any>) => LexwareResponse = () => okResponse({ id: 'v-1', version: 4 })) => {
 	let voucher: Record<string, any> = structuredClone(storedVoucher);
-	return sdkWith((input) => {
+	return (input: Record<string, any>) => {
 		if (input.method === 'PUT') {
 			const response = put(input.body);
 			if (response.ok) {
@@ -182,8 +182,9 @@ const voucherHost = (put: (body: Record<string, any>) => LexwareResponse = () =>
 			return response;
 		}
 		return okResponse(structuredClone(voucher));
-	});
+	};
 };
+const voucherHost = (put?: (body: Record<string, any>) => LexwareResponse) => sdkWith(voucherStore(put));
 
 test('lexware.updateVoucher PUTs the merged voucher with files and version, without read-only fields', async () => {
 	const { sdk, inputs } = voucherHost();
@@ -203,7 +204,16 @@ test('lexware.updateVoucher drops contactId when switching to the collective con
 	await sdk.updateVoucher('v-1', { useCollectiveContact: true });
 
 	assert.equal(inputs[1].body.useCollectiveContact, true);
-	assert.equal(Object.hasOwn(inputs[1].body, 'contactId'), false);
+	assert.equal(Object.prototype.hasOwnProperty.call(inputs[1].body, 'contactId'), false);
+});
+
+test('lexware.updateVoucher drops useCollectiveContact when switching to a contactId', async () => {
+	const { sdk, inputs } = sdkWith((input) => okResponse(input.method === 'PUT' ? {} : { ...storedVoucher, contactId: undefined, useCollectiveContact: true }));
+
+	await sdk.updateVoucher('v-1', { contactId: 'c-2' });
+
+	assert.equal(inputs[1].body.contactId, 'c-2');
+	assert.equal(Object.prototype.hasOwnProperty.call(inputs[1].body, 'useCollectiveContact'), false);
 });
 
 test('lexware.updateVoucher does not write on a version mismatch, a patch version, or dropped files', async () => {
@@ -211,7 +221,7 @@ test('lexware.updateVoucher does not write on a version mismatch, a patch versio
 		[{ remark: 'x' }, { expectedVersion: 2 }, /voucher v-1 is at version 3, expected 2\. Nothing was written/],
 		[{ version: 2 }, {}, /use options\.expectedVersion instead of patch\.version/],
 		[{ files: ['f-1'] }, {}, /would permanently delete file\(s\) f-2 from voucher v-1\. Nothing was written/],
-		[{ files: null }, {}, /would permanently delete file\(s\) f-1, f-2/],
+		[{ files: null }, { allowFileRemoval: true }, /patch\.files must be an array/],
 	] as const) {
 		const { sdk, inputs } = voucherHost();
 		await assert.rejects(() => sdk.updateVoucher('v-1', patch as Record<string, unknown>, options), message);
@@ -254,11 +264,33 @@ test('lexware.updateVoucher throws when the re-read voucher lost a file', async 
 	await assert.rejects(() => sdk.updateVoucher('v-1', { remark: 'x' }), /PUT succeeded but voucher v-1 no longer lists file\(s\) f-2/);
 });
 
-test('sandbox lexware.updateVoucher runs inside QuickJS', async () => {
-	const execution = await runInSandbox(`async () => (await lexware.updateVoucher('v-1', { remark: 'x' })).changed`, () => okResponse(storedVoucher));
+test('lexware.updateVoucher says the PUT went through when the verification read fails', async () => {
+	let reads = 0;
+	const { sdk } = sdkWith((input) => {
+		if (input.method === 'PUT') return okResponse({});
+		reads += 1;
+		return reads === 1 ? okResponse(storedVoucher) : rateLimited;
+	});
+
+	await assert.rejects(() => sdk.updateVoucher('v-1', { remark: 'x' }), /the PUT succeeded, but re-reading voucher v-1 failed.*Do not repeat the update.*429 Too Many Requests/);
+});
+
+test('sandbox lexware.updateVoucher merges and verifies inside QuickJS', async () => {
+	const store = voucherStore();
+	const puts: unknown[] = [];
+	const client = {
+		request: async (input: unknown) => {
+			const request = input as Record<string, any>;
+			if (request.method === 'PUT') puts.push(request.body);
+			return store(request);
+		},
+	};
+
+	const execution = await new QuickJsExecutor().execute(`async () => (await lexware.updateVoucher('v-1', { remark: 'x' }, { expectedVersion: 3 })).changed`, {}, lexwareSandbox(client));
 
 	assert.equal(execution.error, undefined);
-	assert.deepEqual(execution.result, []);
+	assert.deepEqual(execution.result, ['remark']);
+	assert.deepEqual(puts, [{ type: 'purchaseinvoice', voucherNumber: 'RE-1', contactId: 'c-1', version: 3, files: ['f-1', 'f-2'], remark: 'x' }]);
 });
 
 test('lexware.request returns non-OK envelopes without throwing', async () => {
