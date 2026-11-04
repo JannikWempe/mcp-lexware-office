@@ -63,8 +63,8 @@ export interface LexwareRequestOptions {
 
 // Audit record for one request attempt. Never contains headers, bodies, query values, or the API key.
 // `sent` is true once the request was handed to fetch. A write that then failed with `error`
-// (cancelled, timed out, network or response read error) gets `outcome: 'unknown'`: Lexware
-// may have applied it, so reconcile with a GET before retrying.
+// (cancelled, timed out, network or response read error) or was answered with 504 gets
+// `outcome: 'unknown'`: Lexware may have applied it, so reconcile with a GET before retrying.
 export interface RequestLogEntry {
 	method: LexwareExecuteMethod;
 	path: string;
@@ -191,7 +191,7 @@ export class LexwareApiClient {
 			...result,
 			write,
 			sent: progress.sent,
-			...(write && progress.sent && result.error !== undefined && { outcome: 'unknown' as const }),
+			...(write && progress.sent && (result.error !== undefined || result.status === 504) && { outcome: 'unknown' as const }),
 			durationMs: Date.now() - startedAt,
 		});
 		let response: LexwareResponse;

@@ -153,6 +153,20 @@ test('timed-out and network-error writes have unknown outcome, reads do not', as
 	]);
 });
 
+test('write answered with 504 has unknown outcome, read does not', async () => {
+	const entries: RequestLogEntry[] = [];
+	const onSettled = (entry: RequestLogEntry) => entries.push(entry);
+	const client = clientWithFetch(async () => jsonResponse(504, { message: 'Endpoint request timed out' }), true);
+
+	await client.request({ method: 'PUT', path: '/v1/vouchers/abc', body: {} }, { onSettled });
+	await client.request({ path: '/v1/vouchers/abc' }, { onSettled });
+
+	assert.deepEqual(entries.map(withoutDuration), [
+		{ method: 'PUT', path: '/v1/vouchers/abc', status: 504, ok: false, write: true, sent: true, outcome: 'unknown' },
+		{ method: 'GET', path: '/v1/vouchers/abc', status: 504, ok: false, write: false, sent: true },
+	]);
+});
+
 test('response body read errors are sanitized in the thrown error and the log entry', async () => {
 	const entries: RequestLogEntry[] = [];
 	const leakyFetch: typeof fetch = async () => new Response(new ReadableStream({
