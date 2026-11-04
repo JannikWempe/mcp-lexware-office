@@ -116,7 +116,7 @@ test('guest retries after teardown rejection do not reach the host function', as
 
 test('abort right after execute() starts prevents any guest execution', async () => {
 	const executor = new QuickJsExecutor();
-	await executor.execute(`async () => 1`, {}); // warm up getQuickJS so its promise is cached
+	await executor.execute(`async () => 1`, {}); // warm up the WASM so module loading is fast
 	const controller = new AbortController();
 	const startedAt = Date.now();
 
