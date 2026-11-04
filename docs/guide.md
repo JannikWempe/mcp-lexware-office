@@ -101,8 +101,8 @@ async () => {
 - calls only relative `/v1/...` Lexware API paths,
 - rejects absolute URLs and external hosts,
 - hides the API key from sandboxed code,
-- rate-limits host requests to 2 requests/second by default,
-- retries a `GET` once when Lexware answers `429` with `Retry-After` ≤ 5 s (writes are never retried; the wait counts against the 30 s `execute` timeout, the retry against `maxRequests`),
+- rate-limits host requests to one every 600 ms by default (a buffer below Lexware's 2 requests/second),
+- retries a `GET` once when Lexware answers `429`, after `Retry-After` if it is ≤ 5 s or after a 1–2 s backoff if the header is missing, and holds back queued requests for that wait (writes are never retried; the wait counts against the 30 s `execute` timeout, the retry against `maxRequests`),
 - returns JSON/text or binary metadata,
 - adds operation metadata when the request matches the catalog,
 - allows unknown `/v1/...` paths for API coverage gaps.

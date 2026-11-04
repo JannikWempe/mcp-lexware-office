@@ -42,7 +42,8 @@ export interface LexwareClientOptions {
 	maxResponseChars?: number;
 	requestTimeoutMs?: number;
 	rateLimitIntervalMs?: number;
-	// GET requests answered with 429 are retried once if Retry-After is at most this long.
+	// GET requests answered with 429 are retried once if the wait (Retry-After, or a 1–2 s
+	// backoff without it) is at most this long. Also caps how long a 429 holds back the queue.
 	maxRetryAfterMs?: number;
 	// Directories multipart contentPath may read from. Omitted or empty disables contentPath.
 	uploadDirs?: string[];
@@ -130,8 +131,11 @@ const DEFAULT_BASE_URL = 'https://api.lexware.io';
 const DEFAULT_USER_AGENT = `mcp-lexware-office/${VERSION}`;
 const DEFAULT_MAX_RESPONSE_CHARS = 24_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-const DEFAULT_RATE_LIMIT_INTERVAL_MS = 500;
+// Lexware allows 2 requests/second but warns that enforcing it without a buffer gets rate limited.
+const DEFAULT_RATE_LIMIT_INTERVAL_MS = 600;
 const DEFAULT_MAX_RETRY_AFTER_MS = 5_000;
+const RETRY_BACKOFF_MS = 1_000;
+const RETRY_JITTER_MS = 1_000;
 const WRITE_METHODS = new Set<LexwareExecuteMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 /**
@@ -173,10 +177,18 @@ export class LexwareApiClient {
 
 		const normalized = normalizeRequest(input);
 		const response = await this.attempt(normalized, apiKey, options, 0);
+		if (response.status !== 429) return response;
+		// Lexware's docs don't promise a Retry-After header on 429 (unverified against the live
+		// API), so without one back off 1–2 s with jitter, as the docs recommend.
+		const waitMs = response.retryAfterSeconds !== undefined
+			? response.retryAfterSeconds * 1000
+			: RETRY_BACKOFF_MS + Math.random() * RETRY_JITTER_MS;
+		// Hold back queued requests too instead of sending them into the block. Capped so a long
+		// block surfaces as 429 to the caller rather than as stalled requests.
+		this.nextRequestAtMs = Math.max(this.nextRequestAtMs, Date.now() + Math.min(waitMs, this.maxRetryAfterMs));
 		// Only idempotent reads are retried; a retried write could duplicate documents.
-		const retryAfterMs = response.retryAfterSeconds !== undefined ? response.retryAfterSeconds * 1000 : undefined;
-		if (normalized.method === 'GET' && response.status === 429 && retryAfterMs !== undefined && retryAfterMs <= this.maxRetryAfterMs) {
-			return this.attempt(normalized, apiKey, options, retryAfterMs);
+		if (normalized.method === 'GET' && waitMs <= this.maxRetryAfterMs) {
+			return this.attempt(normalized, apiKey, options, waitMs);
 		}
 		return response;
 	}
@@ -283,8 +295,10 @@ export class LexwareApiClient {
 		this.rateLimitQueue = new Promise<void>((resolve) => { release = resolve; });
 		try {
 			await untilAborted(previous, signal);
-			const delayMs = Math.max(0, this.nextRequestAtMs - Date.now());
-			if (delayMs > 0) await sleep(delayMs, undefined, signal !== undefined ? { signal } : undefined);
+			// Loops because a 429 may push nextRequestAtMs back while this waiter sleeps.
+			for (let delayMs = this.nextRequestAtMs - Date.now(); delayMs > 0; delayMs = this.nextRequestAtMs - Date.now()) {
+				await sleep(delayMs, undefined, signal !== undefined ? { signal } : undefined);
+			}
 			this.nextRequestAtMs = Date.now() + this.rateLimitIntervalMs;
 		} finally {
 			void previous.then(release);
