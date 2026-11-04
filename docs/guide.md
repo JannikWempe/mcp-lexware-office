@@ -142,9 +142,9 @@ Cancellation: when the client cancels a `search`/`execute` call, the execution e
 Tools carry MCP annotations and titles so clients can label and gate them:
 
 - `search` — `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
-- `execute` — `openWorldHint: true`, `idempotentHint: false`; `readOnlyHint`/`destructiveHint` follow the write mode at server startup (`readOnlyHint: true` when writes are blocked, `destructiveHint: true` when `LEXWARE_OFFICE_ALLOW_WRITES=true`).
+- `execute` — `openWorldHint: true`, `idempotentHint: false`; `readOnlyHint`/`destructiveHint` follow the write mode at server startup (`readOnlyHint: true` when writes are blocked, `destructiveHint: true` when `LEXWARE_OFFICE_ALLOW_WRITES=true`, also with a write allowlist).
 
-The server also sends short `instructions` at initialization (search before execute, check `spec.info.writesEnabled`, aggregate inside `execute`). It is built on MCP TypeScript SDK v2 and negotiates both the 2025-era `initialize` handshake and protocol revision 2026-07-28.
+The server also sends short `instructions` at initialization (search before execute, check `spec.info.writesEnabled` and `spec.info.writePolicy`, aggregate inside `execute`). It is built on MCP TypeScript SDK v2 and negotiates both the 2025-era `initialize` handshake and protocol revision 2026-07-28.
 
 ## Binary-safe file uploads
 
@@ -249,6 +249,25 @@ Important behavior:
 - Default read-only mirrors how Cloudflare's OAuth scope template defaults to read-only; Lexware API keys have no equivalent OAuth scopes, so the MCP server provides the safety boundary.
 - Writes should only be enabled when the user explicitly needs a write operation.
 - The API key remains in the host process and is never exposed to sandboxed code.
+
+### Write allowlist
+
+With writes enabled, `LEXWARE_OFFICE_WRITE_ALLOW` narrows them down to a list. Unset allows every write; set, only the listed writes are allowed:
+
+```json
+{
+  "LEXWARE_OFFICE_ALLOW_WRITES": "true",
+  "LEXWARE_OFFICE_WRITE_ALLOW": "POST /v1/files, POST /v1/vouchers/{id}/files, PUT /v1/vouchers/{id}"
+}
+```
+
+- Entries are separated by commas or newlines. Each is either `METHOD /v1/path` using the catalog's path template, or an operationId (`uploadFile, uploadFileToVoucher, updateVoucher` is equivalent to the example above). Path parameter names don't matter: `{id}` matches `{subscriptionId}`.
+- Sales document endpoints with a `finalize` parameter (invoices, quotations, order confirmations, credit notes, delivery notes) only allow drafts unless the entry ends in `?finalize`: `POST /v1/invoices` creates drafts only, `POST /v1/invoices?finalize` also allows `finalize=true`. Any `finalize` value other than `false` counts as finalizing.
+- Entries that don't name a cataloged write (typos, read endpoints, `?finalize` on an endpoint without it) and an empty value stop the server at startup with an error.
+- Writes to paths not in the catalog, and write paths containing an encoded `/` or `\` (`%2F`, `%5C`), are always blocked while an allowlist is set.
+- Blocked writes are rejected before sending (`sent: false` in `requests`), don't count against `maxRequests`, and the error lists the allowed writes.
+- `spec.info.writePolicy` shows the policy to the model: `{ enabled, allow }`, where `allow` is `'all'` or the list of allowed writes in `METHOD /v1/template` form.
+- `LEXWARE_OFFICE_READ_ONLY=true` and a missing `ALLOW_WRITES=true` still block every write; the allowlist only narrows enabled writes.
 
 ## Migrating: `contentPath` requires `LEXWARE_OFFICE_UPLOAD_DIRS`
 

@@ -32,8 +32,24 @@ test('API key and base URL are passed through, undefined when unset', () => {
 		baseUrl: 'https://example.test',
 		uploadDirs: [],
 		writesEnabled: false,
+		writeAllow: undefined,
 	});
 	const empty = loadConfig({});
 	assert.equal(empty.apiKey, undefined);
 	assert.equal(empty.baseUrl, undefined);
+});
+
+test('WRITE_ALLOW is undefined when unset and parsed into catalog rules when set', () => {
+	assert.equal(loadConfig({}).writeAllow, undefined);
+	assert.deepEqual(loadConfig({ LEXWARE_OFFICE_WRITE_ALLOW: 'POST /v1/files, uploadFileToVoucher\nput /v1/vouchers/{voucherId}' }).writeAllow, [
+		{ operationId: 'uploadFile', method: 'POST', pathTemplate: '/v1/files', finalize: false },
+		{ operationId: 'uploadFileToVoucher', method: 'POST', pathTemplate: '/v1/vouchers/{id}/files', finalize: false },
+		{ operationId: 'updateVoucher', method: 'PUT', pathTemplate: '/v1/vouchers/{id}', finalize: false },
+	]);
+});
+
+test('WRITE_ALLOW fails fast on entries that are not cataloged writes', () => {
+	for (const value of ['', ' , ', 'POST /v1/nope', 'GET /v1/contacts', 'listContacts', 'uploadfile', 'POST /v1/files?finalize']) {
+		assert.throws(() => loadConfig({ LEXWARE_OFFICE_WRITE_ALLOW: value }), /LEXWARE_OFFICE_WRITE_ALLOW/, `WRITE_ALLOW=${JSON.stringify(value)}`);
+	}
 });

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -124,6 +124,32 @@ test('instructions and tools/list match the snapshot in read-only and writes-ena
 		JSON.parse(readFileSync(toolsListSnapshot, 'utf8')),
 		'Model-facing instructions or tools changed. If intended, run `UPDATE_SNAPSHOTS=1 pnpm test` and commit src/tools-list.snapshot.json.',
 	);
+});
+
+test('execute stays destructive when writes are narrowed by LEXWARE_OFFICE_WRITE_ALLOW', async () => {
+	const lexware = await startFakeLexware((_req, res) => res.end());
+	const mcp = await startMcp(lexware.baseUrl, { LEXWARE_OFFICE_ALLOW_WRITES: 'true', LEXWARE_OFFICE_WRITE_ALLOW: 'uploadFile' });
+	try {
+		const { result } = await mcp.request('tools/list', {}).response;
+		const execute = result?.tools?.find((tool) => tool.name === 'execute');
+		assert.equal(execute?.annotations.readOnlyHint, false);
+		assert.equal(execute?.annotations.destructiveHint, true);
+	} finally {
+		mcp.close();
+		lexware.close();
+	}
+});
+
+test('server exits at startup with a readable error for an invalid LEXWARE_OFFICE_WRITE_ALLOW', () => {
+	const result = spawnSync(process.execPath, [serverEntry], {
+		env: { ...process.env, LEXWARE_OFFICE_ALLOW_WRITES: 'true', LEXWARE_OFFICE_WRITE_ALLOW: 'POST /v1/files, PUT /v1/nope' },
+		input: '',
+		encoding: 'utf8',
+	});
+
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /^Lexware Office MCP server: LEXWARE_OFFICE_WRITE_ALLOW entry "PUT \/v1\/nope" does not match a cataloged write/);
+	assert.doesNotMatch(result.stderr, /\n\s+at /);
 });
 
 test('execute reports per-attempt requests on success', async () => {

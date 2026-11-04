@@ -160,6 +160,15 @@ Use this source-based setup only for development. End users should prefer the pa
 }
 ```
 
+To allow only specific writes, list them in `LEXWARE_OFFICE_WRITE_ALLOW` (comma-separated `METHOD /v1/path` entries or operationIds from the catalog). Every other write is rejected before it is sent:
+
+```json
+{
+  "LEXWARE_OFFICE_ALLOW_WRITES": "true",
+  "LEXWARE_OFFICE_WRITE_ALLOW": "POST /v1/files, POST /v1/vouchers/{id}/files, PUT /v1/vouchers/{id}"
+}
+```
+
 See [docs/guide.md#permissions](docs/guide.md#permissions) for the detailed permission model.
 
 ### Upload directories

@@ -1,3 +1,5 @@
+import type { WritePolicy } from './write-policy.js';
+
 export interface LexwareApiCatalog {
 	info: {
 		title: string;
@@ -13,6 +15,8 @@ export interface LexwareApiCatalog {
 		notes: string[];
 		// Injected at runtime by the MCP server: whether POST/PUT/PATCH/DELETE are currently allowed.
 		writesEnabled?: boolean;
+		// Injected at runtime: which writes LEXWARE_OFFICE_WRITE_ALLOW permits ('all' when unset).
+		writePolicy?: WritePolicy;
 	};
 	paths: Record<string, Partial<Record<HttpMethod, LexwareOperation>>>;
 	workflows: Record<string, LexwareWorkflow>;
@@ -536,6 +540,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 			'Updates use optimistic locking via a version field; on HTTP 409 to a PUT, re-fetch the resource and retry with the current version.',
 			'Failed JSON responses carry response.issues: both Lexware error body shapes normalized to { field, code, message, hint }; see spec.info.errorResponses.',
 			'spec.info.writesEnabled reports whether this server currently allows POST/PUT/PATCH/DELETE; check it before planning writes or uploads.',
+			'spec.info.writePolicy.allow lists the only writes this server permits ("METHOD /v1/template", "?finalize" also allows finalize=true), or is "all". Writes outside it are rejected before sending.',
 			'File uploads go through the multipart request field of lexware.request (contentPath for local files, contentBase64 for base64 bytes) — see the fileHandling workflow.',
 		],
 	},

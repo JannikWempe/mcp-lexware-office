@@ -8,6 +8,7 @@ import { type LexwareIssue, normalizeIssues } from './lexware-issues.js';
 import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-spec.js';
 import { truncateText } from './truncate.js';
 import { VERSION } from './version.js';
+import { describeWritePolicy, WRITE_METHODS, type WriteAllowRule, type WritePolicy, writeAllowViolation } from './write-policy.js';
 
 export type LexwareExecuteMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
@@ -52,6 +53,8 @@ export interface LexwareClientOptions {
 	uploadDirs?: string[];
 	// POST/PUT/PATCH/DELETE are blocked unless true.
 	writesEnabled?: boolean;
+	// When writes are enabled, only these writes are allowed. Omitted allows every write.
+	writeAllow?: WriteAllowRule[];
 }
 
 export interface LexwareRequestOptions {
@@ -142,7 +145,6 @@ const DEFAULT_RATE_LIMIT_INTERVAL_MS = 600;
 const DEFAULT_MAX_RETRY_AFTER_MS = 5_000;
 const RETRY_BACKOFF_MS = 1_000;
 const RETRY_JITTER_MS = 1_000;
-const WRITE_METHODS = new Set<LexwareExecuteMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
 // Response headers worth the model's context; the rest (AWS gateway ids, security policies)
 // cost ~1.5 KB per returned response.
 const RESPONSE_HEADER_ALLOWLIST = new Set(['content-type', 'content-length', 'content-disposition', 'location', 'retry-after', 'x-request-id']);
@@ -154,6 +156,8 @@ const isAllowedResponseHeader = (name: string) => RESPONSE_HEADER_ALLOWLIST.has(
  */
 export class LexwareApiClient {
 	readonly writesEnabled: boolean;
+	readonly writePolicy: WritePolicy;
+	private readonly writeAllow?: WriteAllowRule[];
 	private readonly apiKey?: string;
 	private readonly baseUrl: string;
 	private readonly userAgent: string;
@@ -168,6 +172,8 @@ export class LexwareApiClient {
 
 	constructor(options: LexwareClientOptions = {}) {
 		this.writesEnabled = options.writesEnabled ?? false;
+		this.writeAllow = options.writeAllow;
+		this.writePolicy = describeWritePolicy(this.writesEnabled, this.writeAllow);
 		this.apiKey = options.apiKey;
 		this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
 		this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
@@ -229,8 +235,14 @@ export class LexwareApiClient {
 	}
 
 	private async send(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number, progress: { sent: boolean }): Promise<LexwareResponse> {
-		if (WRITE_METHODS.has(normalized.method) && !this.writesEnabled) {
-			throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
+		if (WRITE_METHODS.has(normalized.method)) {
+			if (!this.writesEnabled) {
+				throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
+			}
+			const violation = this.writeAllow !== undefined
+				? writeAllowViolation(this.writeAllow, { ...normalized, operationId: normalized.matched?.operation.operationId })
+				: undefined;
+			if (violation !== undefined) throw new Error(violation);
 		}
 
 		const signal = options.signal;
