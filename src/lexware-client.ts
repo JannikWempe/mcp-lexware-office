@@ -512,6 +512,7 @@ function escapeRegex(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Client-side cap, not the API limit: Lexware documents 5 MB for POST /v1/files (type=voucher) and no limit for POST /v1/vouchers/{id}/files.
 const MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024;
 
 interface SerializedBody {

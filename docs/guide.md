@@ -167,7 +167,7 @@ async () => {
 ```
 
 - `contentPath` is disabled unless the server sets `LEXWARE_OFFICE_UPLOAD_DIRS` (see [Upload directories](#upload-directories)); the file must lie inside one of those directories. Without it, use `contentBase64`.
-- `contentPath` must be an absolute path to a regular file on the machine running the MCP server (25 MB cap).
+- `contentPath` must be an absolute path to a regular file on the machine running the MCP server (25 MB cap; Lexware itself accepts voucher files up to 5 MB).
 - In Docker, `contentPath` refers to the container's filesystem: mount the directory and set `LEXWARE_OFFICE_UPLOAD_DIRS` to the container path (e.g. `-v /host/dir:/data:ro -e LEXWARE_OFFICE_UPLOAD_DIRS=/data`), then pass `/data/...` paths.
 - `filename` defaults to the `contentPath` basename.
 - Uploads are writes: they require `LEXWARE_OFFICE_ALLOW_WRITES=true`. Check `spec.info.writesEnabled` to branch early.
