@@ -21,7 +21,7 @@ export interface LexwareApiCatalog {
 export interface LexwareErrorResponsesInfo {
 	summary: string;
 	legacy: { endpoints: string[]; shape: unknown; notes: string[] };
-	regular: { endpoints: string[]; shape: unknown; notes: string[] };
+	regular: { exampleEndpoints: string[]; shape: unknown; notes: string[] };
 	normalized: { field: string; shape: unknown; notes: string[] };
 	docsUrl: string;
 }
@@ -496,9 +496,9 @@ export const lexwareSpec: LexwareApiCatalog = {
 				notes: ['i18nKey is the error code and type the category. source names the field for type validation_failure; for bad_request_error and technical_error it holds a message such as "size must be between 3 and 255".'],
 			},
 			regular: {
-				endpoints: ['all other endpoints, e.g. /v1/invoices, /v1/voucherlist, /v1/profile, /v1/event-subscriptions'],
+				exampleEndpoints: ['/v1/invoices', '/v1/voucherlist', '/v1/profile', '/v1/event-subscriptions'],
 				shape: { timestamp: '2023-05-11T17:12:31.233+02:00', status: 406, error: 'Not Acceptable', path: '/v1/invoices', traceId: '90d78d0777be', message: 'Validation failed for request. Please see details list for specific causes.', details: [{ violation: 'NOTNULL', field: 'lineItems[0].unitPrice.taxRatePercentage', message: 'darf nicht leer sein' }] },
-				notes: ['details is optional. message texts are not meant for end users and can be German.'],
+				notes: ['Used by every endpoint not listed under legacy.', 'details is optional. message texts are not meant for end users and can be German.'],
 			},
 			normalized: {
 				field: 'response.issues',
@@ -533,7 +533,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 			'Pagination is zero-based: page=0 is the first page. Paged list endpoints return response.data.content plus metadata such as last, totalPages, totalElements, number/page, and size; use lexware.paginate for complete traversal.',
 			'Voucherlist status semantics and reporting defaults live in spec.info.voucherStatusSemantics. Use them before choosing voucherStatus for finance/reporting workflows.',
 			'Finance/reporting caveats and examples live in spec.info.financeReportingSemantics. Use them before answering ambiguous earnings/revenue/Umsatz/profit questions.',
-			'Updates use optimistic locking via a version field; on HTTP 409, re-fetch the resource and retry with the current version.',
+			'Updates use optimistic locking via a version field; on HTTP 409 to a PUT, re-fetch the resource and retry with the current version.',
 			'Failed JSON responses carry response.issues: both Lexware error body shapes normalized to { field, code, message, hint }; see spec.info.errorResponses.',
 			'spec.info.writesEnabled reports whether this server currently allows POST/PUT/PATCH/DELETE; check it before planning writes or uploads.',
 			'File uploads go through the multipart request field of lexware.request (contentPath for local files, contentBase64 for base64 bytes) — see the fileHandling workflow.',

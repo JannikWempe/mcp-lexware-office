@@ -254,7 +254,7 @@ type LexwareResponse<T = unknown> = {
   headers: Record<string, string>; // content-type, content-length, content-disposition, location, retry-after, x-request-id, x-ratelimit-*; all with includeAllHeaders
   errorCategory?: string;
   retryAfterSeconds?: number;
-  issues?: Array<{ field?: string; code?: string; message?: string; hint?: string }>; // non-OK JSON responses: both Lexware error body shapes (IssueList[], details[]) normalized, with fix hints for known codes
+  issues?: Array<{ field?: string; code?: string; message?: string; hint?: string }>; // non-OK responses: both Lexware error body shapes (IssueList[], details[]) normalized, with fix hints for known codes
   operation?: { operationId: string; method: string; pathTemplate: string; summary: string };
   request: { method: string; path: string; query: Record<string, string[]> };
   sent?: { bytes: number; sha256?: string; parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }> }; // echo of uploaded binary payloads for integrity checks

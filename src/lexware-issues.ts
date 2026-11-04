@@ -1,3 +1,5 @@
+import type { LexwareExecuteMethod } from './lexware-client.js';
+
 // Normalizes Lexware's two error body shapes into one `issues` list with actionable hints, so
 // model code doesn't have to know both shapes or guess what a terse error code means.
 // Shapes (https://developers.lexware.io/docs/#error-codes):
@@ -24,7 +26,7 @@ const CONFLICT_HINT = 'Optimistic locking conflict: re-fetch the resource, re-ap
 
 // Returns undefined when the body has neither shape and no generic hint applies. Only PUTs get
 // the locking hint: other 409s mean something else (e.g. a draft has no file, a duplicate webhook).
-export function normalizeIssues(status: number, method: string, data: unknown): LexwareIssue[] | undefined {
+export function normalizeIssues(status: number, method: LexwareExecuteMethod, data: unknown): LexwareIssue[] | undefined {
 	const issues = issuesFromBody(data);
 	if (status === 409 && method === 'PUT') {
 		if (issues.length === 0) issues.push({ hint: CONFLICT_HINT });
@@ -40,7 +42,7 @@ function issuesFromBody(data: unknown): LexwareIssue[] {
 			const source = stringOrUndefined(entry.source);
 			// Only validation failures name a field in source; bad_request_error and technical_error
 			// put a message there, e.g. "size must be between 3 and 255".
-			const sourceIsField = entry.type === undefined || entry.type === 'validation_failure';
+			const sourceIsField = entry.type === undefined || entry.type === null || entry.type === 'validation_failure';
 			return toIssue(sourceIsField ? source : undefined, stringOrUndefined(entry.i18nKey), sourceIsField ? undefined : source);
 		});
 	}
