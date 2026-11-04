@@ -1,6 +1,6 @@
 import type { CallToolResult } from '@modelcontextprotocol/server';
 
-import { AccountProfile, type AccountInfo } from './account.js';
+import type { AccountInfo, AccountProfile } from './account.js';
 import { type CodeExecutor, QuickJsExecutor } from './executor.js';
 import { type LexwareApiClient, type RequestLogEntry, untilAborted } from './lexware-client.js';
 import { lexwareSandbox } from './lexware-sandbox-sdk.js';
@@ -14,6 +14,8 @@ import { truncateJson } from './truncate.js';
 export const LEXWARE_REQUEST_TIMEOUT_MS = 25_000;
 const EXECUTE_TIMEOUT_MS = 30_000;
 const SEARCH_TIMEOUT_MS = 1_000;
+// `search` doesn't wait longer than this for a cold or slow profile lookup.
+const SEARCH_ACCOUNT_WAIT_MS = 1_000;
 const MEMORY_LIMIT_BYTES = 32 * 1024 * 1024;
 // Up to this many successful reads are listed in `requests`; more are collapsed into `readsSummary`.
 const MAX_LISTED_READS = 5;
@@ -21,8 +23,8 @@ const MAX_LISTED_READS = 5;
 export interface CodeModeOptions {
 	client: LexwareApiClient;
 	executor?: CodeExecutor;
-	// Shown as spec.info.account; defaults to a profile lookup through `client`.
-	account?: Pick<AccountProfile, 'get'>;
+	// Shown as spec.info.account.
+	account: Pick<AccountProfile, 'get'>;
 }
 
 export interface RunOptions {
@@ -43,13 +45,13 @@ export class CodeMode {
 	constructor(options: CodeModeOptions) {
 		this.client = options.client;
 		this.executor = options.executor ?? new QuickJsExecutor();
-		this.account = options.account ?? new AccountProfile(options.client);
+		this.account = options.account;
 	}
 
 	async search(code: string, options: RunOptions = {}): Promise<CallToolResult> {
 		const execution = await this.executor.execute(
 			code,
-			{ spec: await this.sandboxSpec(options.signal) },
+			{ spec: await this.sandboxSpec(options.signal, SEARCH_ACCOUNT_WAIT_MS) },
 			{
 				timeoutMs: SEARCH_TIMEOUT_MS,
 				memoryLimitBytes: MEMORY_LIMIT_BYTES,
@@ -101,8 +103,8 @@ export class CodeMode {
 	// Inject the write mode and allowlist so callers can branch before attempting a write, and
 	// the connected organization so they can confirm the account. When cancelled before or while
 	// the profile loads, it is skipped; the executor then reports the cancellation.
-	private async sandboxSpec(signal: AbortSignal | undefined) {
-		const account: AccountInfo | undefined = signal?.aborted ? undefined : await untilAborted(this.account.get(), signal).catch(() => undefined);
+	private async sandboxSpec(signal: AbortSignal | undefined, maxAccountWaitMs?: number) {
+		const account: AccountInfo | undefined = signal?.aborted ? undefined : await untilAborted(this.account.get({ maxWaitMs: maxAccountWaitMs }), signal).catch(() => undefined);
 		return { ...lexwareSpec, info: { ...lexwareSpec.info, writesEnabled: this.client.writesEnabled, writePolicy: this.client.writePolicy, account } };
 	}
 }

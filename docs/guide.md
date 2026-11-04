@@ -92,7 +92,8 @@ Both sandboxes see which Lexware organization the server is connected to in `spe
 
 - The server fetches `GET /v1/profile` on the first `search` or `execute` call and caches it for the process lifetime. The request doesn't count against `maxRequests` and doesn't appear in `requests`.
 - The name and email of the user who created the API key (`profile.created`) are left out.
-- On failure the profile fields are replaced by `error`, e.g. `"profile unavailable: auth (HTTP 401)"`; the lookup is retried after a minute. Without `LEXWARE_OFFICE_API_KEY`, `search` still works and no request is made.
+- On failure the profile fields are replaced by `error`, e.g. `"profile unavailable: auth (HTTP 401)"`. The lookup is retried after a minute, or on the next call after a timeout or 429. Without `LEXWARE_OFFICE_API_KEY`, `search` still works and no request is made.
+- `search` waits at most a second for the lookup. If it takes longer, `error` is `"profile still loading; check again in a later call"` while it continues in the background; `execute` waits for it (up to 5 s).
 - `label` is `LEXWARE_OFFICE_ACCOUNT_LABEL`, if set. Use it to tell several server instances apart, e.g. one per company.
 
 ### `execute`

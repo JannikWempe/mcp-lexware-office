@@ -86,6 +86,38 @@ test('failures resolve to an error field instead of throwing', async () => {
 	}
 });
 
+test('a lookup without any profile field is a failure, not an empty account', async () => {
+	const { account } = accountWith(async () => jsonResponse(200, { created: { userEmail: 'a@b.test' } }));
+
+	assert.deepEqual(await account.get(), { error: 'profile unavailable: no profile fields in response (HTTP 200)' });
+});
+
+test('timeouts and 429s are retried on the next call instead of being cached', async () => {
+	let calls = 0;
+	const { account, fetched } = accountWith(async (_input, init) => {
+		calls += 1;
+		if (calls === 1) return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal?.reason)));
+		if (calls <= 3) return jsonResponse(429, {});
+		return jsonResponse(200, profile);
+	}, { timeoutMs: 20 }, { maxRetryAfterMs: 0 });
+
+	assert.equal((await account.get()).error, 'profile unavailable: timeout');
+	assert.equal((await account.get()).error, 'profile unavailable: rate_limit (HTTP 429)');
+	assert.equal((await account.get()).error, 'profile unavailable: rate_limit (HTTP 429)');
+	assert.equal((await account.get()).companyName, 'Testfirma GmbH');
+	assert.equal(fetched.length, 4);
+});
+
+test('maxWaitMs resolves with a loading error while the lookup keeps running', async () => {
+	let release = () => {};
+	const { account, fetched } = accountWith(() => new Promise<Response>((resolve) => { release = () => resolve(jsonResponse(200, profile)); }), { label: 'Firma A' });
+
+	assert.deepEqual(await account.get({ maxWaitMs: 10 }), { label: 'Firma A', error: 'profile still loading; check again in a later call' });
+	release();
+	assert.equal((await account.get({ maxWaitMs: 10 })).companyName, 'Testfirma GmbH');
+	assert.equal(fetched.length, 1);
+});
+
 test('a failed lookup is cached for failureTtlMs, then retried', async () => {
 	let nowMs = 0;
 	let status = 503;

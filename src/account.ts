@@ -19,9 +19,15 @@ export interface AccountProfileOptions {
 	label?: string;
 	// Bounds the profile request, which runs before the sandbox and outside its timeout.
 	timeoutMs?: number;
-	// A failed lookup is retried after this long instead of on every call.
+	// A failed lookup is retried after this long instead of on every call. Timeouts and 429s,
+	// which a busy rate-limit queue can cause, are retried on the next call.
 	failureTtlMs?: number;
 	now?: () => number;
+}
+
+export interface AccountGetOptions {
+	// Resolve with a "still loading" error instead of waiting longer for the lookup, which keeps running.
+	maxWaitMs?: number;
 }
 
 const PROFILE_FIELDS = ['organizationId', 'companyName', 'taxType', 'smallBusiness', 'distanceSalesPrinciple', 'businessFeatures'] as const;
@@ -39,7 +45,8 @@ export class AccountProfile {
 	private readonly failureTtlMs: number;
 	private readonly now: () => number;
 	private cached?: Promise<AccountInfo>;
-	private failedAtMs?: number;
+	// When the cached lookup must be redone; undefined while in flight or after a success.
+	private expiresAtMs?: number;
 
 	constructor(client: LexwareApiClient, options: AccountProfileOptions = {}) {
 		this.client = client;
@@ -50,28 +57,44 @@ export class AccountProfile {
 	}
 
 	// Without an API key no request is made, so `search` keeps working offline.
-	get(): Promise<AccountInfo> {
+	get(options: AccountGetOptions = {}): Promise<AccountInfo> {
 		if (!this.client.hasApiKey) return Promise.resolve(this.withLabel({ error: 'profile unavailable: no API key configured' }));
-		if (this.cached && (this.failedAtMs === undefined || this.now() - this.failedAtMs < this.failureTtlMs)) return this.cached;
-		this.failedAtMs = undefined;
-		this.cached = this.fetch().then((account) => {
-			if (account.error !== undefined) this.failedAtMs = this.now();
-			return this.withLabel(account);
-		});
-		return this.cached;
+		if (this.cached === undefined || (this.expiresAtMs !== undefined && this.now() >= this.expiresAtMs)) {
+			this.expiresAtMs = undefined;
+			this.cached = this.fetch().then(({ account, retryAfterMs }) => {
+				if (retryAfterMs !== undefined) this.expiresAtMs = this.now() + retryAfterMs;
+				return this.withLabel(account);
+			});
+		}
+		return options.maxWaitMs !== undefined ? this.within(this.cached, options.maxWaitMs) : this.cached;
 	}
 
-	private async fetch(): Promise<AccountInfo> {
+	private async fetch(): Promise<{ account: AccountInfo; retryAfterMs?: number }> {
 		const signal = AbortSignal.timeout(this.timeoutMs);
+		const failed = (reason: string, retryAfterMs = this.failureTtlMs) => ({ account: { error: `profile unavailable: ${reason}` }, retryAfterMs });
 		try {
 			const response = await this.client.request({ path: '/v1/profile' }, { signal });
 			if (!response.ok || typeof response.data !== 'object' || response.data === null) {
-				return { error: `profile unavailable: ${response.errorCategory ?? 'unknown'} (HTTP ${response.status})` };
+				const category = response.errorCategory ?? 'unknown';
+				return failed(`${category} (HTTP ${response.status})`, category === 'rate_limit' ? 0 : undefined);
 			}
 			const profile = response.data as Record<string, unknown>;
-			return Object.fromEntries(PROFILE_FIELDS.filter((field) => profile[field] !== undefined).map((field) => [field, profile[field]]));
+			const account: AccountInfo = Object.fromEntries(PROFILE_FIELDS.filter((field) => profile[field] !== undefined).map((field) => [field, profile[field]]));
+			return Object.keys(account).length > 0 ? { account } : failed(`no profile fields in response (HTTP ${response.status})`);
 		} catch {
-			return { error: `profile unavailable: ${signal.aborted ? 'timeout' : 'network'}` };
+			return signal.aborted ? failed('timeout', 0) : failed('network');
+		}
+	}
+
+	private async within(lookup: Promise<AccountInfo>, maxWaitMs: number): Promise<AccountInfo> {
+		let timer: NodeJS.Timeout | undefined;
+		const loading = new Promise<AccountInfo>((resolve) => {
+			timer = setTimeout(() => resolve(this.withLabel({ error: 'profile still loading; check again in a later call' })), maxWaitMs);
+		});
+		try {
+			return await Promise.race([lookup, loading]);
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 

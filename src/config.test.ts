@@ -37,9 +37,12 @@ test('API key and base URL are passed through, undefined when unset', () => {
 	});
 	const empty = loadConfig({});
 	assert.equal(empty.apiKey, undefined);
-	assert.equal(empty.accountLabel, undefined);
-	assert.equal(loadConfig({ LEXWARE_OFFICE_ACCOUNT_LABEL: 'Firma A' }).accountLabel, 'Firma A');
 	assert.equal(empty.baseUrl, undefined);
+});
+
+test('ACCOUNT_LABEL is passed through, undefined when unset', () => {
+	assert.equal(loadConfig({}).accountLabel, undefined);
+	assert.equal(loadConfig({ LEXWARE_OFFICE_ACCOUNT_LABEL: 'Firma A' }).accountLabel, 'Firma A');
 });
 
 test('WRITE_ALLOW is undefined when unset and parsed into catalog rules when set', () => {
