@@ -1,3 +1,4 @@
+import type { AccountInfo } from './account.js';
 import type { WritePolicy } from './write-policy.js';
 
 export interface LexwareApiCatalog {
@@ -17,6 +18,8 @@ export interface LexwareApiCatalog {
 		writesEnabled?: boolean;
 		// Injected at runtime: which writes LEXWARE_OFFICE_WRITE_ALLOW permits ('all' when unset).
 		writePolicy?: WritePolicy;
+		// Injected at runtime: the connected organization from GET /v1/profile, or { error }.
+		account?: AccountInfo;
 	};
 	paths: Record<string, Partial<Record<HttpMethod, LexwareOperation>>>;
 	workflows: Record<string, LexwareWorkflow>;
@@ -539,6 +542,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 			'Finance/reporting caveats and examples live in spec.info.financeReportingSemantics. Use them before answering ambiguous earnings/revenue/Umsatz/profit questions.',
 			'Updates use optimistic locking via a version field; on HTTP 409 to a PUT, re-fetch the resource and retry with the current version.',
 			'Failed JSON responses carry response.issues: both Lexware error body shapes normalized to { field, code, message, hint }; see spec.info.errorResponses.',
+			'spec.info.account is the connected organization (business facts from GET /v1/profile, plus label when LEXWARE_OFFICE_ACCOUNT_LABEL is set), or { error } when the profile is unavailable. Use it to confirm the account and for tax facts instead of calling /v1/profile.',
 			'spec.info.writesEnabled reports whether this server currently allows POST/PUT/PATCH/DELETE; check it before planning writes or uploads.',
 			'spec.info.writePolicy.allow lists the only writes this server permits ("METHOD /v1/template", "?finalize" also allows finalize=true), or is "all". Writes outside it are rejected before sending.',
 			'File uploads go through the multipart request field of lexware.request (contentPath for local files, contentBase64 for base64 bytes) — see the fileHandling workflow.',
@@ -850,7 +854,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 			delete: { operationId: 'deleteEventSubscription', tags: ['event-subscriptions', 'webhooks', 'write'], summary: 'Delete a webhook event subscription', parameters: [{ name: 'subscriptionId', in: 'path', required: true, type: 'uuid', description: 'Subscription UUID.' }], responses: { ...documentResponses, '204': 'Deleted successfully' }, docsUrl: 'https://developers.lexware.io/docs/#event-subscriptions-endpoint-delete-an-event-subscription' },
 		},
 		'/v1/profile': {
-			get: { operationId: 'getProfile', tags: ['profile', 'company', 'reference-data', 'read'], summary: 'Get company profile', responses: documentResponses, docsUrl: 'https://developers.lexware.io/docs/#profile-endpoint' },
+			get: { operationId: 'getProfile', tags: ['profile', 'company', 'reference-data', 'read'], summary: 'Get company profile', responses: documentResponses, notes: ['The business facts are already in spec.info.account; call this only for other fields such as connectionId.'], docsUrl: 'https://developers.lexware.io/docs/#profile-endpoint' },
 		},
 		'/v1/countries': {
 			get: { operationId: 'listCountries', tags: ['countries', 'reference-data', 'read'], summary: 'List countries and tax classifications', responses: documentResponses, notes: ['taxClassification values include de, intraCommunity, thirdPartyCountry.'], docsUrl: 'https://developers.lexware.io/docs/#countries-endpoint' },

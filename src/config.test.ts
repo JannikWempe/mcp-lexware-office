@@ -30,6 +30,7 @@ test('API key and base URL are passed through, undefined when unset', () => {
 	assert.deepEqual(loadConfig({ LEXWARE_OFFICE_API_KEY: 'key', LEXWARE_OFFICE_API_BASE_URL: 'https://example.test' }), {
 		apiKey: 'key',
 		baseUrl: 'https://example.test',
+		accountLabel: undefined,
 		uploadDirs: [],
 		writesEnabled: false,
 		writeAllow: undefined,
@@ -37,6 +38,11 @@ test('API key and base URL are passed through, undefined when unset', () => {
 	const empty = loadConfig({});
 	assert.equal(empty.apiKey, undefined);
 	assert.equal(empty.baseUrl, undefined);
+});
+
+test('ACCOUNT_LABEL is passed through, undefined when unset', () => {
+	assert.equal(loadConfig({}).accountLabel, undefined);
+	assert.equal(loadConfig({ LEXWARE_OFFICE_ACCOUNT_LABEL: 'Firma A' }).accountLabel, 'Firma A');
 });
 
 test('WRITE_ALLOW is undefined when unset and parsed into catalog rules when set', () => {

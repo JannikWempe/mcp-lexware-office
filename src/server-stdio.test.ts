@@ -82,6 +82,7 @@ test('server lists exactly search and execute with docs and write-mode annotatio
 		const [search, execute] = tools;
 		assert.match(search.description, /spec\.info\.domainIndex: compact map/);
 		assert.match(search.description, /spec\.info\.writesEnabled/);
+		assert.match(search.description, /spec\.info\.account: the connected organization/);
 		assert.match(execute.description, /lexware\.request returns all HTTP responses/);
 		assert.match(execute.description, /multipart\?: MultipartPart\[\]/);
 		assert.match(execute.description, /contentPath.*LEXWARE_OFFICE_UPLOAD_DIRS/);

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 
+import { AccountProfile, type AccountInfo } from './account.js';
 import { CodeMode } from './code-mode.js';
 import { LexwareApiClient, type LexwareClientOptions } from './lexware-client.js';
 import { parseWriteAllow } from './write-policy.js';
@@ -11,9 +12,12 @@ const jsonResponse = (status: number, body: unknown, headers: Record<string, str
 	headers: { 'content-type': 'application/json', ...headers },
 });
 
+const stubAccount: AccountInfo = { organizationId: 'org-1', companyName: 'Testfirma GmbH' };
+
 // CodeMode over the real QuickJsExecutor and a LexwareApiClient whose fetch is faked.
-// `fetched` records every attempt that actually reached fetch.
-const codeModeWith = (handler: (path: string) => Response = () => jsonResponse(200, {}), options: LexwareClientOptions = {}) => {
+// `fetched` records every attempt that actually reached fetch. The account is stubbed unless
+// `realAccount` is set, so the profile lookup doesn't show up in `fetched`.
+const codeModeWith = (handler: (path: string) => Response | Promise<Response> = () => jsonResponse(200, {}), options: LexwareClientOptions = {}, { realAccount = false } = {}) => {
 	const fetched: string[] = [];
 	const client = new LexwareApiClient({
 		apiKey: 'test-key',
@@ -26,7 +30,7 @@ const codeModeWith = (handler: (path: string) => Response = () => jsonResponse(2
 			return handler(path);
 		},
 	});
-	return { codeMode: new CodeMode({ client }), fetched };
+	return { codeMode: new CodeMode({ client, account: realAccount ? new AccountProfile(client) : { get: async () => stubAccount } }), fetched };
 };
 
 const textOf = (result: CallToolResult) => {
@@ -377,7 +381,7 @@ test('execute sandbox sees neither the API key nor Node globals', async () => {
 });
 
 test('an already aborted signal cancels without sending', async () => {
-	const { codeMode, fetched } = codeModeWith();
+	const { codeMode, fetched } = codeModeWith(undefined, {}, { realAccount: true });
 	const controller = new AbortController();
 	controller.abort();
 
@@ -386,4 +390,67 @@ test('an already aborted signal cancels without sending', async () => {
 	assert.equal(result.isError, true);
 	assert.match(payloadOf(result).error, /Execution cancelled by client/);
 	assert.equal(fetched.length, 0);
+});
+
+test('spec.info.account comes from one profile lookup that bypasses the execute budget and audit log', async () => {
+	const { codeMode, fetched } = codeModeWith((path) => jsonResponse(200, path === '/v1/profile' ? { organizationId: 'org-1', companyName: 'Testfirma GmbH', taxType: 'net', smallBusiness: true, created: { userEmail: 'a@b.test' } } : {}), {}, { realAccount: true });
+
+	const searched = payloadOf(await codeMode.search(`async () => spec.info.account`));
+	const executed = payloadOf(await codeMode.execute(`async () => { await lexware.request({ path: '/v1/countries' }); return spec.info.account; }`, { maxRequests: 1 }));
+
+	const account = { organizationId: 'org-1', companyName: 'Testfirma GmbH', taxType: 'net', smallBusiness: true };
+	assert.deepEqual(searched.result, account);
+	assert.deepEqual(executed.result, account);
+	assert.equal(executed.requestCount, 1);
+	assert.deepEqual(executed.requests.map(({ path }: Record<string, unknown>) => path), ['/v1/countries']);
+	assert.deepEqual(fetched, ['GET /v1/profile', 'GET /v1/countries']);
+});
+
+test('search without an API key still works and reports the account as unavailable', async () => {
+	const { codeMode, fetched } = codeModeWith(undefined, { apiKey: undefined }, { realAccount: true });
+
+	const result = await codeMode.search(`async () => ({ account: spec.info.account, hasContacts: 'contacts' in spec.info.domainIndex })`);
+
+	assert.equal(result.isError, undefined);
+	assert.deepEqual(payloadOf(result).result, { account: { error: 'profile unavailable: no API key configured' }, hasContacts: true });
+	assert.deepEqual(fetched, []);
+});
+
+test('cancelling while the profile loads ends the call without waiting for it', async () => {
+	// The hanging profile fetch outlives the cancellation; requestTimeoutMs only keeps it from lingering.
+	const { codeMode } = codeModeWith(() => new Promise<Response>(() => {}), { requestTimeoutMs: 200 }, { realAccount: true });
+	const controller = new AbortController();
+
+	const pending = codeMode.search(`async () => 1`, { signal: controller.signal });
+	setTimeout(() => controller.abort(), 10);
+	const result = await pending;
+
+	assert.equal(result.isError, true);
+	assert.match(payloadOf(result).error, /Execution cancelled by client/);
+});
+
+test('search waits at most a second for a slow profile and reports it as still loading', async () => {
+	let releaseProfile = () => {};
+	const { codeMode } = codeModeWith((path) => path === '/v1/profile'
+		? new Promise<Response>((resolve) => { releaseProfile = () => resolve(jsonResponse(200, { companyName: 'Testfirma GmbH' })); })
+		: jsonResponse(200, {}), {}, { realAccount: true });
+
+	const startedAt = Date.now();
+	const loading = payloadOf(await codeMode.search(`async () => spec.info.account`));
+	assert.ok(Date.now() - startedAt < 2_000);
+	assert.deepEqual(loading.result, { error: 'profile still loading; check again in a later call' });
+
+	releaseProfile();
+	assert.deepEqual(payloadOf(await codeMode.search(`async () => spec.info.account`)).result, { companyName: 'Testfirma GmbH' });
+});
+
+test('execute still succeeds when the profile lookup fails', async () => {
+	const { codeMode, fetched } = codeModeWith((path) => (path === '/v1/profile' ? jsonResponse(401, { message: 'Unauthorized' }) : jsonResponse(200, { ok: 1 })), {}, { realAccount: true });
+
+	const result = await codeMode.execute(`async () => ({ account: spec.info.account, data: await lexware.json({ path: '/v1/countries' }) })`, { maxRequests: 1 });
+	await codeMode.execute(`async () => spec.info.account`, { maxRequests: 1 });
+
+	assert.equal(result.isError, undefined);
+	assert.deepEqual(payloadOf(result).result, { account: { error: 'profile unavailable: auth (HTTP 401)' }, data: { ok: 1 } });
+	assert.deepEqual(fetched, ['GET /v1/profile', 'GET /v1/countries']);
 });
