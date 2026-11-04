@@ -6,7 +6,8 @@ import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-s
 /*
 Doc-derived fixtures below are pinned from https://developers.lexware.io/docs/
 (sections: Voucherlist "Retrieve and Filter Voucherlist", each sales document's
-voucherStatus property, Paging of Resources). Update them only against the docs.
+voucherStatus property, Paging of Resources, Vouchers "Voucher Properties" and
+"Create a Voucher"). Update them only against the docs.
 */
 
 const DOCUMENTED_VOUCHERLIST_STATUSES = [
@@ -32,6 +33,10 @@ const DOCUMENTED_VOUCHERLIST_FILTER_PARAMS = [
 	'voucherDateFrom', 'voucherDateTo', 'createdDateFrom', 'createdDateTo', 'updatedDateFrom', 'updatedDateTo',
 	'voucherNumber', 'sort', 'page', 'size',
 ];
+
+const DOCUMENTED_BOOKKEEPING_VOUCHER_STATUSES = ['blank', 'open', 'paid', 'paidoff', 'voided', 'transferred', 'sepadebit', 'unchecked'];
+
+const DOCUMENTED_CREATE_VOUCHER_FIELDS = ['type', 'taxType', 'voucherNumber', 'voucherDate', 'totalGrossAmount', 'totalTaxAmount', 'voucherItems', 'contactId', 'useCollectiveContact'];
 
 const voucherTypes = lexwareSpec.info.voucherStatusSemantics.voucherTypes;
 
@@ -123,4 +128,58 @@ test('domainIndex endpoints all exist in spec.paths with the stated method', () 
 			assert.ok(methods[endpoint.method.toLowerCase() as HttpMethod], `domainIndex.${name} references missing ${endpoint.method} ${endpoint.path}`);
 		}
 	}
+});
+
+test('bookkeeping voucher create and update bodies follow the documented field rules', () => {
+	const create = lexwareSpec.paths['/v1/vouchers']?.post;
+	const update = lexwareSpec.paths['/v1/vouchers/{id}']?.put;
+	assert.ok(create?.requestBody && update?.requestBody);
+	for (const body of [create.requestBody, update.requestBody]) {
+		const bodyText = JSON.stringify(body.required);
+		for (const field of DOCUMENTED_CREATE_VOUCHER_FIELDS) {
+			assert.ok(bodyText.includes(field), `voucher body required list misses documented field ${field}`);
+		}
+		assert.match(JSON.stringify(body.shape), /"taxType":"net\|gross"/);
+	}
+	assert.ok(update.requestBody.required?.includes('version'));
+	assert.doesNotMatch(JSON.stringify(create.examples), /"version"/);
+	assert.match(JSON.stringify(create.notes), /prohibits unchecked net vouchers/);
+});
+
+test('updateVoucher warns first that omitted file ids are deleted permanently', () => {
+	const update = lexwareSpec.paths['/v1/vouchers/{id}']?.put;
+	assert.match(update?.notes?.[0] ?? '', /send the complete current files array; omitted file ids are deleted permanently/);
+	assert.ok(update?.requestBody?.required?.includes('files'));
+});
+
+test('updateVoucher does not claim unchecked vouchers are never updatable', () => {
+	const notesText = JSON.stringify(lexwareSpec.paths['/v1/vouchers/{id}']?.put?.notes);
+	assert.doesNotMatch(notesText, /cannot be updated/);
+	assert.match(notesText, /Omit voucherStatus unless finalizing to open, then GET the voucher to verify/);
+});
+
+test('getVoucher lists every documented bookkeeping voucher status, including blank', () => {
+	const notesText = JSON.stringify(lexwareSpec.paths['/v1/vouchers/{id}']?.get?.notes);
+	for (const status of DOCUMENTED_BOOKKEEPING_VOUCHER_STATUSES) {
+		assert.match(notesText, new RegExp(`\\b${status}\\b`), `getVoucher notes miss status ${status}`);
+	}
+});
+
+test('file uploads document 202 Accepted instead of the shared 200 response', () => {
+	const upload = lexwareSpec.paths['/v1/files']?.post;
+	const attach = lexwareSpec.paths['/v1/vouchers/{id}/files']?.post;
+	for (const operation of [upload, attach]) {
+		assert.ok(operation?.responses?.['202']);
+		assert.equal(operation.responses['200'], undefined);
+	}
+	assert.match(upload?.responses?.['202'] ?? '', /voucherId/);
+	assert.match(JSON.stringify(upload?.notes), /5 MB/);
+	assert.match(JSON.stringify(upload?.notes), /status blank/);
+});
+
+test('duplicateVoucher copies the contact choice and keeps voucherNumber for open vouchers', () => {
+	const workflowText = JSON.stringify(lexwareSpec.workflows.duplicateVoucher);
+	assert.match(workflowText, /useCollectiveContact/);
+	assert.doesNotMatch(workflowText, /Omit voucherNumber/);
+	assert.match(workflowText, /can be assigned to only one voucher/);
 });

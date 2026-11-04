@@ -93,9 +93,9 @@ Available globals:
 declare const spec: LexwareApiCatalog;
 ${lexwareSdkDeclaration}
 
-lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. A GET answered with 429 and Retry-After <= 5s is retried once automatically.
+lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. A GET answered with 429 is retried once automatically after Retry-After (if <= 5s) or, without that header, a 1-2s backoff; writes are never retried.
 
-The tool result includes requests: one { method, path, status?, ok?, error?, write, sent, outcome?, durationMs } entry per HTTP attempt, also when execution failed — check it to see which writes already succeeded before retrying. A write with error and outcome: 'unknown' (sent=true) may have been applied by Lexware; reconcile via a GET before retrying it.
+The tool result includes requests: one { method, path, status?, ok?, error?, write, sent, outcome?, durationMs } entry per HTTP attempt, also when execution failed — check it to see which writes already succeeded before retrying. A write with outcome: 'unknown' (sent=true, with error or status 504) may have been applied by Lexware; reconcile via a GET before retrying it.
 
 maxRequests bounds the HTTP attempts actually sent to Lexware, including automatic 429 retries; requestCount equals the number of requests entries with sent=true. Requests rejected before sending (invalid input, blocked writes) do not count. An attempt beyond the budget is not sent and fails with "Execution exceeded maxRequests=N".
 
