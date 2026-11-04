@@ -20,7 +20,7 @@ export interface AccountProfileOptions {
 	// Bounds the profile request, which runs before the sandbox and outside its timeout.
 	timeoutMs?: number;
 	// A failed lookup is retried after this long instead of on every call. Timeouts and 429s,
-	// which a busy rate-limit queue can cause, are retried on the next call.
+	// which a busy rate-limit queue can cause, are retried on the next call (a 429 after Retry-After).
 	failureTtlMs?: number;
 	now?: () => number;
 }
@@ -76,7 +76,7 @@ export class AccountProfile {
 			const response = await this.client.request({ path: '/v1/profile' }, { signal });
 			if (!response.ok || typeof response.data !== 'object' || response.data === null) {
 				const category = response.errorCategory ?? 'unknown';
-				return failed(`${category} (HTTP ${response.status})`, category === 'rate_limit' ? 0 : undefined);
+				return failed(`${category} (HTTP ${response.status})`, category === 'rate_limit' ? (response.retryAfterSeconds ?? 0) * 1000 : undefined);
 			}
 			const profile = response.data as Record<string, unknown>;
 			const account: AccountInfo = Object.fromEntries(PROFILE_FIELDS.filter((field) => profile[field] !== undefined).map((field) => [field, profile[field]]));

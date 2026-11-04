@@ -118,6 +118,27 @@ test('maxWaitMs resolves with a loading error while the lookup keeps running', a
 	assert.equal(fetched.length, 1);
 });
 
+test('a 429 with Retry-After is cached that long; network failures for failureTtlMs', async () => {
+	let nowMs = 0;
+	const rateLimited = accountWith(async () => new Response('{}', { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '3' } }), { now: () => nowMs }, { maxRetryAfterMs: 0 });
+	const offline = accountWith(async () => { throw new TypeError('fetch failed'); }, { failureTtlMs: 1_000, now: () => nowMs });
+
+	await rateLimited.account.get();
+	await offline.account.get();
+	nowMs = 999;
+	await rateLimited.account.get();
+	await offline.account.get();
+	assert.equal(rateLimited.fetched.length, 1);
+	assert.equal(offline.fetched.length, 1);
+
+	nowMs = 1_000;
+	await offline.account.get();
+	assert.equal(offline.fetched.length, 2);
+	nowMs = 3_000;
+	await rateLimited.account.get();
+	assert.equal(rateLimited.fetched.length, 2);
+});
+
 test('a failed lookup is cached for failureTtlMs, then retried', async () => {
 	let nowMs = 0;
 	let status = 503;
