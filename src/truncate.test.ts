@@ -89,6 +89,17 @@ test('kept top-level keys are never shrunk while they fit', () => {
 	assert.match(result.result, /…\[truncated: \d+ chars\]$/);
 });
 
+test('kept keys that nearly fill the limit stay whole; the other keys shrink', () => {
+	const requests = Array.from({ length: 140 }, () => ({ method: 'POST', path: '/v1/contacts', status: 200, ok: true, write: true, sent: true, durationMs: 0 }));
+
+	const result = truncateJson({ ok: true, result: 'x'.repeat(100_000), requestCount: 140, requests }, { maxChars: 24_000, keep: ['ok', 'requestCount', 'requests'] }) as Record<string, any>;
+
+	assert.ok(prettyLength(result) <= 24_000);
+	assert.deepEqual(result.requests, requests);
+	assert.match(result.result, /\[truncated: \d+ chars\]$/);
+	assert.ok(result.truncated.originalChars > 24_000);
+});
+
 test('kept keys that do not fit on their own are shrunk too', () => {
 	const value = { requests: Array.from({ length: 1000 }, (_, i) => ({ path: `/v1/contacts/${i}` })), result: 1 };
 
@@ -100,7 +111,7 @@ test('kept keys that do not fit on their own are shrunk too', () => {
 
 test('deeply nested values are shrunk quickly', () => {
 	let value: unknown = 0;
-	for (let i = 0; i < 2000; i++) value = { a: value };
+	for (let i = 0; i < 10_000; i++) value = { a: value };
 
 	const startedAt = Date.now();
 	const result = truncateJson(value, { maxChars: 2000 });

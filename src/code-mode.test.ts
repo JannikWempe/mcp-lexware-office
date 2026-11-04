@@ -252,6 +252,25 @@ test('truncation never cuts write entries from the requests audit log', async ()
 	assert.match(payload.result, /…\[truncated: \d+ chars\]$/);
 });
 
+test('a non-serializable result still reports the requests audit log, within the limit', async () => {
+	const { codeMode } = codeModeWith();
+
+	const result = await codeMode.execute(`async () => {
+		for (let i = 0; i < 300; i++) await lexware.request({ method: 'POST', path: '/v1/contacts', body: {} }).catch(() => {});
+		return 1n;
+	}`, { maxRequests: 1 });
+
+	const text = textOf(result);
+	assert.ok(text.length <= 24_000);
+	assert.equal(result.structuredContent, undefined);
+	const payload = JSON.parse(text);
+	assert.match(payload.error, /not JSON-serializable/);
+	assert.equal(payload.ok, undefined);
+	assert.equal(payload.requestCount, 0);
+	assert.match(payload.requests.at(-1), /^\[truncated: \d+ more items\]$/);
+	assert.match(payload.requests[0].error, /blocked: writes are disabled/);
+});
+
 test('results within the limit are returned unchanged, without a truncated hint', async () => {
 	const { codeMode } = codeModeWith();
 

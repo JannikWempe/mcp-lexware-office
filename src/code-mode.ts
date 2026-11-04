@@ -125,29 +125,24 @@ function summarizeRequests(requests: RequestLogEntry[]): { requests: RequestLogE
 
 // The text block and structuredContent carry the same object. An oversized result is shrunk
 // structurally (see truncateJson), so both stay valid JSON and carry a `truncated` hint. The
-// audit fields are kept whole so callers always see which writes happened.
+// audit fields are kept whole (unless they alone exceed the limit), so callers see which writes happened.
 const AUDIT_KEYS = ['ok', 'requestCount', 'requests', 'readsSummary'];
 
 function toolResult(payload: Record<string, unknown>, isError = false): CallToolResult {
-	let structured: Record<string, unknown> | undefined;
-	let text: string;
+	let normalized: Record<string, unknown>;
+	let serializable = true;
 	try {
 		// Round-trip first so truncation measures exactly what gets serialized (toJSON, dropped undefined).
-		const normalized = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
-		try {
-			structured = truncateJson(normalized, { keep: AUDIT_KEYS }) as Record<string, unknown>;
-		} catch (error) {
-			// E.g. pathologically deep results. Drop everything but the audit fields.
-			structured = Object.fromEntries(Object.entries(normalized).map(([key, value]) => [key, AUDIT_KEYS.includes(key) ? value : `[truncated: could not shrink result: ${String(error)}]`]));
-		}
-		text = JSON.stringify(structured, null, 2);
+		normalized = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
 	} catch (error) {
-		structured = undefined;
+		serializable = false;
+		// Without `ok`: an `ok: true` next to this error would contradict it.
 		const audit = Object.fromEntries(AUDIT_KEYS.filter((key) => key !== 'ok' && key in payload).map((key) => [key, payload[key]]));
-		text = JSON.stringify({ error: 'Result is not JSON-serializable', detail: String(error), ...audit }, null, 2);
+		normalized = { ...audit, error: 'Result is not JSON-serializable', detail: String(error) };
 	}
-	const result: CallToolResult = { content: [{ type: 'text', text }] };
-	if (structured !== undefined) result.structuredContent = structured;
+	const structured = truncateJson(normalized, { keep: AUDIT_KEYS }) as Record<string, unknown>;
+	const result: CallToolResult = { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }] };
+	if (serializable) result.structuredContent = structured;
 	if (isError) result.isError = true;
 	return result;
 }
