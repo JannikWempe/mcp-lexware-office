@@ -110,14 +110,27 @@ test('kept keys that do not fit on their own are shrunk too', () => {
 });
 
 test('deeply nested values are shrunk quickly', () => {
-	let value: unknown = 0;
-	for (let i = 0; i < 10_000; i++) value = { a: value };
+	let object: unknown = 0;
+	for (let i = 0; i < 10_000; i++) object = { a: object };
+	let array: unknown = 0;
+	for (let i = 0; i < 8000; i++) array = [array];
 
-	const startedAt = Date.now();
-	const result = truncateJson(value, { maxChars: 2000 });
+	for (const value of [object, array]) {
+		const startedAt = Date.now();
+		const result = truncateJson(value, { maxChars: 2000 });
 
-	assert.ok(Date.now() - startedAt < 1000);
-	assert.ok(prettyLength(result) <= 2000);
+		assert.ok(Date.now() - startedAt < 1000);
+		assert.ok(prettyLength(result) <= 2000);
+	}
+});
+
+test('kept keys just under the limit stay whole; the other keys are dropped', () => {
+	const requests = [{ write: true, path: 'x'.repeat(23_850) }];
+
+	const result = truncateJson({ requests, result: 'y'.repeat(100_000), logs: [] }, { maxChars: 24_000, keep: ['requests'] }) as Record<string, any>;
+
+	assert.ok(prettyLength(result) <= 24_000);
+	assert.deepEqual(result, { requests, truncated: { originalChars: result.truncated.originalChars } });
 });
 
 test('clipping does not split surrogate pairs', () => {

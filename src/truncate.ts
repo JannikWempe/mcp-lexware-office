@@ -3,7 +3,7 @@ export interface TruncationOptions {
 }
 
 export interface JsonTruncationOptions extends TruncationOptions {
-	// Top-level keys that are kept whole unless they alone exceed maxChars.
+	// Top-level keys that are kept whole unless they alone come close to maxChars.
 	keep?: string[];
 }
 
@@ -30,6 +30,7 @@ const BUDGET_TIGHTENING = 0.8;
 const CONTAINER_CHARS = 4;
 const ENTRY_SEPARATOR_CHARS = 2;
 const KEY_SEPARATOR_CHARS = 2; // ": "
+const EMPTY_CONTAINER_CHARS = 2; // "[]" or "{}"
 
 export function truncateText(value: string, options: TruncationOptions = {}): string {
 	const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
@@ -45,10 +46,10 @@ export function truncateText(value: string, options: TruncationOptions = {}): st
 // hint: as a key of a top-level object, or wrapping any other value as { truncated, value }.
 export function truncateJson(value: unknown, options: JsonTruncationOptions = {}): unknown {
 	const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
-	// The compact form is linear in size, while the pretty one grows quadratically with nesting.
-	if ((JSON.stringify(value)?.length ?? 0) <= maxChars && (JSON.stringify(value, null, INDENT)?.length ?? 0) <= maxChars) return value;
-
 	const sizes = new SizeCache();
+	// The compact form is a cheap lower bound; measuring the pretty one is only needed if it fits.
+	if ((JSON.stringify(value)?.length ?? 0) <= maxChars && sizes.of(value, 0) <= maxChars) return value;
+
 	const shrinker = new Shrinker(sizes);
 	const originalChars = sizes.of(value, 0);
 	const hint: TruncationHint = {
@@ -57,10 +58,12 @@ export function truncateJson(value: unknown, options: JsonTruncationOptions = {}
 	};
 	const keptKeys = isPlainObject(value) ? Object.keys(value).filter((key) => options.keep?.includes(key)) : [];
 	const shrinkExceptKept = (budget: number) => shrinker.shrinkExcept(value as Record<string, unknown>, keptKeys, budget);
+	const keptOnly = () => Object.fromEntries(keptKeys.map((key) => [key, (value as Record<string, unknown>)[key]]));
 	const shrinkAll = (budget: number) => shrinker.shrink(value, budget, 0);
-	// Kept keys first, with a compact hint as a last resort; if they alone don't fit, shrink everything.
+	// Kept keys first: with the other keys shrunk, then dropped, with a compact hint as a last
+	// resort. Only if the kept keys alone come close to the limit is everything shrunk.
 	const plans: Array<[(budget: number) => unknown, TruncationHint]> = keptKeys.length > 0
-		? [[shrinkExceptKept, hint], [shrinkExceptKept, { originalChars }], [shrinkAll, hint]]
+		? [[shrinkExceptKept, hint], [shrinkExceptKept, { originalChars }], [keptOnly, { originalChars }], [shrinkAll, hint]]
 		: [[shrinkAll, hint]];
 	for (const [shrink, planHint] of plans) {
 		const hintChars = sizes.of({ truncated: planHint }, 0);
@@ -97,6 +100,7 @@ class Shrinker {
 		const restBudget = budget - this.sizes.of(kept, 0);
 		const shrunk = restBudget >= MIN_SHRINK_CHARS
 			? this.shrink(rest, restBudget, 0) as Record<string, unknown>
+			// No room left: each remaining value becomes a marker, unless it is small (depth 1: inside the object).
 			: Object.fromEntries(Object.entries(rest).map(([key, entry]) => [key, this.shrink(entry, 0, 1)]));
 		const result: Record<string, unknown> = {};
 		for (const key of Object.keys(value)) {
@@ -236,15 +240,16 @@ class SizeCache {
 }
 
 function frame(node: object): MeasureFrame {
+	// Like JSON.stringify: undefined and functions are null in arrays and omitted in objects.
 	const entries: MeasureFrame['entries'] = Array.isArray(node)
-		? node.map((item) => [undefined, item])
+		? node.map((item) => [undefined, item === undefined || typeof item === 'function' ? null : item])
 		: Object.entries(node).filter(([, entry]) => entry !== undefined && typeof entry !== 'function');
 	const count = entries.length;
 	return {
 		node,
 		entries,
 		next: 0,
-		measure: count === 0 ? { chars: 2, lines: 0 } : { chars: CONTAINER_CHARS + ENTRY_SEPARATOR_CHARS * (count - 1), lines: count + 1 },
+		measure: count === 0 ? { chars: EMPTY_CONTAINER_CHARS, lines: 0 } : { chars: CONTAINER_CHARS + ENTRY_SEPARATOR_CHARS * (count - 1), lines: count + 1 },
 	};
 }
 

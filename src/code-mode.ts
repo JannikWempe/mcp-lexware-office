@@ -125,7 +125,7 @@ function summarizeRequests(requests: RequestLogEntry[]): { requests: RequestLogE
 
 // The text block and structuredContent carry the same object. An oversized result is shrunk
 // structurally (see truncateJson), so both stay valid JSON and carry a `truncated` hint. The
-// audit fields are kept whole (unless they alone exceed the limit), so callers see which writes happened.
+// audit fields are kept whole (unless they alone come close to the limit), so callers see which writes happened.
 const AUDIT_KEYS = ['ok', 'requestCount', 'requests', 'readsSummary'];
 
 function toolResult(payload: Record<string, unknown>, isError = false): CallToolResult {
