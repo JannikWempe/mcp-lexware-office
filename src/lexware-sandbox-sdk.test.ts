@@ -448,6 +448,84 @@ test('sandbox lexware.uploadVoucherFile polls with the host sleep', async () => 
 	assert.equal(reads, 1);
 });
 
+const voucherRows = [
+	{ id: 'contact-only', voucherNumber: 'X-1', voucherDate: '2026-03-02T00:00:00.000+01:00', contactName: 'Muster GmbH', totalAmount: 50, currency: 'EUR' },
+	{ id: 'number-only', voucherNumber: '123-456-7890', voucherDate: '2026-03-01T00:00:00.000+01:00', contactName: 'Other AG', totalAmount: 99, currency: 'EUR' },
+	{ id: 'unchecked', voucherNumber: null, voucherDate: '2026-03-03T00:00:00.000+01:00', contactName: 'Muster GmbH', currency: 'EUR' },
+	{ id: 'number-amount', voucherNumber: '1234567890', voucherDate: '2026-03-04T00:00:00.000+01:00', contactName: 'Muster GmbH', totalAmount: '119.00', currency: 'EUR' },
+	{ id: 'unrelated', voucherNumber: 'Y-9', voucherDate: '2026-03-05T00:00:00.000+01:00', contactName: 'Else KG', totalAmount: 1, currency: 'EUR' },
+];
+// Voucherlist host: the exact voucherNumber query matches only identical numbers, the window query returns every row on one page.
+const voucherlistHost = () => sdkWith((input) => okResponse({
+	content: input.query.voucherNumber !== undefined ? voucherRows.filter((row) => row.voucherNumber === input.query.voucherNumber) : voucherRows,
+	last: true,
+}));
+
+test('lexware.findVouchers returns exact voucherNumber hits from one request', async () => {
+	const { sdk, inputs } = voucherlistHost();
+
+	const candidates = await sdk.findVouchers({ voucherNumber: '1234567890', amount: 119 });
+
+	assert.deepEqual(inputs.map((input) => input.query), [{ voucherType: 'purchaseinvoice,purchasecreditnote,salesinvoice,salescreditnote', voucherStatus: 'any', voucherNumber: '1234567890', page: 0, size: 250 }]);
+	assert.deepEqual(candidates.map(({ score, matched }) => ({ score, matched })), [{ score: 12, matched: ['voucherNumber', 'amount'] }]);
+});
+
+test('lexware.findVouchers falls back to the date window and matches normalized numbers', async () => {
+	const { sdk, inputs } = voucherlistHost();
+
+	const candidates = await sdk.findVouchers({ voucherNumber: '123 456 7890', amount: 119, contactName: 'muster', dateFrom: '2026-03-01', dateTo: '2026-03-31', voucherStatus: 'open' });
+
+	assert.deepEqual(inputs.map((input) => input.query), [
+		{ voucherType: 'purchaseinvoice,purchasecreditnote,salesinvoice,salescreditnote', voucherStatus: 'open', voucherNumber: '123 456 7890', page: 0, size: 250 },
+		{ voucherType: 'purchaseinvoice,purchasecreditnote,salesinvoice,salescreditnote', voucherStatus: 'open', voucherDateFrom: '2026-03-01', voucherDateTo: '2026-03-31', page: 0, size: 250 },
+	]);
+	assert.deepEqual(candidates.map(({ row, score, matched }) => [(row as { id: string }).id, score, matched]), [
+		['number-amount', 15, ['voucherNumber', 'amount', 'contactName', 'date']],
+		['number-only', 9, ['voucherNumber', 'date']],
+		['contact-only', 3, ['contactName', 'date']],
+		['unchecked', 3, ['contactName', 'date']],
+	]);
+});
+
+test('lexware.findVouchers ignores leading zeros, matches RegExp contacts and skips rows without totalAmount', async () => {
+	const { sdk } = sdkWith(() => okResponse({ content: [{ id: 'a', voucherNumber: 're.0042', contactName: 'Muster GmbH' }, { id: 'b', voucherNumber: 'RE-420', contactName: 'Muster AG', totalAmount: 5 }], last: true }));
+
+	const candidates = await sdk.findVouchers({ voucherNumber: 'RE-42', contactName: /gmbh$/, amount: 5, dateFrom: '2026-01-01', dateTo: '2026-12-31' });
+
+	assert.deepEqual(candidates.map(({ row, matched }) => [(row as { id: string }).id, matched]), [['a', ['voucherNumber', 'contactName']], ['b', ['amount']]]);
+});
+
+test('lexware.findVouchers scans voucherlist only within a date window', async () => {
+	const { sdk, inputs } = voucherlistHost();
+
+	await assert.rejects(() => sdk.findVouchers({ voucherNumber: '123 456 7890' }), /no voucher has the exact number "123 456 7890"\. Pass criteria\.dateFrom and dateTo/);
+	assert.equal(inputs.length, 1, 'only the exact query ran');
+	await assert.rejects(() => sdk.findVouchers({ amount: 119, dateFrom: '2026-03-01' }), /needs criteria\.dateFrom and dateTo/);
+	await assert.rejects(() => sdk.findVouchers({ dateFrom: '2026-03-01', dateTo: '2026-03-31' }), /at least one of criteria\.voucherNumber, contactName or amount/);
+	await assert.rejects(() => sdk.findVouchers({ voucherNumber: 'X-1', voucherDateFrom: '2026-03-01' } as never), /unknown criteria voucherDateFrom/);
+	await assert.rejects(() => sdk.findVouchers({ amount: 1, dateFrom: '01.03.2026', dateTo: '2026-03-31' }), /dateFrom must be a yyyy-MM-dd string/);
+	assert.equal(inputs.length, 1, 'invalid criteria send no request');
+});
+
+test('lexware.findVouchers respects maxPages and drops other currencies', async () => {
+	const { sdk, inputs } = sdkWith((input) => okResponse({ content: [{ id: 'p' + input.query.page, contactName: 'Muster', currency: input.query.page === 0 ? 'USD' : 'EUR' }], last: false }));
+
+	const candidates = await sdk.findVouchers({ contactName: 'muster', currency: 'eur', dateFrom: '2026-01-01', dateTo: '2026-12-31' }, { maxPages: 2 });
+
+	assert.equal(inputs.length, 2);
+	assert.deepEqual(candidates.map(({ row }) => (row as { id: string }).id), ['p1']);
+});
+
+test('sandbox lexware.findVouchers ranks candidates inside QuickJS', async () => {
+	const execution = await runInSandbox(
+		`async () => (await lexware.findVouchers({ voucherNumber: '123 456 7890', amount: 119, contactName: /muster/, dateFrom: '2026-03-01', dateTo: '2026-03-31' })).map((candidate) => candidate.row.id + ':' + candidate.score)`,
+		() => okResponse({ content: voucherRows, last: true }),
+	);
+
+	assert.equal(execution.error, undefined);
+	assert.deepEqual(execution.result, ['number-amount:15', 'number-only:9', 'contact-only:3', 'unchecked:3']);
+});
+
 test('lexware.request returns non-OK envelopes without throwing', async () => {
 	const { sdk } = sdkWith(() => unauthorized);
 

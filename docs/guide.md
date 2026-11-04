@@ -144,6 +144,7 @@ declare const lexware: {
   uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped' }>;
   attachFileToVoucher(voucherId: string, input: FileInput): Promise<{ fileId: string; sent: UploadSent }>;
   sleep(ms: number): Promise<void>;
+  findVouchers(criteria: { voucherNumber?: string; contactName?: string | RegExp; amount?: number; currency?: string; dateFrom?: string; dateTo?: string; voucherType?: string; voucherStatus?: string }, options?: { maxPages?: number }): Promise<Array<{ row: unknown; score: number; matched: string[] }>>;
 };
 ```
 
@@ -161,6 +162,22 @@ declare const lexware: {
 async () => {
   const { changed } = await lexware.updateVoucher('VOUCHER_ID', { remark: 'Checked' }, { expectedVersion: 3 });
   return changed;
+}
+```
+
+`lexware.findVouchers` checks whether a document is already in Lexware before you upload it. The `voucherNumber` filter of `GET /v1/voucherlist` matches exactly, so differently formatted numbers slip through; the helper also finds those:
+
+- It first queries the exact `voucherNumber` (1 request). If that finds nothing, it pages `/v1/voucherlist` within `dateFrom`..`dateTo` (`voucherDateFrom`/`voucherDateTo`, `yyyy-MM-dd`) and scores the rows locally: 1 + pages requests against `maxRequests`, at most 1 + `maxPages`.
+- The window bounds that scan: without `dateFrom` and `dateTo`, an exact-number miss throws instead of scanning, and criteria without `voucherNumber` throw before any request.
+- `voucherNumber` is compared ignoring case, spaces, dashes, dots and the leading zeros of the first digit group (`123 456 7890` = `1234567890`, `RE-0042` = `RE-42`). `contactName` is a case-insensitive substring or `RegExp`, `amount` matches `totalAmount` within ±0.01, and rows in another `currency` are dropped.
+- Voucherlist rows of `unchecked` vouchers can lack `totalAmount`; amount matching skips those rows instead of failing.
+- `voucherType` defaults to the bookkeeping types `purchaseinvoice,purchasecreditnote,salesinvoice,salescreditnote` (pass `'any'` to include sales documents), `voucherStatus` to `any`.
+- It returns candidates sorted by `score` with the criteria that `matched`: `voucherNumber` 8, `amount` 4, `contactName` 2, `date` (inside the window) 1, so a number match always ranks first. Rows matching only the date are left out. It never decides whether a candidate is a duplicate; check them yourself.
+
+```js
+async () => {
+  const candidates = await lexware.findVouchers({ voucherNumber: '123 456 7890', amount: 119, contactName: 'Muster', dateFrom: '2026-02-01', dateTo: '2026-04-30' });
+  return candidates.slice(0, 5).map(({ row, score, matched }) => ({ id: row.id, voucherNumber: row.voucherNumber, score, matched }));
 }
 ```
 

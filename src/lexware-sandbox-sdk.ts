@@ -389,6 +389,106 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		}
 		return { fileId: data.id, sent: response.sent };
 	};
+	// Ignores case, spaces, dashes, dots and the leading zeros of the first digit group: 'RE-0042' and 're 42' compare equal.
+	const normalizeVoucherNumber = (value: unknown): string => typeof value === 'string'
+		? value.toLowerCase().replace(/[\s.\-–—]/g, '').replace(/^([a-z]*)0+(?=\d)/, '$1')
+		: '';
+	const findVouchersCriteria = ['voucherNumber', 'contactName', 'amount', 'currency', 'dateFrom', 'dateTo', 'voucherType', 'voucherStatus'];
+	// Duplicate check before an upload: an exact voucherNumber query (1 request); if that finds nothing, pages /v1/voucherlist
+	// within dateFrom..dateTo (1 + pages requests) and ranks the rows locally. Returns candidates; never decides a duplicate.
+	const findVouchers = async (
+		criteria: { voucherNumber?: string; contactName?: string | RegExp; amount?: number; currency?: string; dateFrom?: string; dateTo?: string; voucherType?: string; voucherStatus?: string },
+		options: { maxPages?: number } = {},
+	): Promise<Array<{ row: unknown; score: number; matched: string[] }>> => {
+		if (!isObjectLike(criteria) || Array.isArray(criteria)) {
+			throw new Error('lexware.findVouchers criteria must be an object');
+		}
+		const unknownKeys = Object.keys(criteria).filter((key) => !findVouchersCriteria.includes(key));
+		if (unknownKeys.length > 0) {
+			throw new Error('lexware.findVouchers: unknown criteria ' + unknownKeys.join(', ') + '. Allowed: ' + findVouchersCriteria.join(', '));
+		}
+		if (options == null || typeof options !== 'object' || Array.isArray(options)) {
+			throw new Error('lexware.findVouchers options must be an object when provided');
+		}
+		if (options.maxPages !== undefined && !(Number.isInteger(options.maxPages) && options.maxPages >= 1)) {
+			throw new Error('lexware.findVouchers options.maxPages must be a positive integer');
+		}
+		const { voucherNumber, contactName, amount, currency, dateFrom, dateTo } = criteria;
+		if (voucherNumber === undefined && contactName === undefined && amount === undefined) {
+			throw new Error('lexware.findVouchers needs at least one of criteria.voucherNumber, contactName or amount');
+		}
+		const wantedNumber = normalizeVoucherNumber(voucherNumber);
+		if (voucherNumber !== undefined && wantedNumber.length === 0) {
+			throw new Error('lexware.findVouchers criteria.voucherNumber must be a string with letters or digits');
+		}
+		if (contactName !== undefined && !(contactName instanceof RegExp) && !(typeof contactName === 'string' && contactName.length > 0)) {
+			throw new Error('lexware.findVouchers criteria.contactName must be a non-empty string or a RegExp');
+		}
+		if (amount !== undefined && !(typeof amount === 'number' && Number.isFinite(amount))) {
+			throw new Error('lexware.findVouchers criteria.amount must be a finite number');
+		}
+		if (currency !== undefined && typeof currency !== 'string') {
+			throw new Error('lexware.findVouchers criteria.currency must be a string');
+		}
+		for (const [name, date] of [['dateFrom', dateFrom], ['dateTo', dateTo]]) {
+			if (date !== undefined && !(typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date))) {
+				throw new Error('lexware.findVouchers criteria.' + name + ' must be a yyyy-MM-dd string');
+			}
+		}
+		const hasWindow = dateFrom !== undefined && dateTo !== undefined;
+		if (voucherNumber === undefined && !hasWindow) {
+			throw new Error('lexware.findVouchers without criteria.voucherNumber needs criteria.dateFrom and dateTo to bound the voucherlist scan');
+		}
+		const contactPattern = contactName instanceof RegExp ? new RegExp(contactName.source, contactName.flags.replace(/[gyi]/g, '') + 'i') : undefined;
+		const wantedContact = typeof contactName === 'string' ? contactName.toLowerCase() : undefined;
+		const amountCents = amount !== undefined ? toCents(amount) : undefined;
+		const baseQuery = {
+			voucherType: criteria.voucherType !== undefined ? criteria.voucherType : 'purchaseinvoice,purchasecreditnote,salesinvoice,salescreditnote',
+			voucherStatus: criteria.voucherStatus !== undefined ? criteria.voucherStatus : 'any',
+		};
+		// Weights are powers of two, so a voucherNumber match outranks any mix of the others.
+		const rank = (rows: unknown[]) => rows
+			.filter((row) => !(currency !== undefined && isObjectLike(row) && typeof row.currency === 'string' && row.currency.toLowerCase() !== currency.toLowerCase()))
+			.map((row) => {
+				const voucher = isObjectLike(row) ? row : {};
+				const matched: string[] = [];
+				let score = 0;
+				if (voucherNumber !== undefined && normalizeVoucherNumber(voucher.voucherNumber) === wantedNumber) {
+					score += 8;
+					matched.push('voucherNumber');
+				}
+				// Unchecked vouchers can lack totalAmount; those rows skip amount matching.
+				if (amountCents !== undefined && voucher.totalAmount !== undefined && voucher.totalAmount !== null && Math.abs(toCents(voucher.totalAmount) - amountCents) <= 1) {
+					score += 4;
+					matched.push('amount');
+				}
+				const rowContact = typeof voucher.contactName === 'string' ? voucher.contactName : '';
+				if (contactPattern !== undefined ? contactPattern.test(rowContact) : wantedContact !== undefined && rowContact.toLowerCase().includes(wantedContact)) {
+					score += 2;
+					matched.push('contactName');
+				}
+				const date = typeof voucher.voucherDate === 'string' ? voucher.voucherDate.slice(0, 10) : '';
+				if (hasWindow && date >= dateFrom && date <= dateTo) {
+					score += 1;
+					matched.push('date');
+				}
+				return { row, score, matched };
+			})
+			// A date match alone is no candidate.
+			.filter((candidate) => candidate.score > 1)
+			.sort((a, b) => b.score - a.score);
+		const path = '/v1/voucherlist';
+		if (voucherNumber !== undefined) {
+			const exactRows = await paginate({ path, query: { ...baseQuery, voucherNumber: voucherNumber.trim() } }, { maxPages: 1 });
+			if (exactRows.length > 0) {
+				return rank(exactRows);
+			}
+			if (!hasWindow) {
+				throw new Error('lexware.findVouchers: no voucher has the exact number ' + JSON.stringify(voucherNumber) + '. Pass criteria.dateFrom and dateTo to also search differently formatted numbers in that voucherDate window.');
+			}
+		}
+		return rank(await paginate({ path, query: { ...baseQuery, voucherDateFrom: dateFrom, voucherDateTo: dateTo } }, { maxPages: options.maxPages }));
+	};
 	return Object.freeze({
 		request,
 		json,
@@ -401,6 +501,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		uploadVoucherFile,
 		attachFileToVoucher,
 		sleep,
+		findVouchers,
 	});
 }
 
@@ -422,6 +523,10 @@ export const lexwareSdkDeclaration = `declare const lexware: {
   uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped' }>;
   attachFileToVoucher(voucherId: string, input: FileInput): Promise<{ fileId: string; sent: UploadSent }>; // POST /v1/vouchers/{id}/files, 1 request
   sleep(ms: number): Promise<void>; // 0-10000 ms per call; the 30 s execute timeout bounds the total
+  // Duplicate check before uploads. Exact voucherNumber query (1 request); if empty, pages /v1/voucherlist in dateFrom..dateTo (required, else
+  // throws): 1 + pages requests. Ranks rows by voucherNumber ignoring case/spaces/dashes/dots/leading zeros (8), totalAmount ±0.01 (4),
+  // contactName (2), date (1). voucherType defaults to the bookkeeping types, voucherStatus to any. Never decides; check the candidates.
+  findVouchers(criteria: { voucherNumber?: string; contactName?: string | RegExp; amount?: number; currency?: string; dateFrom?: string; dateTo?: string; voucherType?: string; voucherStatus?: string }, options?: { maxPages?: number }): Promise<Array<{ row: unknown; score: number; matched: string[] }>>;
 };
 
 type LexwareRequest = {
