@@ -123,9 +123,13 @@ declare const lexware: {
 
 ### Tool results and metadata
 
-Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount` and `requests` for `execute`; `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent` unless the serialized JSON exceeds the 24,000-character truncation limit — then only the truncated text block is returned. No `outputSchema` is declared because `result` is arbitrary.
+Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount`, `requests` and possibly `readsSummary` for `execute`; `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent`. No `outputSchema` is declared because `result` is arbitrary.
 
-`requests` is an audit log of every HTTP attempt `execute` made, in the order the attempts finished — present on success and on failure:
+Results whose JSON exceeds 24,000 characters are shrunk structurally, so the text block stays valid JSON: arrays keep their leading items followed by a `"[truncated: N more items]"` element, the largest object values are shrunk first (down to a `"[truncated: N chars]"` marker), and long strings are clipped. A top-level `truncated: { originalChars, note }` field then signals that the result is incomplete. Summarize or filter inside `execute` to avoid it.
+
+`lexware.request` responses include only the headers useful for follow-up logic: `content-type`, `content-length`, `content-disposition`, `location`, `retry-after`, `x-request-id`, `x-correlation-id` and `x-ratelimit-*`. Pass `includeAllHeaders: true` to get every upstream header.
+
+`requests` is an audit log of the HTTP attempts `execute` made, in the order the attempts finished — present on success and on failure. Every write and every non-OK, errored or unsent attempt is always listed. Successful reads are listed too, unless there are more than 5 of them; then they are left out of `requests` and counted in `readsSummary` instead, e.g. `{ "count": 18, "byStatus": { "200": 18 }, "totalDurationMs": 6120 }`.
 
 ```json
 { "method": "POST", "path": "/v1/invoices", "status": 201, "ok": true, "write": true, "sent": true, "durationMs": 412 }

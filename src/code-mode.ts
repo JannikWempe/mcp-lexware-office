@@ -4,7 +4,7 @@ import { type CodeExecutor, QuickJsExecutor } from './executor.js';
 import type { LexwareApiClient, RequestLogEntry } from './lexware-client.js';
 import { lexwareSandbox } from './lexware-sandbox-sdk.js';
 import { lexwareSpec } from './lexware-spec.js';
-import { truncateText } from './truncate.js';
+import { truncateJson } from './truncate.js';
 
 // Keep a single Lexware request shorter than the execute timeout so that a slow request
 // fails with a clean error the sandbox can still handle. Request chains (incl. a GET 429
@@ -15,6 +15,8 @@ const EXECUTE_TIMEOUT_MS = 30_000;
 const SEARCH_TIMEOUT_MS = 1_000;
 const MEMORY_LIMIT_BYTES = 32 * 1024 * 1024;
 const MAX_STACK_SIZE_BYTES = 1024 * 1024;
+// Up to this many successful reads are listed in `requests`; more are collapsed into `readsSummary`.
+const MAX_LISTED_READS = 5;
 
 export interface CodeModeOptions {
 	client: LexwareApiClient;
@@ -86,11 +88,12 @@ export class CodeMode {
 			},
 		);
 
+		const requestLog = summarizeRequests(requests);
 		if (execution.error) {
-			return toolResult({ ok: false, error: execution.error, logs: execution.logs ?? [], requestCount, requests }, true);
+			return toolResult({ ok: false, error: execution.error, logs: execution.logs ?? [], requestCount, ...requestLog }, true);
 		}
 
-		return toolResult({ ok: true, result: execution.result, logs: execution.logs ?? [], requestCount, requests });
+		return toolResult({ ok: true, result: execution.result, logs: execution.logs ?? [], requestCount, ...requestLog });
 	}
 
 	// Inject the write mode so callers can branch before attempting a write.
@@ -99,21 +102,42 @@ export class CodeMode {
 	}
 }
 
-// The text block (truncated) stays for clients without structuredContent support.
-// structuredContent mirrors it but is never truncated, so it is only attached when the
-// full JSON fits within the truncation limit.
+export interface ReadsSummary {
+	count: number;
+	byStatus: Record<string, number>;
+	totalDurationMs: number;
+}
+
+// Writes, non-OK responses, and errored or unsent attempts are always listed in full, since
+// callers rely on `requests` to see which writes happened. Successful reads only add noise in
+// read-heavy fan-outs, so beyond MAX_LISTED_READS they are collapsed into `readsSummary`.
+export function summarizeRequests(requests: RequestLogEntry[]): { requests: RequestLogEntry[]; readsSummary?: ReadsSummary } {
+	const isSuccessfulRead = (entry: RequestLogEntry) => !entry.write && entry.ok === true;
+	const reads = requests.filter(isSuccessfulRead);
+	if (reads.length <= MAX_LISTED_READS) return { requests };
+	const byStatus: Record<string, number> = {};
+	for (const entry of reads) byStatus[String(entry.status)] = (byStatus[String(entry.status)] ?? 0) + 1;
+	return {
+		requests: requests.filter((entry) => !isSuccessfulRead(entry)),
+		readsSummary: { count: reads.length, byStatus, totalDurationMs: reads.reduce((sum, entry) => sum + entry.durationMs, 0) },
+	};
+}
+
+// The text block and structuredContent carry the same object. An oversized result is shrunk
+// structurally (see truncateJson), so both stay valid JSON and carry a `truncated` hint.
 function toolResult(payload: Record<string, unknown>, isError = false): CallToolResult {
-	let json: string;
-	let serializable = true;
+	let structured: Record<string, unknown> | undefined;
+	let text: string;
 	try {
-		json = JSON.stringify(payload, null, 2);
+		// Round-trip first so truncation measures exactly what gets serialized (toJSON, dropped undefined).
+		structured = truncateJson(JSON.parse(JSON.stringify(payload))) as Record<string, unknown>;
+		text = JSON.stringify(structured, null, 2);
 	} catch (error) {
-		serializable = false;
-		json = JSON.stringify({ error: 'Result is not JSON-serializable', detail: String(error) }, null, 2);
+		structured = undefined;
+		text = JSON.stringify({ error: 'Result is not JSON-serializable', detail: String(error) }, null, 2);
 	}
-	const text = truncateText(json);
 	const result: CallToolResult = { content: [{ type: 'text', text }] };
-	if (serializable && text === json) result.structuredContent = payload;
+	if (structured !== undefined) result.structuredContent = structured;
 	if (isError) result.isError = true;
 	return result;
 }

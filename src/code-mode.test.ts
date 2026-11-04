@@ -205,26 +205,76 @@ test('invalid input and blocked writes do not consume the request budget', async
 	assert.deepEqual(fetched, ['GET /v1/countries']);
 });
 
-test('oversized results are truncated and structuredContent is omitted', async () => {
+test('oversized results are shrunk to valid JSON and still returned as structuredContent', async () => {
 	const { codeMode } = codeModeWith();
 
-	const result = await codeMode.execute(`async () => 'x'.repeat(30000)`, { maxRequests: 1 });
+	const result = await codeMode.execute(`async () => Array.from({ length: 2000 }, (_, id) => ({ id, name: 'item ' + id }))`, { maxRequests: 1 });
 
 	assert.equal(result.isError, undefined);
-	assert.equal(result.structuredContent, undefined);
 	const text = textOf(result);
-	assert.ok(text.length < 30_000);
-	assert.match(text, /\[truncated \d+ characters\]/);
-	assert.match(text, /Recovery: use a more specific search query/);
+	assert.ok(text.length <= 24_000);
+	const payload = payloadOf(result);
+	assert.equal(payload.ok, true);
+	assert.deepEqual(payload.result[0], { id: 0, name: 'item 0' });
+	assert.match(payload.result.at(-1), /^\[truncated: \d+ more items\]$/);
+	assert.equal(payload.result.length - 1 + Number(payload.result.at(-1).match(/\d+/)[0]), 2000);
+	assert.ok(payload.truncated.originalChars > 24_000);
+	assert.match(payload.truncated.note, /Recovery: use a more specific search query/);
+	assert.deepEqual(payload.requests, []);
 });
 
-test('oversized search results are truncated too', async () => {
+test('oversized search results are shrunk to valid JSON too', async () => {
 	const { codeMode } = codeModeWith();
 
 	const result = await codeMode.search('async () => spec');
 
-	assert.equal(result.structuredContent, undefined);
-	assert.match(textOf(result), /\[truncated \d+ characters\]/);
+	assert.ok(textOf(result).length <= 24_000);
+	const payload = payloadOf(result);
+	assert.equal(payload.ok, true);
+	assert.ok(payload.truncated.originalChars > 24_000);
+	assert.equal(typeof payload.result, 'object');
+});
+
+test('results within the limit are returned unchanged, without a truncated hint', async () => {
+	const { codeMode } = codeModeWith();
+
+	const result = await codeMode.execute(`async () => 'x'.repeat(1000)`, { maxRequests: 1 });
+
+	const payload = { ok: true, result: 'x'.repeat(1000), logs: [], requestCount: 0, requests: [] };
+	assert.equal(textOf(result), JSON.stringify(payload, null, 2));
+	assert.deepEqual(result.structuredContent, payload);
+});
+
+test('more than 5 successful reads are summarised; writes and failures stay listed', async () => {
+	const { codeMode } = codeModeWith((path) => path === '/v1/contacts/missing' ? jsonResponse(404, {}) : jsonResponse(200, {}), { writesEnabled: true });
+
+	const result = await codeMode.execute(`async () => {
+		for (let i = 0; i < 6; i++) await lexware.request({ path: '/v1/countries' });
+		await lexware.request({ path: '/v1/contacts/missing' });
+		await lexware.request({ method: 'POST', path: '/v1/contacts', body: {} });
+		return 'done';
+	}`, { maxRequests: 10 });
+
+	const payload = payloadOf(result);
+	assert.equal(payload.requestCount, 8);
+	assert.deepEqual(payload.requests.map(({ method, path, status }: Record<string, unknown>) => ({ method, path, status })), [
+		{ method: 'GET', path: '/v1/contacts/missing', status: 404 },
+		{ method: 'POST', path: '/v1/contacts', status: 200 },
+	]);
+	assert.deepEqual({ ...payload.readsSummary, totalDurationMs: 0 }, { count: 6, byStatus: { 200: 6 }, totalDurationMs: 0 });
+	assert.equal(typeof payload.readsSummary.totalDurationMs, 'number');
+});
+
+test('up to 5 successful reads are listed without a readsSummary', async () => {
+	const { codeMode } = codeModeWith();
+
+	const result = await codeMode.execute(`async () => {
+		for (let i = 0; i < 5; i++) await lexware.request({ path: '/v1/countries' });
+	}`, { maxRequests: 10 });
+
+	const payload = payloadOf(result);
+	assert.equal(payload.requests.length, 5);
+	assert.equal(payload.readsSummary, undefined);
 });
 
 test('execute sandbox sees neither the API key nor Node globals', async () => {

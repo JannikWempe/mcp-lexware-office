@@ -32,6 +32,8 @@ export interface LexwareRequestInput {
 	contentType?: string;
 	rawBody?: boolean;
 	accept?: string;
+	// Return every upstream response header instead of the RESPONSE_HEADER_ALLOWLIST subset.
+	includeAllHeaders?: boolean;
 }
 
 export interface LexwareClientOptions {
@@ -124,6 +126,7 @@ interface NormalizedRequest {
 	contentType?: string;
 	rawBody: boolean;
 	accept: string;
+	includeAllHeaders: boolean;
 	matched?: MatchedOperation;
 }
 
@@ -137,6 +140,9 @@ const DEFAULT_MAX_RETRY_AFTER_MS = 5_000;
 const RETRY_BACKOFF_MS = 1_000;
 const RETRY_JITTER_MS = 1_000;
 const WRITE_METHODS = new Set<LexwareExecuteMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
+// Response headers worth the model's context; the rest (AWS gateway ids, security policies)
+// cost ~1.5 KB per returned response. x-ratelimit-* headers are kept too.
+const RESPONSE_HEADER_ALLOWLIST = new Set(['content-type', 'content-length', 'content-disposition', 'location', 'retry-after', 'x-request-id', 'x-correlation-id']);
 
 /**
  * Host-side HTTP client behind the sandbox's `lexware.request`. It alone holds the API key; guest
@@ -328,14 +334,15 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): 
 
 function normalizeRequest(input: unknown): NormalizedRequest {
 	if (!input || typeof input !== 'object' || Array.isArray(input)) {
-		throw new Error('lexware.request expects an object: { method?, path, query?, body?, contentType?, rawBody?, accept? }');
+		throw new Error('lexware.request expects an object: { method?, path, query?, body?, contentType?, rawBody?, accept?, includeAllHeaders? }');
 	}
 
 	const request = input as LexwareRequestInput;
 	const method = normalizeMethod(request.method ?? 'GET');
 	const rawPath = normalizePath(request.path);
 	const contentType = request.contentType === undefined ? undefined : normalizeHeaderValue(request.contentType, 'contentType');
-	const rawBody = normalizeRawBody(request.rawBody ?? false);
+	const rawBody = normalizeBoolean(request.rawBody ?? false, 'rawBody');
+	const includeAllHeaders = normalizeBoolean(request.includeAllHeaders ?? false, 'includeAllHeaders');
 	const url = new URL(rawPath, DEFAULT_BASE_URL);
 	if (!url.pathname.startsWith('/v1/')) {
 		throw new Error('path must resolve to /v1/ and must not escape that prefix');
@@ -397,6 +404,7 @@ function normalizeRequest(input: unknown): NormalizedRequest {
 		contentType,
 		rawBody,
 		accept,
+		includeAllHeaders,
 		matched,
 	};
 }
@@ -418,9 +426,9 @@ function normalizePath(path: unknown): string {
 	return path;
 }
 
-function normalizeRawBody(rawBody: unknown): boolean {
-	if (typeof rawBody !== 'boolean') throw new Error('rawBody must be a boolean when provided');
-	return rawBody;
+function normalizeBoolean(value: unknown, field: string): boolean {
+	if (typeof value !== 'boolean') throw new Error(`${field} must be a boolean when provided`);
+	return value;
 }
 
 function normalizeHeaderValue(value: unknown, field: string): string {
@@ -685,7 +693,7 @@ function isJsonContentType(contentType: string): boolean {
 
 async function parseResponse(response: Response, request: NormalizedRequest, maxResponseChars: number): Promise<LexwareResponse> {
 	const contentType = response.headers.get('content-type')?.split(';')[0].trim() ?? '';
-	const headers = headersToObject(response.headers);
+	const headers = headersToObject(response.headers, request.includeAllHeaders);
 	const base: Omit<LexwareResponse, 'data' | 'text' | 'truncated'> = {
 		ok: response.ok,
 		status: response.status,
@@ -799,10 +807,10 @@ function sanitizeFetchErrorMessage(error: unknown, apiKey: string): string {
 		.replace(/https?:\/\/[^\s)]+/gi, '[url omitted]');
 }
 
-function headersToObject(headers: Headers): Record<string, string> {
+function headersToObject(headers: Headers, includeAll: boolean): Record<string, string> {
 	const object: Record<string, string> = {};
 	headers.forEach((value, key) => {
-		object[key] = value;
+		if (includeAll || RESPONSE_HEADER_ALLOWLIST.has(key) || key.startsWith('x-ratelimit-')) object[key] = value;
 	});
 	return object;
 }

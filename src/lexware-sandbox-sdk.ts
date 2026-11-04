@@ -222,6 +222,7 @@ type LexwareRequest = {
   contentType?: string;
   rawBody?: boolean;
   accept?: string;
+  includeAllHeaders?: boolean; // return every response header instead of the default subset
 };
 // At most one of body, bodyBase64, or multipart per request.
 
@@ -243,7 +244,7 @@ type LexwareResponse<T = unknown> = {
   text?: string;
   truncated?: boolean;
   contentType: string;
-  headers: Record<string, string>;
+  headers: Record<string, string>; // content-type, content-length, content-disposition, location, retry-after, x-request-id, x-correlation-id, x-ratelimit-*; all with includeAllHeaders
   errorCategory?: string;
   retryAfterSeconds?: number;
   operation?: { operationId: string; method: string; pathTemplate: string; summary: string };
