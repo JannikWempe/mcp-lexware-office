@@ -60,7 +60,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<string> {
 export function createLexwareSdk(requestJson: (payload: string) => Promise<string>, sleepHost?: (payload: string) => Promise<string>) {
 	const request = async (input?: unknown): Promise<LexwareResponse> => JSON.parse(await requestJson(JSON.stringify(input ?? {})));
 	const sleep = async (ms: number): Promise<void> => {
-		if (!sleepHost) {
+		if (sleepHost === undefined) {
 			throw new Error('lexware.sleep is not available in this sandbox');
 		}
 		await sleepHost(String(ms));
@@ -341,13 +341,14 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		extraction: 'done' | 'pending' | 'skipped';
 	}> => {
 		const part = filePart(input, 'lexware.uploadVoucherFile');
-		const wait = input.waitForExtraction === undefined ? true : input.waitForExtraction;
-		if (typeof wait !== 'boolean' && !(isObjectLike(wait) && !Array.isArray(wait))) {
-			throw new Error('lexware.uploadVoucherFile waitForExtraction must be a boolean or { timeoutMs }');
+		const waitForExtraction = input.waitForExtraction !== undefined ? input.waitForExtraction : true;
+		if (typeof waitForExtraction !== 'boolean' && !(isObjectLike(waitForExtraction) && !Array.isArray(waitForExtraction))) {
+			throw new Error('lexware.uploadVoucherFile input.waitForExtraction must be a boolean or { timeoutMs }');
 		}
-		const timeoutMs = typeof wait === 'object' && wait.timeoutMs !== undefined ? Number(wait.timeoutMs) : 15_000;
-		if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
-			throw new Error('lexware.uploadVoucherFile waitForExtraction.timeoutMs must be a non-negative number');
+		const timeoutMs = typeof waitForExtraction === 'object' && waitForExtraction.timeoutMs !== undefined ? Number(waitForExtraction.timeoutMs) : 15_000;
+		// Capped so that one waiting upload fits into the 30 s execute timeout together with its requests.
+		if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 20_000) {
+			throw new Error('lexware.uploadVoucherFile input.waitForExtraction.timeoutMs must be 0 to 20000 ms');
 		}
 		const response = await request({ method: 'POST', path: '/v1/files', multipart: [part, { name: 'type', value: 'voucher' }] });
 		const data = assertOkJsonResponse(response, 'lexware.uploadVoucherFile');
@@ -355,7 +356,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 			throw new Error('lexware.uploadVoucherFile expected POST /v1/files to return { id, voucherId }, got status ' + response.status + ': ' + JSON.stringify(data));
 		}
 		const uploaded = { fileId: data.id, voucherId: data.voucherId, sent: response.sent };
-		if (wait === false) {
+		if (waitForExtraction === false) {
 			return { ...uploaded, extraction: 'skipped' };
 		}
 		let voucher: unknown;
@@ -363,12 +364,12 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		for (const delayMs of [2_000, 4_000, 8_000, Infinity]) {
 			const stepMs = Math.min(delayMs, timeoutMs - waited);
 			if (stepMs <= 0) break;
-			await sleep(stepMs);
-			waited += stepMs;
 			try {
+				await sleep(stepMs);
+				waited += stepMs;
 				voucher = assertOkJsonResponse(await request({ path: '/v1/vouchers/' + encodeURIComponent(data.voucherId) }), 'lexware.uploadVoucherFile');
 			} catch (error) {
-				throw new Error('lexware.uploadVoucherFile: the upload succeeded (fileId ' + data.id + ', voucherId ' + data.voucherId + '), but polling the voucher failed. Do not upload again; GET /v1/vouchers/' + data.voucherId + ' later. Cause: ' + (error instanceof Error ? error.message : String(error)));
+				throw new Error('lexware.uploadVoucherFile: the upload succeeded (fileId ' + data.id + ', voucherId ' + data.voucherId + '), but waiting for text recognition failed. Do not upload again; GET /v1/vouchers/' + data.voucherId + ' later. Cause: ' + (error instanceof Error ? error.message : String(error)));
 			}
 			if (isObjectLike(voucher) && voucher.voucherStatus !== 'blank') {
 				return { ...uploaded, voucher, extraction: 'done' };
@@ -393,7 +394,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 	const normalizeVoucherNumber = (value: unknown): string => typeof value === 'string'
 		? value.toLowerCase().replace(/[\s.\-–—]/g, '').replace(/^([a-z]*)0+(?=\d)/, '$1')
 		: '';
-	const findVouchersCriteria = ['voucherNumber', 'contactName', 'amount', 'currency', 'dateFrom', 'dateTo', 'voucherType', 'voucherStatus'];
+	const allowedCriteria = ['voucherNumber', 'contactName', 'amount', 'currency', 'dateFrom', 'dateTo', 'voucherType', 'voucherStatus'];
 	// Duplicate check before an upload: an exact voucherNumber query (1 request); if that finds nothing, pages /v1/voucherlist
 	// within dateFrom..dateTo (1 + pages requests) and ranks the rows locally. Returns candidates; never decides a duplicate.
 	const findVouchers = async (
@@ -403,14 +404,15 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		if (!isObjectLike(criteria) || Array.isArray(criteria)) {
 			throw new Error('lexware.findVouchers criteria must be an object');
 		}
-		const unknownKeys = Object.keys(criteria).filter((key) => !findVouchersCriteria.includes(key));
+		const unknownKeys = Object.keys(criteria).filter((key) => !allowedCriteria.includes(key));
 		if (unknownKeys.length > 0) {
-			throw new Error('lexware.findVouchers: unknown criteria ' + unknownKeys.join(', ') + '. Allowed: ' + findVouchersCriteria.join(', '));
+			throw new Error('lexware.findVouchers criteria has unknown keys ' + unknownKeys.join(', ') + '. Allowed: ' + allowedCriteria.join(', '));
 		}
 		if (options == null || typeof options !== 'object' || Array.isArray(options)) {
 			throw new Error('lexware.findVouchers options must be an object when provided');
 		}
-		if (options.maxPages !== undefined && !(Number.isInteger(options.maxPages) && options.maxPages >= 1)) {
+		const maxPages = options.maxPages !== undefined ? options.maxPages : 4;
+		if (!(Number.isInteger(maxPages) && maxPages >= 1)) {
 			throw new Error('lexware.findVouchers options.maxPages must be a positive integer');
 		}
 		const { voucherNumber, contactName, amount, currency, dateFrom, dateTo } = criteria;
@@ -436,6 +438,9 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 			}
 		}
 		const hasWindow = dateFrom !== undefined && dateTo !== undefined;
+		if (hasWindow && dateFrom > dateTo) {
+			throw new Error('lexware.findVouchers criteria.dateFrom must not be after dateTo');
+		}
 		if (voucherNumber === undefined && !hasWindow) {
 			throw new Error('lexware.findVouchers without criteria.voucherNumber needs criteria.dateFrom and dateTo to bound the voucherlist scan');
 		}
@@ -457,8 +462,10 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 					score += 8;
 					matched.push('voucherNumber');
 				}
-				// Unchecked vouchers can lack totalAmount; those rows skip amount matching.
-				if (amountCents !== undefined && voucher.totalAmount !== undefined && voucher.totalAmount !== null && Math.abs(toCents(voucher.totalAmount) - amountCents) <= 1) {
+				// Unchecked vouchers can lack totalAmount; rows without a numeric one skip amount matching.
+				const totalAmount = voucher.totalAmount;
+				const hasAmount = typeof totalAmount === 'number' ? Number.isFinite(totalAmount) : typeof totalAmount === 'string' && decimalStringPattern.test(totalAmount.trim());
+				if (amountCents !== undefined && hasAmount && Math.abs(toCents(totalAmount) - amountCents) <= 1) {
 					score += 4;
 					matched.push('amount');
 				}
@@ -479,15 +486,26 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 			.sort((a, b) => b.score - a.score);
 		const path = '/v1/voucherlist';
 		if (voucherNumber !== undefined) {
-			const exactRows = await paginate({ path, query: { ...baseQuery, voucherNumber: voucherNumber.trim() } }, { maxPages: 1 });
-			if (exactRows.length > 0) {
-				return rank(exactRows);
+			const exactCandidates = rank(await paginate({ path, query: { ...baseQuery, voucherNumber: voucherNumber.trim() } }, { maxPages: 1 }));
+			if (exactCandidates.length > 0) {
+				return exactCandidates;
 			}
 			if (!hasWindow) {
 				throw new Error('lexware.findVouchers: no voucher has the exact number ' + JSON.stringify(voucherNumber) + '. Pass criteria.dateFrom and dateTo to also search differently formatted numbers in that voucherDate window.');
 			}
 		}
-		return rank(await paginate({ path, query: { ...baseQuery, voucherDateFrom: dateFrom, voucherDateTo: dateTo } }, { maxPages: options.maxPages }));
+		// Scanning only part of the window could miss a duplicate, so a window with more than maxPages pages throws.
+		const windowQuery = { ...baseQuery, voucherDateFrom: dateFrom, voucherDateTo: dateTo };
+		const firstPage = assertOkJsonResponse(await request({ path, query: { ...windowQuery, page: 0, size: 250 } }), 'lexware.findVouchers') as { content?: unknown; last?: unknown; totalPages?: unknown } | null;
+		if (!firstPage || typeof firstPage !== 'object' || !Array.isArray(firstPage.content)) {
+			throw new Error('lexware.findVouchers expected response.data.content to be an array');
+		}
+		const totalPages = typeof firstPage.totalPages === 'number' ? firstPage.totalPages : firstPage.last === false ? maxPages + 1 : 1;
+		if (totalPages > maxPages) {
+			throw new Error('lexware.findVouchers: the voucherDate window ' + dateFrom + '..' + dateTo + ' has ' + (typeof firstPage.totalPages === 'number' ? totalPages : 'more than ' + maxPages) + ' voucherlist pages, more than options.maxPages=' + maxPages + '. Narrow the window, or raise options.maxPages and the execute maxRequests (1 + pages requests).');
+		}
+		const otherRows = totalPages > 1 ? await paginate({ path, query: { ...windowQuery, page: 1 } }, { maxPages: totalPages - 1 }) : [];
+		return rank([...firstPage.content, ...otherRows]);
 	};
 	return Object.freeze({
 		request,
@@ -518,14 +536,15 @@ export const lexwareSdkDeclaration = `declare const lexware: {
   // GET, shallow-merge patch (read-only fields dropped, files and version kept), PUT, GET to verify: 3 requests. Throws
   // without writing on an expectedVersion mismatch or if files would lose an id (unless allowFileRemoval). Details: spec PUT /v1/vouchers/{id} notes.
   updateVoucher(id: string, patch: Record<string, unknown>, options?: { expectedVersion?: number; allowFileRemoval?: boolean }): Promise<{ before: unknown; after: unknown; changed: string[] }>;
-  // POST /v1/files (type=voucher), then polls the voucher after 2, 4, 8 s until it is no longer blank (timeoutMs default 15000):
-  // up to 5 requests. Never re-uploads; extraction 'pending' on timeout means GET /v1/vouchers/{voucherId} later.
+  // POST /v1/files (type=voucher), then polls the voucher after 2, 4, 8 s until it is no longer blank (timeoutMs default 15000, max 20000):
+  // up to 5 requests. One waiting upload per execute call (30 s timeout); for batches pass waitForExtraction: false. Never re-uploads;
+  // extraction 'pending' on timeout means GET /v1/vouchers/{voucherId} later.
   uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped' }>;
   attachFileToVoucher(voucherId: string, input: FileInput): Promise<{ fileId: string; sent: UploadSent }>; // POST /v1/vouchers/{id}/files, 1 request
-  sleep(ms: number): Promise<void>; // 0-10000 ms per call; the 30 s execute timeout bounds the total
-  // Duplicate check before uploads. Exact voucherNumber query (1 request); if empty, pages /v1/voucherlist in dateFrom..dateTo (required, else
-  // throws): 1 + pages requests. Ranks rows by voucherNumber ignoring case/spaces/dashes/dots/leading zeros (8), totalAmount ±0.01 (4),
-  // contactName (2), date (1). voucherType defaults to the bookkeeping types, voucherStatus to any. Never decides; check the candidates.
+  sleep(ms: number): Promise<void>; // 0-${MAX_SLEEP_MS} ms per call; the 30 s execute timeout bounds the total
+  // Duplicate check before uploads. Exact voucherNumber query (1 request); if no candidate, pages /v1/voucherlist in dateFrom..dateTo (required,
+  // else throws): 1 + pages requests; throws if the window has more than maxPages (default 4) pages. Ranks rows by voucherNumber ignoring
+  // case/spaces/dashes/dots/leading zeros (8), totalAmount ±0.01 (4), contactName (2), date (1). Never decides; check the candidates.
   findVouchers(criteria: { voucherNumber?: string; contactName?: string | RegExp; amount?: number; currency?: string; dateFrom?: string; dateTo?: string; voucherType?: string; voucherStatus?: string }, options?: { maxPages?: number }): Promise<Array<{ row: unknown; score: number; matched: string[] }>>;
 };
 
@@ -561,7 +580,7 @@ type FileInput = {
 };
 // Exactly one of contentPath or contentBase64.
 
-type UploadSent = { bytes: number; parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }> };
+type UploadSent = { bytes: number; parts: Array<{ name: string; filename?: string; bytes: number; sha256: string }> };
 
 type LexwareResponse<T = unknown> = {
   ok: boolean;

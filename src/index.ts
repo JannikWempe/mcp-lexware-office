@@ -119,7 +119,7 @@ async () => {
   return { status: response.status, request: response.request, data: response.data };
 }
 
-File upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath (requires LEXWARE_OFFICE_UPLOAD_DIRS, see MultipartPart) and the host reads it from disk. uploadVoucherFile waits inside the call for Lexware's text recognition (set maxRequests >= 5 per upload):
+File upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath (requires LEXWARE_OFFICE_UPLOAD_DIRS, see MultipartPart) and the host reads it from disk. uploadVoucherFile waits inside the call for Lexware's text recognition (up to 5 requests and about 15 s, so one waiting upload per call):
 
 async () => {
   const { fileId, voucherId, extraction, voucher, sent } = await lexware.uploadVoucherFile({ contentPath: '/absolute/path/to/receipt.pdf' });

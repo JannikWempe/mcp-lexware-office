@@ -342,6 +342,10 @@ test('lexware.uploadVoucherFile returns pending on timeout without uploading aga
 	assert.equal(result.extraction, 'pending');
 	assert.deepEqual(result.voucher, { id: 'v-9', voucherStatus: 'blank' });
 
+	const longest = uploadHost(['blank']);
+	await longest.sdk.uploadVoucherFile({ contentPath: '/data/a.xml', waitForExtraction: { timeoutMs: 20000 } });
+	assert.deepEqual(longest.sleeps, [2000, 4000, 8000, 6000], 'every step stays within the lexware.sleep cap');
+
 	const short = uploadHost(['blank']);
 	await short.sdk.uploadVoucherFile({ contentPath: '/data/a.xml', waitForExtraction: { timeoutMs: 3000 } });
 	assert.deepEqual(short.sleeps, [2000, 1000]);
@@ -369,7 +373,15 @@ test('lexware.uploadVoucherFile throws on a failed upload or a response without 
 test('lexware.uploadVoucherFile says the upload succeeded when polling fails', async () => {
 	const { sdk } = sdkWith((input) => (input.method === 'POST' ? uploadAccepted : rateLimited));
 
-	await assert.rejects(() => sdk.uploadVoucherFile({ contentPath: '/data/a.pdf' }), /the upload succeeded \(fileId file-1, voucherId v-9\), but polling the voucher failed\. Do not upload again.*429/);
+	await assert.rejects(() => sdk.uploadVoucherFile({ contentPath: '/data/a.pdf' }), /the upload succeeded \(fileId file-1, voucherId v-9\), but waiting for text recognition failed\. Do not upload again.*429/);
+});
+
+test('lexware.uploadVoucherFile says the upload succeeded when the wait itself fails', async () => {
+	const sdk = createLexwareSdk(async () => JSON.stringify(uploadAccepted), async () => {
+		throw new Error('lexware.sleep was aborted: the execution ended');
+	});
+
+	await assert.rejects(() => sdk.uploadVoucherFile({ contentPath: '/data/a.pdf' }), /the upload succeeded \(fileId file-1, voucherId v-9\).*Do not upload again.*lexware\.sleep was aborted/);
 });
 
 test('lexware upload helpers validate the file input before sending', async () => {
@@ -379,8 +391,9 @@ test('lexware upload helpers validate the file input before sending', async () =
 		[{ contentPath: '/a.pdf', contentBase64: 'AA==' }, /exactly one of contentPath or contentBase64/],
 		[{ contentBase64: 'AA==' }, /needs a filename with contentBase64/],
 		[{ contentPath: '/data/notes.txt' }, /cannot infer contentType from "\/data\/notes\.txt"/],
-		[{ contentPath: '/data/a.pdf', waitForExtraction: 'yes' }, /waitForExtraction must be a boolean or \{ timeoutMs \}/],
-		[{ contentPath: '/data/a.pdf', waitForExtraction: { timeoutMs: -1 } }, /timeoutMs must be a non-negative number/],
+		[{ contentPath: '/data/a.pdf', waitForExtraction: 'yes' }, /input\.waitForExtraction must be a boolean or \{ timeoutMs \}/],
+		[{ contentPath: '/data/a.pdf', waitForExtraction: { timeoutMs: -1 } }, /timeoutMs must be 0 to 20000 ms/],
+		[{ contentPath: '/data/a.pdf', waitForExtraction: { timeoutMs: 20001 } }, /timeoutMs must be 0 to 20000 ms/],
 	] as const) {
 		await assert.rejects(() => sdk.uploadVoucherFile(input as never), message);
 	}
@@ -502,24 +515,56 @@ test('lexware.findVouchers scans voucherlist only within a date window', async (
 	assert.equal(inputs.length, 1, 'only the exact query ran');
 	await assert.rejects(() => sdk.findVouchers({ amount: 119, dateFrom: '2026-03-01' }), /needs criteria\.dateFrom and dateTo/);
 	await assert.rejects(() => sdk.findVouchers({ dateFrom: '2026-03-01', dateTo: '2026-03-31' }), /at least one of criteria\.voucherNumber, contactName or amount/);
-	await assert.rejects(() => sdk.findVouchers({ voucherNumber: 'X-1', voucherDateFrom: '2026-03-01' } as never), /unknown criteria voucherDateFrom/);
+	await assert.rejects(() => sdk.findVouchers({ voucherNumber: 'X-1', voucherDateFrom: '2026-03-01' } as never), /criteria has unknown keys voucherDateFrom/);
 	await assert.rejects(() => sdk.findVouchers({ amount: 1, dateFrom: '01.03.2026', dateTo: '2026-03-31' }), /dateFrom must be a yyyy-MM-dd string/);
+	await assert.rejects(() => sdk.findVouchers({ amount: 1, dateFrom: '2026-04-01', dateTo: '2026-03-31' }), /dateFrom must not be after dateTo/);
 	assert.equal(inputs.length, 1, 'invalid criteria send no request');
 });
 
-test('lexware.findVouchers respects maxPages and drops other currencies', async () => {
-	const { sdk, inputs } = sdkWith((input) => okResponse({ content: [{ id: 'p' + input.query.page, contactName: 'Muster', currency: input.query.page === 0 ? 'USD' : 'EUR' }], last: false }));
+test('lexware.findVouchers scans every window page and drops other currencies', async () => {
+	const { sdk, inputs } = sdkWith((input) => okResponse({ content: [{ id: 'p' + input.query.page, contactName: 'Muster', currency: input.query.page === 0 ? 'USD' : 'EUR' }], totalPages: 2, last: input.query.page === 1 }));
 
 	const candidates = await sdk.findVouchers({ contactName: 'muster', currency: 'eur', dateFrom: '2026-01-01', dateTo: '2026-12-31' }, { maxPages: 2 });
 
-	assert.equal(inputs.length, 2);
+	assert.deepEqual(inputs.map((input) => input.query.page), [0, 1]);
 	assert.deepEqual(candidates.map(({ row }) => (row as { id: string }).id), ['p1']);
 });
 
+test('lexware.findVouchers throws instead of scanning a window with more than maxPages pages', async () => {
+	const { sdk, inputs } = sdkWith(() => okResponse({ content: [{ id: 'a', contactName: 'Muster' }], totalPages: 5, last: false }));
+
+	await assert.rejects(() => sdk.findVouchers({ contactName: 'muster', dateFrom: '2026-01-01', dateTo: '2026-12-31' }), /window 2026-01-01\.\.2026-12-31 has 5 voucherlist pages, more than options\.maxPages=4\. Narrow the window/);
+	assert.equal(inputs.length, 1, 'stops after the first page');
+});
+
+test('lexware.findVouchers falls back to the window when exact hits are in another currency, and skips non-numeric totalAmount', async () => {
+	const { sdk, inputs } = sdkWith((input) => okResponse({
+		content: input.query.voucherNumber !== undefined
+			? [{ id: 'usd', voucherNumber: 'RE-1', currency: 'USD' }]
+			: [{ id: 'eur', voucherNumber: 'RE 1', voucherDate: '2026-01-10', currency: 'EUR', totalAmount: 'n/a' }],
+		totalPages: 1,
+		last: true,
+	}));
+
+	const candidates = await sdk.findVouchers({ voucherNumber: 'RE-1', amount: 5, currency: 'EUR', dateFrom: '2026-01-01', dateTo: '2026-01-31' });
+
+	assert.equal(inputs.length, 2);
+	assert.deepEqual(candidates.map(({ row, matched }) => [(row as { id: string }).id, matched]), [['eur', ['voucherNumber', 'date']]]);
+});
+
 test('sandbox lexware.findVouchers ranks candidates inside QuickJS', async () => {
-	const execution = await runInSandbox(
-		`async () => (await lexware.findVouchers({ voucherNumber: '123 456 7890', amount: 119, contactName: /muster/, dateFrom: '2026-03-01', dateTo: '2026-03-31' })).map((candidate) => candidate.row.id + ':' + candidate.score)`,
-		() => okResponse({ content: voucherRows, last: true }),
+	const client = {
+		request: async (input: unknown) => {
+			const query = (input as { query: Record<string, unknown> }).query;
+			return okResponse({ content: query.voucherNumber !== undefined ? [] : voucherRows, totalPages: 1, last: true });
+		},
+	};
+
+	// An en dash in the number checks the normalizer's dash class survives toString() into QuickJS; the exact query misses, so the window scan runs.
+	const execution = await new QuickJsExecutor().execute(
+		`async () => (await lexware.findVouchers({ voucherNumber: '123\u2013456 7890', amount: 119, contactName: /muster/, dateFrom: '2026-03-01', dateTo: '2026-03-31' })).map((candidate) => candidate.row.id + ':' + candidate.score)`,
+		{},
+		lexwareSandbox(client),
 	);
 
 	assert.equal(execution.error, undefined);

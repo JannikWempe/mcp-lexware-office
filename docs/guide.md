@@ -146,6 +146,9 @@ declare const lexware: {
   sleep(ms: number): Promise<void>;
   findVouchers(criteria: { voucherNumber?: string; contactName?: string | RegExp; amount?: number; currency?: string; dateFrom?: string; dateTo?: string; voucherType?: string; voucherStatus?: string }, options?: { maxPages?: number }): Promise<Array<{ row: unknown; score: number; matched: string[] }>>;
 };
+
+type FileInput = { contentPath?: string; contentBase64?: string; filename?: string; contentType?: string }; // one of contentPath or contentBase64
+type UploadSent = { bytes: number; parts: Array<{ name: string; filename?: string; bytes: number; sha256: string }> };
 ```
 
 `lexware.sleep(ms)` waits inside the sandbox, e.g. between polls. One call waits at most 10,000 ms; the 30 s `execute` timeout bounds the total, and cancelling the call ends the wait. `uploadVoucherFile` and `attachFileToVoucher` are described in [Upload helpers](#upload-helpers-uploadvoucherfile-and-attachfiletovoucher).
@@ -167,11 +170,11 @@ async () => {
 
 `lexware.findVouchers` checks whether a document is already in Lexware before you upload it. The `voucherNumber` filter of `GET /v1/voucherlist` matches exactly, so differently formatted numbers slip through; the helper also finds those:
 
-- It first queries the exact `voucherNumber` (1 request). If that finds nothing, it pages `/v1/voucherlist` within `dateFrom`..`dateTo` (`voucherDateFrom`/`voucherDateTo`, `yyyy-MM-dd`) and scores the rows locally: 1 + pages requests against `maxRequests`, at most 1 + `maxPages`.
+- It first queries the exact `voucherNumber` (1 request). If that finds no candidate, it pages `/v1/voucherlist` within `dateFrom`..`dateTo` (`voucherDateFrom`/`voucherDateTo`, `yyyy-MM-dd`) and scores the rows locally: 1 + pages requests against `maxRequests`. A window with more than `maxPages` pages (default 4, i.e. 1,000 vouchers) throws after its first page instead of checking only part of it: narrow the window, or raise `maxPages` and `maxRequests`.
 - The window bounds that scan: without `dateFrom` and `dateTo`, an exact-number miss throws instead of scanning, and criteria without `voucherNumber` throw before any request.
 - `voucherNumber` is compared ignoring case, spaces, dashes, dots and the leading zeros of the first digit group (`123 456 7890` = `1234567890`, `RE-0042` = `RE-42`). `contactName` is a case-insensitive substring or `RegExp`, `amount` matches `totalAmount` within ±0.01, and rows in another `currency` are dropped.
 - Voucherlist rows of `unchecked` vouchers can lack `totalAmount`; amount matching skips those rows instead of failing.
-- `voucherType` defaults to the bookkeeping types `purchaseinvoice,purchasecreditnote,salesinvoice,salescreditnote` (pass `'any'` to include sales documents), `voucherStatus` to `any`.
+- `voucherType` defaults to the bookkeeping types `purchaseinvoice,purchasecreditnote,salesinvoice,salescreditnote` (pass `'any'` to include sales documents such as `invoice` and `creditnote`), `voucherStatus` to `any`.
 - It returns candidates sorted by `score` with the criteria that `matched`: `voucherNumber` 8, `amount` 4, `contactName` 2, `date` (inside the window) 1, so a number match always ranks first. Rows matching only the date are left out. It never decides whether a candidate is a duplicate; check them yourself.
 
 ```js
@@ -221,8 +224,8 @@ async () => {
 
 - Pass `contentPath`, or `contentBase64` with a `filename`. `contentType` defaults from the extension: `pdf`, `jpg`/`jpeg`, `png`, `xml`.
 - It `POST`s `/v1/files` with `type=voucher` and throws if the upload fails or returns no `voucherId`.
-- It then polls `GET /v1/vouchers/{voucherId}` after 2, 4 and 8 s and once more at the timeout (`waitForExtraction: { timeoutMs }`, default 15,000) until the status is no longer `blank`. That's up to 5 requests, so raise `maxRequests` when uploading several files.
-- `extraction` is `done` (`voucher` holds the recognized voucher), `pending` (still `blank` at the timeout: `GET` the voucher in a later call) or `skipped` (`waitForExtraction: false`). It never uploads again. If a poll fails, the error names the `fileId` and `voucherId`, because the upload itself went through.
+- It then polls `GET /v1/vouchers/{voucherId}` after 2, 4 and 8 s and once more at the timeout (`waitForExtraction: { timeoutMs }`, default 15,000, at most 20,000) until the status is no longer `blank`. That's up to 5 requests and about 15 s, so one waiting upload fills most of an `execute` call (30 s timeout). For several files, upload them with `waitForExtraction: false` and read the vouchers in a later call.
+- `extraction` is `done` (`voucher` holds the recognized voucher), `pending` (still `blank` at the timeout: `GET` the voucher in a later call) or `skipped` (`waitForExtraction: false`). It never uploads again. If waiting fails (a poll error or `maxRequests` used up), the error names the `fileId` and `voucherId`, because the upload itself went through.
 
 `lexware.attachFileToVoucher(voucherId, { contentPath })` attaches a file to an existing voucher via `POST /v1/vouchers/{id}/files` (1 request) and returns `{ fileId, sent }`. Later voucher updates must keep that file id; `lexware.updateVoucher` does that for you.
 
