@@ -235,6 +235,23 @@ test('oversized search results are shrunk to valid JSON too', async () => {
 	assert.equal(typeof payload.result, 'object');
 });
 
+test('truncation never cuts write entries from the requests audit log', async () => {
+	const { codeMode } = codeModeWith(() => jsonResponse(201, {}), { writesEnabled: true });
+
+	const result = await codeMode.execute(`async () => {
+		for (let i = 0; i < 50; i++) await lexware.request({ method: 'POST', path: '/v1/contacts', body: {} });
+		console.log('x'.repeat(100000));
+		return 'y'.repeat(100000);
+	}`, { maxRequests: 50 });
+
+	assert.ok(textOf(result).length <= 24_000);
+	const payload = payloadOf(result);
+	assert.equal(payload.requestCount, 50);
+	assert.equal(payload.requests.length, 50);
+	assert.ok(payload.requests.every((entry: { write: boolean; status: number }) => entry.write && entry.status === 201));
+	assert.match(payload.result, /…\[truncated: \d+ chars\]$/);
+});
+
 test('results within the limit are returned unchanged, without a truncated hint', async () => {
 	const { codeMode } = codeModeWith();
 

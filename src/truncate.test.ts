@@ -53,7 +53,7 @@ test('objects with too many keys drop trailing keys', () => {
 
 	assert.ok(prettyLength(result) <= 1000);
 	assert.equal(result.key0, 0);
-	assert.match(String(result['[truncated]']), /^\d+ more keys$/);
+	assert.match(String(result['[truncated]']), /^\[truncated: \d+ more keys: key\d+, key\d+, .*…/);
 });
 
 test('a single oversized array item is shrunk rather than dropped', () => {
@@ -75,4 +75,42 @@ test('every truncated result parses as JSON within the limit', () => {
 			assert.deepEqual(JSON.parse(text), result);
 		}
 	}
+});
+
+test('kept top-level keys are never shrunk while they fit', () => {
+	const requests = Array.from({ length: 50 }, (_, i) => ({ method: 'POST', path: `/v1/contacts/${i}`, status: 201, ok: true, write: true, sent: true, durationMs: 10 }));
+	const value = { ok: true, result: 'y'.repeat(100_000), logs: ['x'.repeat(100_000)], requestCount: 50, requests };
+
+	const result = truncateJson(value, { maxChars: 24_000, keep: ['ok', 'requestCount', 'requests'] }) as Record<string, any>;
+
+	assert.ok(prettyLength(result) <= 24_000);
+	assert.deepEqual(Object.keys(result), ['ok', 'result', 'logs', 'requestCount', 'requests', 'truncated']);
+	assert.deepEqual(result.requests, requests);
+	assert.match(result.result, /…\[truncated: \d+ chars\]$/);
+});
+
+test('kept keys that do not fit on their own are shrunk too', () => {
+	const value = { requests: Array.from({ length: 1000 }, (_, i) => ({ path: `/v1/contacts/${i}` })), result: 1 };
+
+	const result = truncateJson(value, { maxChars: 2000, keep: ['requests'] }) as Record<string, any>;
+
+	assert.ok(prettyLength(result) <= 2000);
+	assert.match(result.requests.at(-1), /^\[truncated: \d+ more items\]$/);
+});
+
+test('deeply nested values are shrunk quickly', () => {
+	let value: unknown = 0;
+	for (let i = 0; i < 2000; i++) value = { a: value };
+
+	const startedAt = Date.now();
+	const result = truncateJson(value, { maxChars: 2000 });
+
+	assert.ok(Date.now() - startedAt < 1000);
+	assert.ok(prettyLength(result) <= 2000);
+});
+
+test('clipping does not split surrogate pairs', () => {
+	const result = truncateJson('😀'.repeat(10_000), { maxChars: 1004 }) as { value: string };
+
+	assert.doesNotMatch(result.value, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
 });

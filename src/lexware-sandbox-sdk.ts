@@ -244,7 +244,7 @@ type LexwareResponse<T = unknown> = {
   text?: string;
   truncated?: boolean;
   contentType: string;
-  headers: Record<string, string>; // content-type, content-length, content-disposition, location, retry-after, x-request-id, x-correlation-id, x-ratelimit-*; all with includeAllHeaders
+  headers: Record<string, string>; // content-type, content-length, content-disposition, location, retry-after, x-request-id, x-ratelimit-*; all with includeAllHeaders
   errorCategory?: string;
   retryAfterSeconds?: number;
   operation?: { operationId: string; method: string; pathTemplate: string; summary: string };

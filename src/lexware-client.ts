@@ -32,7 +32,7 @@ export interface LexwareRequestInput {
 	contentType?: string;
 	rawBody?: boolean;
 	accept?: string;
-	// Return every upstream response header instead of the RESPONSE_HEADER_ALLOWLIST subset.
+	// Return every upstream response header instead of the allowlisted ones.
 	includeAllHeaders?: boolean;
 }
 
@@ -141,8 +141,9 @@ const RETRY_BACKOFF_MS = 1_000;
 const RETRY_JITTER_MS = 1_000;
 const WRITE_METHODS = new Set<LexwareExecuteMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
 // Response headers worth the model's context; the rest (AWS gateway ids, security policies)
-// cost ~1.5 KB per returned response. x-ratelimit-* headers are kept too.
-const RESPONSE_HEADER_ALLOWLIST = new Set(['content-type', 'content-length', 'content-disposition', 'location', 'retry-after', 'x-request-id', 'x-correlation-id']);
+// cost ~1.5 KB per returned response.
+const RESPONSE_HEADER_ALLOWLIST = new Set(['content-type', 'content-length', 'content-disposition', 'location', 'retry-after', 'x-request-id']);
+const isAllowedResponseHeader = (name: string) => RESPONSE_HEADER_ALLOWLIST.has(name) || name.startsWith('x-ratelimit-');
 
 /**
  * Host-side HTTP client behind the sandbox's `lexware.request`. It alone holds the API key; guest
@@ -810,7 +811,7 @@ function sanitizeFetchErrorMessage(error: unknown, apiKey: string): string {
 function headersToObject(headers: Headers, includeAll: boolean): Record<string, string> {
 	const object: Record<string, string> = {};
 	headers.forEach((value, key) => {
-		if (includeAll || RESPONSE_HEADER_ALLOWLIST.has(key) || key.startsWith('x-ratelimit-')) object[key] = value;
+		if (includeAll || isAllowedResponseHeader(key)) object[key] = value;
 	});
 	return object;
 }

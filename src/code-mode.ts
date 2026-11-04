@@ -102,7 +102,7 @@ export class CodeMode {
 	}
 }
 
-export interface ReadsSummary {
+interface ReadsSummary {
 	count: number;
 	byStatus: Record<string, number>;
 	totalDurationMs: number;
@@ -111,12 +111,12 @@ export interface ReadsSummary {
 // Writes, non-OK responses, and errored or unsent attempts are always listed in full, since
 // callers rely on `requests` to see which writes happened. Successful reads only add noise in
 // read-heavy fan-outs, so beyond MAX_LISTED_READS they are collapsed into `readsSummary`.
-export function summarizeRequests(requests: RequestLogEntry[]): { requests: RequestLogEntry[]; readsSummary?: ReadsSummary } {
+function summarizeRequests(requests: RequestLogEntry[]): { requests: RequestLogEntry[]; readsSummary?: ReadsSummary } {
 	const isSuccessfulRead = (entry: RequestLogEntry) => !entry.write && entry.ok === true;
 	const reads = requests.filter(isSuccessfulRead);
 	if (reads.length <= MAX_LISTED_READS) return { requests };
 	const byStatus: Record<string, number> = {};
-	for (const entry of reads) byStatus[String(entry.status)] = (byStatus[String(entry.status)] ?? 0) + 1;
+	for (const { status } of reads) byStatus[String(status)] = (byStatus[String(status)] ?? 0) + 1;
 	return {
 		requests: requests.filter((entry) => !isSuccessfulRead(entry)),
 		readsSummary: { count: reads.length, byStatus, totalDurationMs: reads.reduce((sum, entry) => sum + entry.durationMs, 0) },
@@ -124,17 +124,27 @@ export function summarizeRequests(requests: RequestLogEntry[]): { requests: Requ
 }
 
 // The text block and structuredContent carry the same object. An oversized result is shrunk
-// structurally (see truncateJson), so both stay valid JSON and carry a `truncated` hint.
+// structurally (see truncateJson), so both stay valid JSON and carry a `truncated` hint. The
+// audit fields are kept whole so callers always see which writes happened.
+const AUDIT_KEYS = ['ok', 'requestCount', 'requests', 'readsSummary'];
+
 function toolResult(payload: Record<string, unknown>, isError = false): CallToolResult {
 	let structured: Record<string, unknown> | undefined;
 	let text: string;
 	try {
 		// Round-trip first so truncation measures exactly what gets serialized (toJSON, dropped undefined).
-		structured = truncateJson(JSON.parse(JSON.stringify(payload))) as Record<string, unknown>;
+		const normalized = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
+		try {
+			structured = truncateJson(normalized, { keep: AUDIT_KEYS }) as Record<string, unknown>;
+		} catch (error) {
+			// E.g. pathologically deep results. Drop everything but the audit fields.
+			structured = Object.fromEntries(Object.entries(normalized).map(([key, value]) => [key, AUDIT_KEYS.includes(key) ? value : `[truncated: could not shrink result: ${String(error)}]`]));
+		}
 		text = JSON.stringify(structured, null, 2);
 	} catch (error) {
 		structured = undefined;
-		text = JSON.stringify({ error: 'Result is not JSON-serializable', detail: String(error) }, null, 2);
+		const audit = Object.fromEntries(AUDIT_KEYS.filter((key) => key !== 'ok' && key in payload).map((key) => [key, payload[key]]));
+		text = JSON.stringify({ error: 'Result is not JSON-serializable', detail: String(error), ...audit }, null, 2);
 	}
 	const result: CallToolResult = { content: [{ type: 'text', text }] };
 	if (structured !== undefined) result.structuredContent = structured;

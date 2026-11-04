@@ -35,7 +35,7 @@ function createServer(): McpServer {
 			instructions: `Lexware Office API via Code Mode: \`search\` explores a curated API catalog, \`execute\` runs a sandboxed JS workflow against the live API.
 Always call \`search\` to discover endpoints, parameters, and workflows before \`execute\`; do not guess /v1 paths from memory.
 The server is read-only unless started with LEXWARE_OFFICE_ALLOW_WRITES=true; check spec.info.writesEnabled before planning writes.
-Summarize, filter, and aggregate inside \`execute\` and return only what is needed — large results are truncated (arrays and values cut, marked "[truncated: ...]").`,
+Summarize, filter, and aggregate inside \`execute\` and return only what is needed — large results are truncated.`,
 		},
 	);
 
@@ -97,7 +97,7 @@ lexware.request returns all HTTP responses, including non-OK, as LexwareResponse
 
 The tool result includes requests: one { method, path, status?, ok?, error?, write, sent, outcome?, durationMs } entry per HTTP attempt, also when execution failed — check it to see which writes already succeeded before retrying. Every write and every non-OK, errored, or unsent attempt is always listed; when there are more than 5 successful reads, those reads are replaced by readsSummary: { count, byStatus, totalDurationMs }. A write with outcome: 'unknown' (sent=true, with error or status 504) may have been applied by Lexware; reconcile via a GET before retrying it.
 
-maxRequests bounds the HTTP attempts actually sent to Lexware, including automatic 429 retries; requestCount equals the number of requests entries with sent=true. Requests rejected before sending (invalid input, blocked writes) do not count. An attempt beyond the budget is not sent and fails with "Execution exceeded maxRequests=N".
+maxRequests bounds the HTTP attempts actually sent to Lexware, including automatic 429 retries; requestCount counts every sent attempt, including reads collapsed into readsSummary. Requests rejected before sending (invalid input, blocked writes) do not count. An attempt beyond the budget is not sent and fails with "Execution exceeded maxRequests=N".
 
 This server is read-only by default. POST, PUT, PATCH, and DELETE are blocked unless the server is started with LEXWARE_OFFICE_ALLOW_WRITES=true. Setting LEXWARE_OFFICE_READ_ONLY=true is a hard block that overrides ALLOW_WRITES. Check spec.info.writesEnabled to branch before attempting a write.
 
