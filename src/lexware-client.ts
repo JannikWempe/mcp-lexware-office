@@ -320,7 +320,6 @@ function normalizeRequest(input: unknown): NormalizedRequest {
 	const request = input as LexwareRequestInput;
 	const method = normalizeMethod(request.method ?? 'GET');
 	const rawPath = normalizePath(request.path);
-	const accept = normalizeHeaderValue(request.accept ?? 'application/json', 'accept');
 	const contentType = request.contentType === undefined ? undefined : normalizeHeaderValue(request.contentType, 'contentType');
 	const rawBody = normalizeRawBody(request.rawBody ?? false);
 	const url = new URL(rawPath, DEFAULT_BASE_URL);
@@ -328,6 +327,7 @@ function normalizeRequest(input: unknown): NormalizedRequest {
 		throw new Error('path must resolve to /v1/ and must not escape that prefix');
 	}
 	const matched = matchOperation(url.pathname, method);
+	const accept = normalizeHeaderValue(request.accept ?? matched?.operation.defaultAccept ?? 'application/json', 'accept');
 
 	if (method === 'GET' && request.body !== undefined) {
 		throw new Error('GET requests must not include a body');
