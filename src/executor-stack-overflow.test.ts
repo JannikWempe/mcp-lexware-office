@@ -48,9 +48,7 @@ test('guest JSON.stringify of a deep value in a continuation does not abort the 
 		{ hostFunctions: { hostCall: async () => '{}' } },
 	);
 
-	// Either QuickJS catches the overflow itself or the run fails cleanly; both keep the process alive.
-	if (execution.error !== undefined) assert.match(execution.error, /nested too deeply/);
-	else assert.equal(execution.result, 'survived');
+	assert.match(execution.error ?? '', /nested too deeply/);
 	await assertStillWorks(executor);
 });
 
@@ -59,8 +57,7 @@ test('logging a deep value does not abort the process', async () => {
 
 	const execution = await executor.execute(`async () => { ${deep(100_000)} console.log(v); return 'done'; }`, {});
 
-	if (execution.error !== undefined) assert.match(execution.error, /nested too deeply/);
-	else assert.equal(execution.result, 'done');
+	assert.match(execution.error ?? '', /nested too deeply/);
 	await assertStillWorks(executor);
 });
 
@@ -73,10 +70,8 @@ test('guest code cannot start host calls after an engine failure', async () => {
 		{ hostFunctions: { hostCall: async () => { hostCalls += 1; return '{}'; } } },
 	);
 
-	if (execution.error !== undefined) {
-		assert.match(execution.error, /nested too deeply/);
-		assert.equal(hostCalls, 0);
-	}
+	assert.match(execution.error ?? '', /nested too deeply/);
+	assert.equal(hostCalls, 0);
 });
 
 test('runaway guest recursion is a catchable QuickJS stack overflow', async () => {
@@ -89,6 +84,13 @@ test('runaway guest recursion is a catchable QuickJS stack overflow', async () =
 
 	assert.deepEqual(execution, { result: 'InternalError: stack overflow', logs: [] });
 	await assertStillWorks(executor);
+});
+
+test('a guest that throws a promise reports a guest error, not an engine failure', async () => {
+	const execution = await new QuickJsExecutor().execute(`async () => { throw Promise.resolve(1); }`, {});
+
+	assert.ok(execution.error !== undefined);
+	assert.doesNotMatch(execution.error, /engine failure/);
 });
 
 test('moderately deep results still round-trip', async () => {

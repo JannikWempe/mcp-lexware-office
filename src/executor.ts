@@ -1,4 +1,10 @@
-import { newQuickJSWASMModule, shouldInterruptAfterDeadline, type QuickJSDeferredPromise } from 'quickjs-emscripten';
+import {
+	newQuickJSWASMModule,
+	shouldInterruptAfterDeadline,
+	type QuickJSContext,
+	type QuickJSDeferredPromise,
+	type QuickJSHandle,
+} from 'quickjs-emscripten';
 
 export interface CodeExecutor {
 	// Each capability is JSON-copied into the sandbox and bound to a local const of the same name.
@@ -105,8 +111,10 @@ export class QuickJsExecutor implements CodeExecutor {
 		runtime.setMemoryLimit(memoryLimitBytes);
 		runtime.setMaxStackSize(MAX_STACK_SIZE_BYTES);
 		const deadlinePassed = shouldInterruptAfterDeadline(Date.now() + timeoutMs);
-		// Also stop guest code still running on a runtime that has already failed.
-		runtime.setInterruptHandler((rt) => engineFailure !== undefined || deadlinePassed(rt));
+		// Also stop guest code once execution has ended (e.g. continuations spinning during teardown
+		// after a cancellation) or the runtime has failed.
+		runtime.setInterruptHandler((rt) =>
+			hostCallController.signal.aborted || engineFailure !== undefined || deadlinePassed(rt));
 
 		// Track every QuickJS deferred promise created by host functions.
 		// We must settle (reject) all unsettled deferreds before disposing the VM/runtime;
@@ -236,8 +244,7 @@ ${options.prelude ?? ''}
 			const evaluation = vm.evalCode(wrappedCode, filename, { type: 'global' });
 			if (engineFailure !== undefined) return engineFailureResult();
 			if (evaluation.error) {
-				const error = stringifyQuickJsError(vm.dump(evaluation.error));
-				evaluation.error.dispose();
+				const error = stringifyQuickJsError(dumpAndDispose(vm, evaluation.error));
 				return { error, logs };
 			}
 
@@ -247,8 +254,7 @@ ${options.prelude ?? ''}
 			const pendingJobsResult = runtime.executePendingJobs();
 			if (engineFailure !== undefined) return engineFailureResult();
 			if (pendingJobsResult.error) {
-				const error = stringifyQuickJsError(vm.dump(pendingJobsResult.error));
-				pendingJobsResult.error.dispose();
+				const error = stringifyQuickJsError(dumpAndDispose(vm, pendingJobsResult.error));
 				promiseHandle.dispose();
 				return { error, logs };
 			}
@@ -264,14 +270,11 @@ ${options.prelude ?? ''}
 			}
 
 			if (resolved.error) {
-				const error = stringifyQuickJsError(vm.dump(resolved.error));
-				resolved.error.dispose();
+				const error = stringifyQuickJsError(dumpAndDispose(vm, resolved.error));
 				return { error, logs };
 			}
 
-			const result = vm.dump(resolved.value);
-			resolved.value.dispose();
-			return { result, logs };
+			return { result: dumpAndDispose(vm, resolved.value), logs };
 		} catch (error) {
 			// Everything in this block drives QuickJS, so an unexpected throw leaves the runtime in an
 			// unknown state; treat it as broken rather than risk aborting the process on dispose.
@@ -376,6 +379,13 @@ function withTimeoutAndCancel<T>(promise: Promise<T>, timeoutMs: number, signal:
 			},
 		);
 	});
+}
+
+// vm.dump already disposes promise handles (e.g. a guest that throws a promise).
+function dumpAndDispose(vm: QuickJSContext, handle: QuickJSHandle): unknown {
+	const value = vm.dump(handle);
+	if (handle.alive) handle.dispose();
+	return value;
 }
 
 function isHostStackOverflow(error: unknown): boolean {
