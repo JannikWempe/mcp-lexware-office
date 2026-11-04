@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.0.2](https://github.com/JannikWempe/mcp-lexware-office/compare/v3.0.1...v3.0.2) (2026-11-04)
+
+
+### Bug Fixes
+
+* address review findings on merged bug fixes ([80d97bc](https://github.com/JannikWempe/mcp-lexware-office/commit/80d97bc8dc8e4a3e2134659384c0eb14edf691f1))
+* catalog, Accept, rate-limit and error-classification bugs ([#27](https://github.com/JannikWempe/mcp-lexware-office/issues/27)–[#30](https://github.com/JannikWempe/mcp-lexware-office/issues/30)) ([fbb3fe8](https://github.com/JannikWempe/mcp-lexware-office/commit/fbb3fe8aa1a5b2ac25befe8d227501206bedc6b5))
+* **client:** add rate-limit buffer, back off on 429 without Retry-After ([d928778](https://github.com/JannikWempe/mcp-lexware-office/commit/d9287781ff83b878fce311ffef43eade0654c2d9))
+* **client:** classify 406 as validation and 402 as permission ([7fbe0df](https://github.com/JannikWempe/mcp-lexware-office/commit/7fbe0dfd2cfdb5fa2b9f059f4f31490cd89aefa3))
+* **client:** default Accept to */* for file downloads ([aa03c94](https://github.com/JannikWempe/mcp-lexware-office/commit/aa03c9471db99a8eb64fd6cffd8168b7bdf33a65))
+* **client:** mark writes answered with 504 as outcome unknown ([072a595](https://github.com/JannikWempe/mcp-lexware-office/commit/072a59546ac578534d01f61eb129314cf5567848))
+* **spec:** align voucher and file upload entries with Lexware docs ([1f1d10e](https://github.com/JannikWempe/mcp-lexware-office/commit/1f1d10e496257727367963d0677b80ff655c7cc2))
+
 ## [3.0.1](https://github.com/JannikWempe/mcp-lexware-office/compare/v3.0.0...v3.0.1) (2026-10-15)
 
 
