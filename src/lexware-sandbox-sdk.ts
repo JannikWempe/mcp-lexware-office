@@ -49,6 +49,13 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 			if (response.retryAfterSeconds !== undefined) {
 				metadata.push('Retry after: ' + response.retryAfterSeconds + 's.');
 			}
+			if (Array.isArray(response.issues) && response.issues.length > 0) {
+				const issueTexts = response.issues.map((issue) => {
+					const text = [issue.field, issue.code, issue.message].filter((part) => part !== undefined).join(' ');
+					return issue.hint !== undefined ? (text.length > 0 ? text + ' (hint: ' + issue.hint + ')' : 'hint: ' + issue.hint) : text;
+				});
+				metadata.push('Issues: [' + issueTexts.join('; ') + '].');
+			}
 			const metadataText = metadata.length > 0 ? ' ' + metadata.join(' ') : '';
 			throw new Error('Lexware API request failed: ' + response.status + ' ' + (response.statusText || '') + ' for ' + operation + '.' + metadataText + ' Error body: ' + JSON.stringify(details));
 		}
@@ -247,6 +254,7 @@ type LexwareResponse<T = unknown> = {
   headers: Record<string, string>; // content-type, content-length, content-disposition, location, retry-after, x-request-id, x-ratelimit-*; all with includeAllHeaders
   errorCategory?: string;
   retryAfterSeconds?: number;
+  issues?: Array<{ field?: string; code?: string; message?: string; hint?: string }>; // non-OK responses: both Lexware error body shapes (IssueList[], details[]) normalized, with fix hints for known codes
   operation?: { operationId: string; method: string; pathTemplate: string; summary: string };
   request: { method: string; path: string; query: Record<string, string[]> };
   sent?: { bytes: number; sha256?: string; parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }> }; // echo of uploaded binary payloads for integrity checks
