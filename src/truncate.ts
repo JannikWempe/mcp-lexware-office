@@ -47,11 +47,10 @@ export function truncateText(value: string, options: TruncationOptions = {}): st
 export function truncateJson(value: unknown, options: JsonTruncationOptions = {}): unknown {
 	const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
 	const sizes = new SizeCache();
-	// The compact form is a cheap lower bound; measuring the pretty one is only needed if it fits.
-	if ((JSON.stringify(value)?.length ?? 0) <= maxChars && sizes.of(value, 0) <= maxChars) return value;
+	const originalChars = sizes.of(value, 0);
+	if (originalChars <= maxChars) return value;
 
 	const shrinker = new Shrinker(sizes);
-	const originalChars = sizes.of(value, 0);
 	const hint: TruncationHint = {
 		originalChars,
 		note: `Result exceeded ${maxChars} characters and was shrunk: values marked "[truncated: ...]" were clipped or omitted. ${RECOVERY_GUIDANCE}`,
@@ -240,10 +239,10 @@ class SizeCache {
 }
 
 function frame(node: object): MeasureFrame {
-	// Like JSON.stringify: undefined and functions are null in arrays and omitted in objects.
+	// Like JSON.stringify: undefined, functions, symbols and holes are null in arrays and omitted in objects.
 	const entries: MeasureFrame['entries'] = Array.isArray(node)
-		? node.map((item) => [undefined, item === undefined || typeof item === 'function' ? null : item])
-		: Object.entries(node).filter(([, entry]) => entry !== undefined && typeof entry !== 'function');
+		? Array.from(node, (item) => [undefined, isSerializable(item) ? item : null])
+		: Object.entries(node).filter(([, entry]) => isSerializable(entry));
 	const count = entries.length;
 	return {
 		node,
@@ -251,6 +250,10 @@ function frame(node: object): MeasureFrame {
 		next: 0,
 		measure: count === 0 ? { chars: EMPTY_CONTAINER_CHARS, lines: 0 } : { chars: CONTAINER_CHARS + ENTRY_SEPARATOR_CHARS * (count - 1), lines: count + 1 },
 	};
+}
+
+function isSerializable(value: unknown): boolean {
+	return value !== undefined && typeof value !== 'function' && typeof value !== 'symbol';
 }
 
 function measureLeaf(value: unknown): Measure {

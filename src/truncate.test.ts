@@ -114,13 +114,22 @@ test('deeply nested values are shrunk quickly', () => {
 	for (let i = 0; i < 10_000; i++) object = { a: object };
 	let array: unknown = 0;
 	for (let i = 0; i < 8000; i++) array = [array];
+	let withString: unknown = 'x'.repeat(10_000);
+	for (let i = 0; i < 8000; i++) withString = { a: withString };
 
-	for (const value of [object, array]) {
+	for (const value of [object, array, withString]) {
 		const startedAt = Date.now();
 		const result = truncateJson(value, { maxChars: 2000 });
 
 		assert.ok(Date.now() - startedAt < 1000);
 		assert.ok(prettyLength(result) <= 2000);
+	}
+});
+
+test('undefined, functions, symbols and holes are measured like JSON.stringify', () => {
+	for (const value of [Array(1000), Array(1000).fill(Symbol('s')), Array(1000).fill(() => 1), { a: Array(500).fill(undefined), b: Symbol('s') }]) {
+		const result = truncateJson(value, { maxChars: 1000 });
+		assert.ok(prettyLength(result) <= 1000);
 	}
 });
 
