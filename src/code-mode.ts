@@ -14,7 +14,6 @@ export const LEXWARE_REQUEST_TIMEOUT_MS = 25_000;
 const EXECUTE_TIMEOUT_MS = 30_000;
 const SEARCH_TIMEOUT_MS = 1_000;
 const MEMORY_LIMIT_BYTES = 32 * 1024 * 1024;
-const MAX_STACK_SIZE_BYTES = 1024 * 1024;
 // Up to this many successful reads are listed in `requests`; more are collapsed into `readsSummary`.
 const MAX_LISTED_READS = 5;
 
@@ -49,7 +48,6 @@ export class CodeMode {
 			{
 				timeoutMs: SEARCH_TIMEOUT_MS,
 				memoryLimitBytes: MEMORY_LIMIT_BYTES,
-				maxStackSizeBytes: MAX_STACK_SIZE_BYTES,
 				filename: 'lexware-search.js',
 				signal: options.signal,
 			},
@@ -81,7 +79,6 @@ export class CodeMode {
 			{
 				timeoutMs: EXECUTE_TIMEOUT_MS,
 				memoryLimitBytes: MEMORY_LIMIT_BYTES,
-				maxStackSizeBytes: MAX_STACK_SIZE_BYTES,
 				filename: 'lexware-execute.js',
 				signal: options.signal,
 				...lexwareSandbox(this.client, { beforeSend, onSettled: (entry) => requests.push(entry) }),

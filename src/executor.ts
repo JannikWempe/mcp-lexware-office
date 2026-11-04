@@ -1,4 +1,4 @@
-import { getQuickJS, shouldInterruptAfterDeadline, type QuickJSDeferredPromise } from 'quickjs-emscripten';
+import { newQuickJSWASMModule, shouldInterruptAfterDeadline, type QuickJSDeferredPromise } from 'quickjs-emscripten';
 
 export interface CodeExecutor {
 	// Each capability is JSON-copied into the sandbox and bound to a local const of the same name.
@@ -40,10 +40,15 @@ export interface CodeExecutionResult {
 
 const DEFAULT_TIMEOUT_MS = 1_000;
 const DEFAULT_MEMORY_LIMIT_BYTES = 32 * 1024 * 1024;
-const DEFAULT_MAX_STACK_SIZE_BYTES = 1024 * 1024;
+// QuickJS checks this limit against the WASM shadow stack, but its native recursion also uses the
+// host (V8) stack, which overflows first above roughly 512 KB. Stay below that, so runaway guest
+// recursion is a catchable QuickJS InternalError instead of a host stack overflow.
+const DEFAULT_MAX_STACK_SIZE_BYTES = 256 * 1024;
 const DEFAULT_MAX_LOG_ENTRIES = 25;
 const DEFAULT_MAX_LOG_CHARS = 8_000;
 const CANCELLED_MESSAGE = 'Execution cancelled by client';
+const HOST_STACK_OVERFLOW_MESSAGE =
+	'Sandbox stack overflow: a value is nested too deeply or recursion went too deep. Flatten deeply nested data before returning, logging or serializing it.';
 
 /**
  * Generic QuickJS sandbox runner: model-supplied JS plus JSON capabilities, host functions and an
@@ -60,16 +65,35 @@ export class QuickJsExecutor implements CodeExecutor {
 		for (const name of capabilityNames) {
 			if (!/^[A-Za-z_$][\w$]*$/.test(name)) throw new Error(`Invalid capability name: ${name}`);
 		}
+		const capabilitiesJson = JSON.stringify(capabilities);
 
 		if (options.signal?.aborted) return { error: `Error: ${CANCELLED_MESSAGE}`, logs: [] };
 
-		const QuickJS = await getQuickJS();
+		// A fresh WASM module per execution (a few ms) isolates failures: when an engine call breaks
+		// (see `fail` below), this run's module is dropped without touching runs on other modules.
+		const QuickJS = await newQuickJSWASMModule();
 		// Recheck: the signal may have aborted while QuickJS was loading. Everything below runs
 		// synchronously up to evalCode, so no later abort can slip in before guest code starts.
 		if (options.signal?.aborted) return { error: `Error: ${CANCELLED_MESSAGE}`, logs: [] };
 		const runtime = QuickJS.newRuntime();
 		const vm = runtime.newContext();
 		const logs: string[] = [];
+
+		// Set when a QuickJS call throws a host-level error, typically a V8 RangeError from deep native
+		// recursion (vm.dump or JSON.stringify of a deeply nested value) outgrowing the host stack
+		// before QuickJS's own stack check fires. The error unwinds WASM frames mid-operation and
+		// leaves the runtime inconsistent: disposing it would abort the whole process with
+		// `Assertion failed: list_empty(&rt->gc_obj_list)`. A broken runtime is therefore never
+		// touched again; it is garbage-collected along with this execution's module.
+		let engineFailure: string | undefined;
+		let rejectEngineFailure!: (error: Error) => void;
+		const engineFailed = new Promise<never>((_resolve, reject) => { rejectEngineFailure = reject; });
+		engineFailed.catch(() => { /* raced below; may fire after execution has ended */ });
+		const fail = (error: unknown) => {
+			if (engineFailure !== undefined) return;
+			engineFailure = isHostStackOverflow(error) ? HOST_STACK_OVERFLOW_MESSAGE : `Sandbox engine failure: ${stringifyHostError(error)}`;
+			rejectEngineFailure(new Error(engineFailure));
+		};
 
 		const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		const memoryLimitBytes = options.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES;
@@ -80,7 +104,9 @@ export class QuickJsExecutor implements CodeExecutor {
 
 		runtime.setMemoryLimit(memoryLimitBytes);
 		runtime.setMaxStackSize(maxStackSizeBytes);
-		runtime.setInterruptHandler(shouldInterruptAfterDeadline(Date.now() + timeoutMs));
+		const deadlinePassed = shouldInterruptAfterDeadline(Date.now() + timeoutMs);
+		// Also stop guest code still running on a runtime that has already failed.
+		runtime.setInterruptHandler((rt) => engineFailure !== undefined || deadlinePassed(rt));
 
 		// Track every QuickJS deferred promise created by host functions.
 		// We must settle (reject) all unsettled deferreds before disposing the VM/runtime;
@@ -129,21 +155,29 @@ export class QuickJsExecutor implements CodeExecutor {
 					handler(payload, { signal: hostCallController.signal })
 						.then(
 							(result) => {
-								if (!vmDisposed) {
+								if (!vmDisposed && engineFailure === undefined) {
 									unsettledDeferreds.delete(deferred);
-									const resultHandle = vm.newString(result);
-									deferred.resolve(resultHandle);
-									resultHandle.dispose();
-									runtime.executePendingJobs();
+									try {
+										const resultHandle = vm.newString(result);
+										deferred.resolve(resultHandle);
+										resultHandle.dispose();
+										runtime.executePendingJobs();
+									} catch (error) {
+										fail(error);
+									}
 								}
 							},
 							(error) => {
-								if (!vmDisposed) {
+								if (!vmDisposed && engineFailure === undefined) {
 									unsettledDeferreds.delete(deferred);
-									const errorHandle = vm.newError({ name: 'Error', message: stringifyHostError(error) });
-									deferred.reject(errorHandle);
-									errorHandle.dispose();
-									runtime.executePendingJobs();
+									try {
+										const errorHandle = vm.newError({ name: 'Error', message: stringifyHostError(error) });
+										deferred.reject(errorHandle);
+										errorHandle.dispose();
+										runtime.executePendingJobs();
+									} catch (engineError) {
+										fail(engineError);
+									}
 								}
 							},
 						)
@@ -160,8 +194,15 @@ export class QuickJsExecutor implements CodeExecutor {
 			}
 
 			vm.newFunction('log', (...args) => {
-				if (logs.length >= maxLogEntries) return;
-				const message = args.map((arg) => stringifyLogValue(vm.dump(arg))).join(' ');
+				if (logs.length >= maxLogEntries || engineFailure !== undefined) return;
+				let message: string;
+				try {
+					message = args.map((arg) => stringifyLogValue(vm.dump(arg))).join(' ');
+				} catch (error) {
+					// Thrown errors would be rethrown into the guest, which must not keep running.
+					fail(error);
+					return;
+				}
 				logs.push(message.length > maxLogChars ? `${message.slice(0, maxLogChars)}...[truncated]` : message);
 			}).consume((logHandle) => {
 				const consoleHandle = vm.newObject();
@@ -173,7 +214,6 @@ export class QuickJsExecutor implements CodeExecutor {
 				consoleHandle.dispose();
 			});
 
-			const capabilitiesJson = JSON.stringify(capabilities);
 			vm.newString(capabilitiesJson).consume((capabilitiesHandle) => {
 				vm.setProp(vm.global, '__capabilitiesJson', capabilitiesHandle);
 			});
@@ -193,6 +233,7 @@ ${options.prelude ?? ''}
 `;
 
 			const evaluation = vm.evalCode(wrappedCode, filename, { type: 'global' });
+			if (engineFailure !== undefined) return { error: `Error: ${engineFailure}`, logs };
 			if (evaluation.error) {
 				const error = stringifyQuickJsError(vm.dump(evaluation.error));
 				evaluation.error.dispose();
@@ -200,23 +241,25 @@ ${options.prelude ?? ''}
 			}
 
 			const promiseHandle = evaluation.value;
+			const nativePromise = vm.resolvePromise(promiseHandle);
+			sandboxNativePromise = nativePromise;
+			const pendingJobsResult = runtime.executePendingJobs();
+			if (engineFailure !== undefined) return { error: `Error: ${engineFailure}`, logs };
+			if (pendingJobsResult.error) {
+				const error = stringifyQuickJsError(vm.dump(pendingJobsResult.error));
+				pendingJobsResult.error.dispose();
+				promiseHandle.dispose();
+				return { error, logs };
+			}
+
 			let resolved;
 			try {
-				const nativePromise = vm.resolvePromise(promiseHandle);
-				sandboxNativePromise = nativePromise;
-				const pendingJobsResult = runtime.executePendingJobs();
-				if (pendingJobsResult.error) {
-					const error = stringifyQuickJsError(vm.dump(pendingJobsResult.error));
-					pendingJobsResult.error.dispose();
-					promiseHandle.dispose();
-					return { error, logs };
-				}
-				resolved = await withTimeoutAndCancel(nativePromise, timeoutMs, options.signal);
+				resolved = await withTimeoutAndCancel(Promise.race([nativePromise, engineFailed]), timeoutMs, options.signal);
 				sandboxNativePromise = undefined;
-				promiseHandle.dispose();
 			} catch (error) {
-				promiseHandle.dispose();
 				return { error: String(error), logs };
+			} finally {
+				if (engineFailure === undefined) promiseHandle.dispose();
 			}
 
 			if (resolved.error) {
@@ -228,6 +271,9 @@ ${options.prelude ?? ''}
 			const result = vm.dump(resolved.value);
 			resolved.value.dispose();
 			return { result, logs };
+		} catch (error) {
+			fail(error);
+			return { error: `Error: ${engineFailure}`, logs };
 		} finally {
 			// Signal host callbacks not to touch the VM anymore.
 			vmDisposed = true;
@@ -236,15 +282,19 @@ ${options.prelude ?? ''}
 			// Reject every unsettled QuickJS deferred. Without this, the resolveHandle /
 			// rejectHandle inside each deferred remain live in QuickJS's GC list and
 			// JS_FreeRuntime asserts list_empty(&rt->gc_obj_list), crashing the process.
-			if (unsettledDeferreds.size > 0) {
-				const shutdownError = vm.newError('Sandbox VM is shutting down');
-				for (const deferred of unsettledDeferreds) {
-					try { deferred.reject(shutdownError); } catch { /* already settled */ }
+			if (unsettledDeferreds.size > 0 && engineFailure === undefined) {
+				try {
+					const shutdownError = vm.newError('Sandbox VM is shutting down');
+					for (const deferred of unsettledDeferreds) {
+						try { deferred.reject(shutdownError); } catch { /* already settled */ }
+					}
+					shutdownError.dispose();
+					runtime.executePendingJobs();
+				} catch (error) {
+					fail(error);
 				}
-				shutdownError.dispose();
-				unsettledDeferreds.clear();
-				runtime.executePendingJobs();
 			}
+			unsettledDeferreds.clear();
 
 			// If the sandbox native promise is still pending (i.e. we timed out while
 			// the sandbox was awaiting a host call, or the guest has a never-settling
@@ -257,7 +307,7 @@ ${options.prelude ?? ''}
 			// does not block teardown indefinitely.  The cap is generous enough for
 			// the continuation microtasks to flush but short enough to be invisible
 			// to callers.
-			if (sandboxNativePromise !== undefined) {
+			if (sandboxNativePromise !== undefined && engineFailure === undefined) {
 				const TEARDOWN_CAP_MS = 500;
 				const teardownTimeout = new Promise<'timeout'>((resolve) =>
 					setTimeout(() => resolve('timeout'), TEARDOWN_CAP_MS),
@@ -283,8 +333,11 @@ ${options.prelude ?? ''}
 				await Promise.allSettled(pendingHostCalls);
 			}
 
-			vm.dispose();
-			runtime.dispose();
+			// A failed runtime is left for the garbage collector together with its module (see `fail`).
+			if (engineFailure === undefined) {
+				vm.dispose();
+				runtime.dispose();
+			}
 		}
 	}
 }
@@ -320,6 +373,10 @@ function withTimeoutAndCancel<T>(promise: Promise<T>, timeoutMs: number, signal:
 			},
 		);
 	});
+}
+
+function isHostStackOverflow(error: unknown): boolean {
+	return error instanceof RangeError && /call stack/i.test(error.message);
 }
 
 function stringifyLogValue(value: unknown): string {
