@@ -8,6 +8,7 @@ export interface LexwareApiCatalog {
 		pagination: LexwarePaginationInfo;
 		voucherStatusSemantics: LexwareVoucherStatusSemantics;
 		financeReportingSemantics: LexwareFinanceReportingSemantics;
+		errorResponses: LexwareErrorResponsesInfo;
 		domainIndex: Record<string, { summary: string; tags: string[]; endpoints: Array<{ method: string; path: string }> }>;
 		notes: string[];
 		// Injected at runtime by the MCP server: whether POST/PUT/PATCH/DELETE are currently allowed.
@@ -15,6 +16,14 @@ export interface LexwareApiCatalog {
 	};
 	paths: Record<string, Partial<Record<HttpMethod, LexwareOperation>>>;
 	workflows: Record<string, LexwareWorkflow>;
+}
+
+export interface LexwareErrorResponsesInfo {
+	summary: string;
+	legacy: { endpoints: string[]; shape: unknown; notes: string[] };
+	regular: { endpoints: string; shape: unknown; notes: string[] };
+	normalized: { field: string; shape: unknown; notes: string[] };
+	docsUrl: string;
 }
 
 export type HttpMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
@@ -479,6 +488,25 @@ export const lexwareSpec: LexwareApiCatalog = {
 		},
 		voucherStatusSemantics,
 		financeReportingSemantics,
+		errorResponses: {
+			summary: 'Lexware returns errors in two JSON body shapes depending on the endpoint. Read response.issues instead of parsing either shape yourself.',
+			legacy: {
+				endpoints: ['/v1/contacts', '/v1/files', '/v1/vouchers'],
+				shape: { IssueList: [{ i18nKey: 'missing_entity', source: 'company.name', type: 'validation_failure', additionalData: null, args: null }] },
+				notes: ['i18nKey is the error code, source the field (for bad_request_error a message such as "size must be between 3 and 255"), type the category.'],
+			},
+			regular: {
+				endpoints: 'all other endpoints',
+				shape: { timestamp: '2023-05-11T17:12:31.233+02:00', status: 406, error: 'Not Acceptable', path: '/v1/invoices', traceId: '90d78d0777be', message: 'Validation failed for request. Please see details list for specific causes.', details: [{ violation: 'NOTNULL', field: 'lineItems[0].unitPrice.taxRatePercentage', message: 'darf nicht leer sein' }] },
+				notes: ['details is optional. message texts are not meant for end users and can be German.'],
+			},
+			normalized: {
+				field: 'response.issues',
+				shape: [{ field: 'voucherItems[0].taxAmount', code: 'invalid_taxamount', message: 'string (optional)', hint: 'how to fix it (known codes only)' }],
+				notes: ['Set on non-OK JSON responses with an IssueList or details array (legacy: source → field, i18nKey → code; regular: field, violation → code, message), and on every 409 with a re-fetch-and-retry hint.', 'lexware.json and lexware.paginate include the issues and hints in the error they throw.'],
+			},
+			docsUrl: 'https://developers.lexware.io/docs/#error-codes',
+		},
 		domainIndex: {
 			contacts: { summary: 'Customers, vendors, companies, and people.', tags: ['contacts', 'customers', 'vendors'], endpoints: [{ method: 'GET', path: '/v1/contacts' }, { method: 'POST', path: '/v1/contacts' }, { method: 'GET', path: '/v1/contacts/{id}' }, { method: 'PUT', path: '/v1/contacts/{id}' }] },
 			articles: { summary: 'Product/service catalog entries.', tags: ['articles', 'catalog'], endpoints: [{ method: 'GET', path: '/v1/articles' }, { method: 'POST', path: '/v1/articles' }, { method: 'GET', path: '/v1/articles/{id}' }, { method: 'PUT', path: '/v1/articles/{id}' }, { method: 'DELETE', path: '/v1/articles/{id}' }] },
@@ -506,6 +534,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 			'Voucherlist status semantics and reporting defaults live in spec.info.voucherStatusSemantics. Use them before choosing voucherStatus for finance/reporting workflows.',
 			'Finance/reporting caveats and examples live in spec.info.financeReportingSemantics. Use them before answering ambiguous earnings/revenue/Umsatz/profit questions.',
 			'Updates use optimistic locking via a version field; on HTTP 409, re-fetch the resource and retry with the current version.',
+			'Failed JSON responses carry response.issues: both Lexware error body shapes normalized to { field, code, message, hint }; see spec.info.errorResponses.',
 			'spec.info.writesEnabled reports whether this server currently allows POST/PUT/PATCH/DELETE; check it before planning writes or uploads.',
 			'File uploads go through the multipart request field of lexware.request (contentPath for local files, contentBase64 for base64 bytes) — see the fileHandling workflow.',
 		],

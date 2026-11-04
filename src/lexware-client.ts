@@ -4,6 +4,7 @@ import { type FileHandle, lstat, open, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { type LexwareIssue, normalizeIssues } from './lexware-issues.js';
 import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-spec.js';
 import { truncateText } from './truncate.js';
 import { VERSION } from './version.js';
@@ -99,6 +100,8 @@ export interface LexwareResponse {
 	headers: Record<string, string>;
 	errorCategory?: 'auth' | 'permission' | 'validation' | 'not_found' | 'conflict' | 'rate_limit' | 'server' | 'network' | 'unknown';
 	retryAfterSeconds?: number;
+	// Non-OK JSON responses only: both Lexware error body shapes normalized, with hints.
+	issues?: LexwareIssue[];
 	data?: unknown;
 	text?: string;
 	truncated?: boolean;
@@ -743,10 +746,15 @@ async function parseResponse(response: Response, request: NormalizedRequest, max
 	const text = rawText.charCodeAt(0) === 0xfeff ? rawText.slice(1) : rawText;
 
 	if (isJsonResponse(contentType, request.accept)) {
+		let data: unknown;
 		try {
-			return { ...base, data: text.length > 0 ? JSON.parse(text) : null };
+			data = text.length > 0 ? JSON.parse(text) : null;
 		} catch {
 			// Fall through to compact text handling for malformed JSON responses.
+		}
+		if (data !== undefined) {
+			const issues = response.ok ? undefined : normalizeIssues(response.status, data);
+			return { ...base, ...(issues !== undefined && { issues }), data };
 		}
 	}
 
