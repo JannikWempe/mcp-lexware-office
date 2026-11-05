@@ -157,6 +157,13 @@ export interface UploadEcho {
 	parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }>;
 }
 
+interface CacheSlot {
+	cache: ResponseCache;
+	key: string;
+	ttlMs: number;
+	generation: number;
+}
+
 interface MatchedOperation {
 	pathTemplate: string;
 	operation: LexwareOperation;
@@ -239,30 +246,31 @@ export class LexwareApiClient {
 		}
 
 		const normalized = normalizeRequest(input);
-		const cache = this.cacheSlot(normalized);
-		if (cache !== undefined && normalized.cache && !options.signal?.aborted) {
-			const hit = this.cachedResponse(normalized, cache.key, options);
+		const slot = this.cacheSlot(normalized);
+		if (slot !== undefined && normalized.cache && !options.signal?.aborted) {
+			const hit = this.cachedResponse(normalized, slot, options);
 			if (hit !== undefined) return hit;
 		}
 		const response = await this.retryingRequest(normalized, apiKey, options);
-		if (cache !== undefined && isCacheableResponse(response)) {
-			this.responseCache?.set(cache.key, JSON.stringify(response), cache.ttlMs, cache.generation);
+		if (slot !== undefined && isCacheableResponse(response)) {
+			slot.cache.set(slot.key, JSON.stringify(withoutPerRequestHeaders(response)), slot.ttlMs, slot.generation);
 		}
 		return response;
 	}
 
 	// Where a GET of an operation with cacheTtlSeconds is cached. The generation is taken before the
 	// request, so a write sent while it is in flight keeps its possibly stale response out of the cache.
-	private cacheSlot(normalized: NormalizedRequest): { key: string; ttlMs: number; generation: number } | undefined {
+	private cacheSlot(normalized: NormalizedRequest): CacheSlot | undefined {
+		const cache = this.responseCache;
 		const ttlSeconds = normalized.matched?.operation.cacheTtlSeconds;
-		if (this.responseCache === undefined || normalized.method !== 'GET' || ttlSeconds === undefined || ttlSeconds <= 0) return undefined;
+		if (cache === undefined || normalized.method !== 'GET' || ttlSeconds === undefined) return undefined;
 		const query = [...normalized.query].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 		const key = JSON.stringify([normalized.path, query, normalized.accept, normalized.includeAllHeaders]);
-		return { key, ttlMs: ttlSeconds * 1000, generation: this.responseCache.generation };
+		return { cache, key, ttlMs: ttlSeconds * 1000, generation: cache.generation };
 	}
 
-	private cachedResponse(normalized: NormalizedRequest, key: string, options: LexwareRequestOptions): LexwareResponse | undefined {
-		const json = this.responseCache?.get(key);
+	private cachedResponse(normalized: NormalizedRequest, slot: CacheSlot, options: LexwareRequestOptions): LexwareResponse | undefined {
+		const json = slot.cache.get(slot.key);
 		if (json === undefined) return undefined;
 		const response = { ...(JSON.parse(json) as LexwareResponse), cached: true as const };
 		options.onSettled?.({ method: normalized.method, path: normalized.path, status: response.status, ok: response.ok, write: false, sent: false, cached: true, durationMs: 0 });
@@ -309,7 +317,8 @@ export class LexwareApiClient {
 			throw error;
 		} finally {
 			// Any write that reached fetch may have changed data, whatever its outcome. Clearing
-			// everything is coarse but never serves stale reference data after a write.
+			// everything is coarse but never serves stale reference data after a write. Cleared again
+			// on completion, so GETs that were stored while the write was in flight are dropped too.
 			if (write && progress.sent) this.responseCache?.clear();
 		}
 		log({ status: response.status, ok: response.ok, ...(response.dryRun && { dryRun: true as const }) });
@@ -377,6 +386,8 @@ export class LexwareApiClient {
 			let response: Response;
 			try {
 				progress.sent = true;
+				// Lexware may apply a write before its response arrives: stop serving pre-write data now.
+				if (write) this.responseCache?.clear();
 				response = await this.fetchImpl(url, {
 					method: normalized.method,
 					headers,
@@ -921,6 +932,12 @@ function isCacheableResponse(response: LexwareResponse): boolean {
 
 function isBinaryMetadata(data: unknown): boolean {
 	return data !== null && typeof data === 'object' && (data as { binary?: unknown }).binary === true;
+}
+
+// Rate-limit and request-id headers describe the original request; a cache hit must not repeat them.
+function withoutPerRequestHeaders(response: LexwareResponse): LexwareResponse {
+	const headers = Object.fromEntries(Object.entries(response.headers).filter(([name]) => name !== 'x-request-id' && name !== 'retry-after' && !name.startsWith('x-ratelimit-')));
+	return { ...response, headers };
 }
 
 function operationOf(request: NormalizedRequest): Pick<LexwareResponse, 'operation'> {

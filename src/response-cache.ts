@@ -56,12 +56,13 @@ export class ResponseCache {
 		return entry.json;
 	}
 
-	// Ignored if the cache was cleared since `generation` was read, or if the entry alone exceeds the limit.
+	// Ignored if the cache was cleared since `generation` was read. An entry larger than the limit
+	// is not stored, but still drops the older response under the same key.
 	set(key: string, json: string, ttlMs: number, generation: number): void {
-		if (generation !== this.currentGeneration || ttlMs <= 0) return;
-		const bytes = Buffer.byteLength(key) + Buffer.byteLength(json);
-		if (bytes > this.limits.maxTotalBytes) return;
+		if (generation !== this.currentGeneration) return;
 		this.remove(key);
+		const bytes = Buffer.byteLength(key) + Buffer.byteLength(json);
+		if (ttlMs <= 0 || bytes > this.limits.maxTotalBytes) return;
 		this.entries.set(key, { json, bytes, expiresAt: this.now() + ttlMs });
 		this.totalBytes += bytes;
 		for (const oldest of this.entries.keys()) {
@@ -74,10 +75,6 @@ export class ResponseCache {
 		this.entries.clear();
 		this.totalBytes = 0;
 		this.currentGeneration += 1;
-	}
-
-	get size(): number {
-		return this.entries.size;
 	}
 
 	private remove(key: string) {

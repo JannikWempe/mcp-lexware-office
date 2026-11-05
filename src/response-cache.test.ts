@@ -16,7 +16,6 @@ test('entries expire after their TTL', () => {
 	assert.equal(cache.get('a'), '{"x":1}');
 	time.advance(1);
 	assert.equal(cache.get('a'), undefined);
-	assert.equal(cache.size, 0);
 });
 
 test('the least recently used entry is evicted beyond maxEntries', () => {
@@ -34,13 +33,20 @@ test('entries are evicted beyond maxTotalBytes, and an entry larger than the lim
 	const cache = new ResponseCache({ limits: { maxTotalBytes: 10 } });
 	cache.set('a', '1234', 60_000, cache.generation);
 	cache.set('b', '1234', 60_000, cache.generation);
-	assert.equal(cache.size, 2);
 	cache.set('c', '1234', 60_000, cache.generation);
 	assert.equal(cache.get('a'), undefined);
-	assert.equal(cache.size, 2);
+	assert.equal(cache.get('b'), '1234');
+	assert.equal(cache.get('c'), '1234');
 	cache.set('d', '12345678901', 60_000, cache.generation);
 	assert.equal(cache.get('d'), undefined);
-	assert.equal(cache.size, 2);
+	assert.equal(cache.get('c'), '1234');
+});
+
+test('a replacement too large to store still drops the older entry under its key', () => {
+	const cache = new ResponseCache({ limits: { maxTotalBytes: 10 } });
+	cache.set('a', 'old', 60_000, cache.generation);
+	cache.set('a', 'x'.repeat(20), 60_000, cache.generation);
+	assert.equal(cache.get('a'), undefined);
 });
 
 test('replacing a key keeps the byte count exact', () => {

@@ -46,6 +46,14 @@ test('a second identical reference-data GET is served from the cache without fet
 	assert.deepEqual(audit.entries, [{ method: 'GET', path: '/v1/posting-categories', status: 200, ok: true, write: false, sent: false, cached: true, durationMs: 0 }]);
 });
 
+test('a cache hit omits the rate-limit and request-id headers of the original response', async () => {
+	const { client } = cachingClient(() => new Response('[]', { status: 200, headers: { 'content-type': 'application/json', 'x-ratelimit-remaining': '1', 'x-request-id': 'req-1' } }));
+	const first = await client.request({ path: '/v1/countries' });
+	const hit = await client.request({ path: '/v1/countries' });
+	assert.equal(first.headers['x-request-id'], 'req-1');
+	assert.deepEqual(hit.headers, { 'content-type': 'application/json' });
+});
+
 test('a cache hit returns a copy: changing it does not change the cached response', async () => {
 	const { client } = cachingClient();
 	await client.request({ path: '/v1/countries' });
@@ -102,6 +110,28 @@ test('writes that are not sent (blocked, dry run) keep the cache', async () => {
 	const hit = await dryRun.client.request({ path: '/v1/profile' }, { dryRun: true });
 	assert.equal(hit.cached, true);
 	assert.deepEqual(dryRun.fetched, ['GET /v1/profile']);
+});
+
+test('a write stops cache hits as soon as it is sent, before its response arrives', async () => {
+	let version = 1;
+	let releaseWrite!: () => void;
+	let writeSent!: () => void;
+	const sent = new Promise<void>((resolve) => { writeSent = resolve; });
+	const { client } = cachingClient(async (method) => {
+		if (method === 'GET') return jsonResponse(200, { version });
+		version = 2;
+		writeSent();
+		await new Promise<void>((resolve) => { releaseWrite = resolve; });
+		return jsonResponse(200, {});
+	});
+	await client.request({ path: '/v1/profile' });
+	const write = client.request({ method: 'POST', path: '/v1/contacts', body: {} });
+	await sent;
+	const read = await client.request({ path: '/v1/profile' });
+	releaseWrite();
+	await write;
+	assert.equal(read.cached, undefined);
+	assert.deepEqual(read.data, { version: 2 });
 });
 
 test('a GET in flight while a write is sent is not stored', async () => {

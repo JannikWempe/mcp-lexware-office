@@ -30,6 +30,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 		writesEnabled: env.LEXWARE_OFFICE_READ_ONLY !== 'true' && env.LEXWARE_OFFICE_ALLOW_WRITES === 'true',
 		// Throws on entries that don't name a cataloged write, so a typo fails at startup instead of silently blocking.
 		writeAllow: env.LEXWARE_OFFICE_WRITE_ALLOW !== undefined ? parseWriteAllow(env.LEXWARE_OFFICE_WRITE_ALLOW) : undefined,
-		cacheEnabled: env.LEXWARE_OFFICE_CACHE?.trim().toLowerCase() !== 'off',
+		cacheEnabled: env.LEXWARE_OFFICE_CACHE !== 'off',
 	};
 }

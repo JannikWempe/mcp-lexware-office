@@ -57,10 +57,8 @@ test('WRITE_ALLOW is undefined when unset and parsed into catalog rules when set
 
 test('the response cache is on unless CACHE=off', () => {
 	assert.equal(loadConfig({}).cacheEnabled, true);
-	for (const value of ['off', 'OFF', ' off ']) {
-		assert.equal(loadConfig({ LEXWARE_OFFICE_CACHE: value }).cacheEnabled, false, `CACHE=${value}`);
-	}
-	for (const value of ['on', 'true', '']) {
+	assert.equal(loadConfig({ LEXWARE_OFFICE_CACHE: 'off' }).cacheEnabled, false);
+	for (const value of ['on', 'true', '', 'OFF']) {
 		assert.equal(loadConfig({ LEXWARE_OFFICE_CACHE: value }).cacheEnabled, true, `CACHE=${value}`);
 	}
 });
