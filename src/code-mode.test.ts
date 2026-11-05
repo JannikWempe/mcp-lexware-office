@@ -88,6 +88,17 @@ test('execute exposes writesEnabled in the sandbox spec', async () => {
 	}
 });
 
+test('find and describe are available in search and execute', async () => {
+	const { codeMode, fetched } = codeModeWith();
+	const code = `async () => ({ top: find('upload beleg', { limit: 1 })[0].path, op: describe('GET', '/v1/voucherlist').operationId })`;
+
+	for (const result of [await codeMode.search(code), await codeMode.execute(code, { maxRequests: 1 })]) {
+		assert.equal(result.isError, undefined, textOf(result));
+		assert.deepEqual(payloadOf(result).result, { top: '/v1/files', op: 'listVoucherSummaries' });
+	}
+	assert.equal(fetched.length, 0);
+});
+
 test('search errors set isError and keep logs', async () => {
 	const { codeMode } = codeModeWith();
 
