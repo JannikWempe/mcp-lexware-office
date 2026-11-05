@@ -266,10 +266,17 @@ docker run -i --rm \
 
 ## Build and test
 
+Requires Node.js 22+ and pnpm (the version pinned in `package.json#packageManager`; `corepack enable` installs it; on Node 25+, run `npm i -g corepack` first).
+
 ```bash
-npm run build
-npm test
+pnpm install
+pnpm typecheck
+pnpm test                       # builds, then runs build/*.test.js
+pnpm -s run smoke [--writes]    # prints what a client sees: instructions, tools, prompts, skills
+pnpm run check:docs             # compares the catalog with the live Lexware docs (network)
 ```
+
+`pnpm test` fails when model-facing text (instructions, tool descriptions, prompts, skills) changes; if the change is intended, run `UPDATE_SNAPSHOTS=1 pnpm test` and commit `src/tools-list.snapshot.json`.
 
 ## Documentation
 

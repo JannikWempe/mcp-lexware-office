@@ -830,3 +830,12 @@ test('the host rejects non-JSON text sent to the state host function directly', 
 
 	assert.deepEqual(payload.result, { direct: 'state.set expects a JSON-serializable value', unknownOp: 'Unknown state operation: clear', keys: [] });
 });
+
+test('a script that rejects without a reason or throws an empty string fails the call', async () => {
+	const { codeMode } = codeModeWith();
+
+	for (const result of [await codeMode.execute('async () => { await Promise.reject(); }', { maxRequests: 1 }), await codeMode.search("async () => { throw ''; }")]) {
+		assert.equal(result.isError, true);
+		assert.equal(payloadOf(result).ok, false);
+	}
+});

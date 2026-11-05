@@ -41,6 +41,7 @@ export interface CodeExecutorOptions {
 
 export interface CodeExecutionResult {
 	result?: unknown;
+	// Set, and non-empty, whenever execution failed.
 	error?: string;
 	logs?: string[];
 }
@@ -90,6 +91,8 @@ export class QuickJsExecutor implements CodeExecutor {
 
 		const memoryLimitBytes = options.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES;
 		if (!Number.isSafeInteger(memoryLimitBytes) || memoryLimitBytes < 0) throw new Error(`Invalid memoryLimitBytes: ${memoryLimitBytes}`);
+		const maxLogEntries = options.maxLogEntries ?? DEFAULT_MAX_LOG_ENTRIES;
+		if (!Number.isSafeInteger(maxLogEntries) || maxLogEntries < 0) throw new Error(`Invalid maxLogEntries: ${maxLogEntries}`);
 		// A fresh WASM module per execution (a few ms) isolates failures: when an engine call breaks
 		// (see `markEngineFailed` below), this run's module is dropped without touching runs on other modules.
 		// Its own bounded memory makes runaway allocations a catchable "out of memory" (see WASM_INITIAL_BYTES).
@@ -125,7 +128,6 @@ export class QuickJsExecutor implements CodeExecutor {
 		const engineFailureResult = (): CodeExecutionResult => ({ error: `Error: ${engineFailure}`, logs });
 
 		const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-		const maxLogEntries = options.maxLogEntries ?? DEFAULT_MAX_LOG_ENTRIES;
 		const maxLogChars = options.maxLogChars ?? DEFAULT_MAX_LOG_CHARS;
 		const filename = options.filename ?? 'sandbox.js';
 
@@ -226,8 +228,15 @@ export class QuickJsExecutor implements CodeExecutor {
 				});
 			}
 
+			let droppedLogEntries = 0;
 			vm.newFunction('log', (...args) => {
-				if (logs.length >= maxLogEntries || engineFailure !== undefined) return;
+				if (engineFailure !== undefined) return;
+				if (logs.length >= maxLogEntries) {
+					// One trailing entry, rewritten per drop, so the model knows output is missing.
+					droppedLogEntries += 1;
+					logs[maxLogEntries] = `...[${droppedLogEntries} more log ${droppedLogEntries === 1 ? 'entry' : 'entries'} dropped: the limit is ${maxLogEntries} per call]`;
+					return;
+				}
 				let message: string;
 				try {
 					message = args.map((arg) => stringifyLogValue(vm.dump(arg))).join(' ');
@@ -436,7 +445,8 @@ function isHostStackOverflow(error: unknown): boolean {
 function stringifyLogValue(value: unknown): string {
 	if (typeof value === 'string') return value;
 	try {
-		return JSON.stringify(value);
+		// JSON.stringify returns undefined for undefined, functions and symbols.
+		return JSON.stringify(value) ?? String(value);
 	} catch {
 		return String(value);
 	}
@@ -455,5 +465,8 @@ function stringifyQuickJsError(value: unknown): string {
 		const stack = typeof maybeError.stack === 'string' ? `\n${maybeError.stack}` : '';
 		return `${name}: ${message}${stack}`;
 	}
+	// Never empty: callers treat a missing or empty error as success.
+	if (value === undefined) return 'Error: the script threw undefined (or rejected without a reason) instead of an Error';
+	if (value === '') return 'Error: the script threw an empty string instead of an Error';
 	return stringifyLogValue(value);
 }
