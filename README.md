@@ -266,7 +266,7 @@ docker run -i --rm \
 
 ## Build and test
 
-Requires Node.js 22+ and pnpm (the version pinned in `package.json#packageManager`; `corepack enable` installs it).
+Requires Node.js 22+ and pnpm (the version pinned in `package.json#packageManager`; `corepack enable` installs it; on Node 25+, run `npm i -g corepack` first).
 
 ```bash
 pnpm install

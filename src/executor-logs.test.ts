@@ -46,3 +46,15 @@ test('console.info, warn and error share the cap', async () => {
 	assert.deepEqual(logs.slice(0, 2), ['i', 'w']);
 	assert.match(logs[2], /1 more log entry dropped/);
 });
+
+test('console.log prints undefined as undefined', async () => {
+	const { error, logs = [] } = await new QuickJsExecutor().execute(`async () => { console.log(undefined, 'x'); console.log(undefined); }`, {});
+	assert.equal(error, undefined);
+	assert.deepEqual(logs, ['undefined x', 'undefined']);
+});
+
+test('an invalid maxLogEntries is rejected', async () => {
+	for (const maxLogEntries of [-1, Number.NaN, 1.5]) {
+		await assert.rejects(() => new QuickJsExecutor().execute(`async () => 1`, {}, { maxLogEntries }), /Invalid maxLogEntries/, String(maxLogEntries));
+	}
+});

@@ -11,10 +11,10 @@ for (const [code, message] of [
 ] as const) {
 	test(`${code} fails with a non-empty error`, async () => {
 		const execution = await new QuickJsExecutor().execute(code, {});
-		assert.equal(typeof execution.error, 'string');
-		assert.ok(execution.error!.length > 0);
-		assert.match(execution.error!, message);
-		assert.equal(execution.result, undefined);
+		assert.equal(typeof execution.error, 'string', code);
+		assert.ok(execution.error!.length > 0, code);
+		assert.match(execution.error!, message, code);
+		assert.equal(execution.result, undefined, code);
 	});
 }
 
@@ -23,12 +23,15 @@ test('thrown non-empty primitives keep their exact error text', async () => {
 		["async () => { throw 'boom'; }", 'boom'],
 		['async () => { throw null; }', 'null'],
 		['async () => { throw 0; }', '0'],
+		["async () => { throw Symbol('s'); }", 'Symbol(s)'],
 	]) {
-		assert.equal((await new QuickJsExecutor().execute(code, {})).error, error);
+		assert.equal((await new QuickJsExecutor().execute(code, {})).error, error, code);
 	}
 });
 
-test('console.log prints undefined as undefined', async () => {
-	const execution = await new QuickJsExecutor().execute(`async () => { console.log(undefined, 'x'); console.log(undefined); return 1; }`, {});
-	assert.deepEqual(execution.logs, ['undefined x', 'undefined']);
+test('a thrown function fails with a non-empty error', async () => {
+	const execution = await new QuickJsExecutor().execute('async () => { throw () => 1; }', {});
+	assert.equal(typeof execution.error, 'string');
+	assert.ok(execution.error!.length > 0);
+	assert.equal(execution.result, undefined);
 });

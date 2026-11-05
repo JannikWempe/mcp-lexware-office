@@ -91,6 +91,8 @@ export class QuickJsExecutor implements CodeExecutor {
 
 		const memoryLimitBytes = options.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES;
 		if (!Number.isSafeInteger(memoryLimitBytes) || memoryLimitBytes < 0) throw new Error(`Invalid memoryLimitBytes: ${memoryLimitBytes}`);
+		const maxLogEntries = options.maxLogEntries ?? DEFAULT_MAX_LOG_ENTRIES;
+		if (!Number.isSafeInteger(maxLogEntries) || maxLogEntries < 0) throw new Error(`Invalid maxLogEntries: ${maxLogEntries}`);
 		// A fresh WASM module per execution (a few ms) isolates failures: when an engine call breaks
 		// (see `markEngineFailed` below), this run's module is dropped without touching runs on other modules.
 		// Its own bounded memory makes runaway allocations a catchable "out of memory" (see WASM_INITIAL_BYTES).
@@ -126,7 +128,6 @@ export class QuickJsExecutor implements CodeExecutor {
 		const engineFailureResult = (): CodeExecutionResult => ({ error: `Error: ${engineFailure}`, logs });
 
 		const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-		const maxLogEntries = options.maxLogEntries ?? DEFAULT_MAX_LOG_ENTRIES;
 		const maxLogChars = options.maxLogChars ?? DEFAULT_MAX_LOG_CHARS;
 		const filename = options.filename ?? 'sandbox.js';
 

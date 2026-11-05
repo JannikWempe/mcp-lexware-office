@@ -373,7 +373,7 @@ test('client cancellation aborts the in-flight Lexware request', async () => {
 		assert.equal(await requestReceived, '/v1/contacts');
 		mcp.send({ method: 'notifications/cancelled', params: { requestId: id, reason: 'test' } });
 
-		// Well below the 25 s request timeout and the 5 s profile timeout, so only the cancellation can close it.
+		// Well below the 25 s request timeout, so only the cancellation can close it.
 		const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 2_000).unref());
 		assert.equal(await Promise.race([requestAborted, timeout]), '/v1/contacts');
 	} finally {
