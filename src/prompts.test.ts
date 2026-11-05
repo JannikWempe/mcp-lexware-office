@@ -107,7 +107,7 @@ test('write prompts name the writes LEXWARE_OFFICE_WRITE_ALLOW blocks', () => {
 
 test('write mode preview sends no writes', () => {
 	assert.match(render('upload-receipts', { mode: 'preview' }, { writesEnabled: true }), /Write mode preview: run every execute call that writes with dryRun: true/);
-	assert.match(render('create-invoice', {}, { writesEnabled: true }), /Write mode apply/);
+	assert.match(render('create-invoice', {}, { writesEnabled: true }), /^Send the writes once the checks pass/);
 });
 
 test('prompts render their arguments', () => {

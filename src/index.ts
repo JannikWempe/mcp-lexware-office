@@ -34,8 +34,8 @@ const client = new LexwareApiClient({
 });
 const codeMode = new CodeMode({ client, account: new AccountProfile(client, { label: config.accountLabel }) });
 const promptContext = { writesEnabled: config.writesEnabled, writeAllow: config.writeAllow };
-// The workflow prompts again as MCP Skills; rendered once, since the write mode is fixed at startup.
-const skills = await loadWorkflowSkills(promptContext);
+// Rendered once: the write mode is fixed at startup.
+const skillCatalog = await loadWorkflowSkills(promptContext);
 const cachedPaths = Object.entries(lexwareSpec.paths).filter(([, methods]) => methods.get?.cacheTtlSeconds !== undefined).map(([path]) => path);
 // Only described when on, so a server started with LEXWARE_OFFICE_CACHE=off doesn't promise cache hits.
 const cacheNote = config.cacheEnabled ? `\n\nReference data (GET ${cachedPaths.join(', ')}; cacheTtlSeconds in spec.paths) is cached across execute calls. A cache hit returns response.cached: true, appears in requests with cached: true and sent: false, and costs no maxRequests and no rate-limit wait. Every write sent clears the cache; pass cache: false to lexware.request to force a fresh read.` : '';
@@ -201,7 +201,7 @@ async () => {
 			}),
 		);
 	}
-	skills.attach(server);
+	skillCatalog.attach(server);
 
 	return server;
 }

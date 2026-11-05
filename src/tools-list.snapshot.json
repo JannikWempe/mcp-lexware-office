@@ -147,28 +147,28 @@
 				"uri": "skill://lexware-office/create-invoice/SKILL.md",
 				"frontmatter": {
 					"name": "create-invoice",
-					"description": "Create an invoice: find the contact, build and review a draft, and finalize it only when the user asks."
+					"description": "Create an invoice: find the contact, build and review a draft, and finalize it only when the user asks. Use when the user wants to create, draft or finalize an invoice (Rechnung) in Lexware Office (lexoffice)."
 				}
 			},
 			{
 				"uri": "skill://lexware-office/profit-report/SKILL.md",
 				"frontmatter": {
 					"name": "profit-report",
-					"description": "Report a profit-like result for a period: invoiced revenue minus bookkeeping expenses, with the assumptions stated."
+					"description": "Report a profit-like result for a period: invoiced revenue minus bookkeeping expenses, with the assumptions stated. Use when the user asks for profit, Gewinn, earnings or revenue minus expenses of a period from Lexware Office (lexoffice)."
 				}
 			},
 			{
 				"uri": "skill://lexware-office/revenue-report/SKILL.md",
 				"frontmatter": {
 					"name": "revenue-report",
-					"description": "Report revenue (Umsatz) for a period: invoiced or paid, gross or net, with the assumptions stated."
+					"description": "Report revenue (Umsatz) for a period: invoiced or paid, gross or net, with the assumptions stated. Use when the user asks for revenue, Umsatz, sales or turnover of a period from Lexware Office (lexoffice)."
 				}
 			},
 			{
 				"uri": "skill://lexware-office/upload-receipts/SKILL.md",
 				"frontmatter": {
 					"name": "upload-receipts",
-					"description": "Upload receipts to Lexware Office: check for duplicates, upload, wait for text recognition, correct fields and categories without dropping the file, and report per receipt."
+					"description": "Upload receipts to Lexware Office: check for duplicates, upload, wait for text recognition, correct fields and categories without dropping the file, and report per receipt. Use when the user wants to upload, book or reconcile receipts or supplier invoices (Belege) in Lexware Office (lexoffice)."
 				}
 			}
 		]
@@ -321,28 +321,28 @@
 				"uri": "skill://lexware-office/create-invoice/SKILL.md",
 				"frontmatter": {
 					"name": "create-invoice",
-					"description": "Create an invoice: find the contact, build and review a draft, and finalize it only when the user asks."
+					"description": "Create an invoice: find the contact, build and review a draft, and finalize it only when the user asks. Use when the user wants to create, draft or finalize an invoice (Rechnung) in Lexware Office (lexoffice)."
 				}
 			},
 			{
 				"uri": "skill://lexware-office/profit-report/SKILL.md",
 				"frontmatter": {
 					"name": "profit-report",
-					"description": "Report a profit-like result for a period: invoiced revenue minus bookkeeping expenses, with the assumptions stated."
+					"description": "Report a profit-like result for a period: invoiced revenue minus bookkeeping expenses, with the assumptions stated. Use when the user asks for profit, Gewinn, earnings or revenue minus expenses of a period from Lexware Office (lexoffice)."
 				}
 			},
 			{
 				"uri": "skill://lexware-office/revenue-report/SKILL.md",
 				"frontmatter": {
 					"name": "revenue-report",
-					"description": "Report revenue (Umsatz) for a period: invoiced or paid, gross or net, with the assumptions stated."
+					"description": "Report revenue (Umsatz) for a period: invoiced or paid, gross or net, with the assumptions stated. Use when the user asks for revenue, Umsatz, sales or turnover of a period from Lexware Office (lexoffice)."
 				}
 			},
 			{
 				"uri": "skill://lexware-office/upload-receipts/SKILL.md",
 				"frontmatter": {
 					"name": "upload-receipts",
-					"description": "Upload receipts to Lexware Office: check for duplicates, upload, wait for text recognition, correct fields and categories without dropping the file, and report per receipt."
+					"description": "Upload receipts to Lexware Office: check for duplicates, upload, wait for text recognition, correct fields and categories without dropping the file, and report per receipt. Use when the user wants to upload, book or reconcile receipts or supplier invoices (Belege) in Lexware Office (lexoffice)."
 				}
 			}
 		]

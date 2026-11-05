@@ -6,13 +6,15 @@ import { renderPrompt, workflowPrompts, type PromptContext, type WorkflowPrompt 
 // skill://lexware-office/<name>/SKILL.md. A skill has no arguments, so the body is the prompt rendered without
 // any; the prompt text then tells the model to ask the user for what is missing.
 
-export const SKILL_PREFIX = 'lexware-office';
+const SKILL_PREFIX = 'lexware-office';
+
+export const skillDescription = (prompt: WorkflowPrompt) => `${prompt.description} Use when ${prompt.useWhen}`;
 
 // JSON strings are YAML double-quoted scalars, so descriptions with ': ' stay valid frontmatter.
 export const renderSkill = (prompt: WorkflowPrompt, context: PromptContext): string => [
 	'---',
 	`name: ${prompt.name}`,
-	`description: ${JSON.stringify(prompt.description)}`,
+	`description: ${JSON.stringify(skillDescription(prompt))}`,
 	'---',
 	'',
 	`# ${prompt.title}`,

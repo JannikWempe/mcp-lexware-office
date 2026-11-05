@@ -336,7 +336,7 @@ Write prompts follow the server configuration:
 
 ## Skills
 
-The same workflows are also served as skills through the MCP Skills extension (`io.modelcontextprotocol/skills`, [SEP-2640](https://github.com/modelcontextprotocol/ext-skills)), for clients that load skills from MCP servers. The server declares the extension in its capabilities and answers `skills/list`, `skills/get` and `resources/read`:
+The same workflows are also served as skills through the MCP Skills extension (`io.modelcontextprotocol/skills`, [SEP-2640](https://github.com/modelcontextprotocol/ext-skills)), for clients that load skills from MCP servers. The server declares the extension in its capabilities and answers `skills/list`, `skills/get`, `resources/read` and `resources/directory/read`; `resources/list` lists the `SKILL.md` files:
 
 | Skill | URI |
 | --- | --- |
@@ -345,7 +345,7 @@ The same workflows are also served as skills through the MCP Skills extension (`
 | `profit-report` | `skill://lexware-office/profit-report/SKILL.md` |
 | `create-invoice` | `skill://lexware-office/create-invoice/SKILL.md` |
 
-Each `SKILL.md` has the prompt's name and description as frontmatter and the prompt's text as its body. Skills take no arguments, so the body is the prompt without any: the model asks the user for the period, files or customer, and write skills use write mode `apply`. Like the prompts, write skills start with the server's write mode, rendered once at startup.
+Each `SKILL.md` has the prompt's name as frontmatter, its description plus when to use the skill, and the prompt's text as its body. Skills take no arguments, so the body is the prompt without any: the model asks the user for the period, files or customer, and write skills send the writes once the user agreed to them. Like the prompts, write skills start with the server's write mode, rendered once at startup.
 
 ## Binary-safe file uploads
 
