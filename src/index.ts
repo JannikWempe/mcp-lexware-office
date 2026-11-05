@@ -4,6 +4,7 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 
 import { AccountProfile } from './account.js';
+import { catalogLookupDeclaration } from './catalog-lookup.js';
 import { CodeMode, LEXWARE_REQUEST_TIMEOUT_MS } from './code-mode.js';
 import { loadConfig, type ServerConfig } from './config.js';
 import { LexwareApiClient } from './lexware-client.js';
@@ -41,7 +42,7 @@ function createServer(): McpServer {
 		},
 		{
 			instructions: `Lexware Office API via Code Mode: \`search\` explores a curated API catalog, \`execute\` runs a sandboxed JS workflow against the live API.
-Always call \`search\` to discover endpoints, parameters, and workflows before \`execute\`; do not guess /v1 paths from memory.
+Always call \`search\` to discover endpoints, parameters, and workflows before \`execute\`; do not guess /v1 paths from memory. Start with find('…') and describe(method, path), and return only what you need — avoid returning whole spec sections such as spec.workflows.
 Check spec.info.account to confirm which Lexware organization you are connected to (companyName, taxType, smallBusiness) before reading or writing.
 The server is read-only unless started with LEXWARE_OFFICE_ALLOW_WRITES=true; check spec.info.writesEnabled before planning writes, and spec.info.writePolicy.allow for which writes are permitted.
 Summarize, filter, and aggregate inside \`execute\` and return only what is needed — large results are truncated.`,
@@ -56,9 +57,12 @@ Summarize, filter, and aggregate inside \`execute\` and return only what is need
 
 Use this before execute to discover endpoints, request shapes, response notes, workflows, and domain-specific caveats.
 
-Available global:
+Available globals:
 
 declare const spec: LexwareApiCatalog;
+${catalogLookupDeclaration}
+
+Start with find('…'): it ranks operations, workflows and spec.info semantics by your words (English or German, e.g. 'upload beleg', 'umsatz') and returns compact matches with a hint where to read more. Then read only the entries you need with describe(method, path) or the hint path. Return only what you need: avoid returning whole sections such as spec.workflows, spec.paths entries with all their tags, or several spec.info semantics at once — large results are truncated.
 
 Useful starting points:
 - spec.info.domainIndex: compact map from business domains to endpoint lists
@@ -73,14 +77,15 @@ Sandbox: no network, filesystem, process, fetch, imports, or API key. Return JSO
 
 Examples:
 
+async () => find('upload beleg')
+
+async () => describe('GET', '/v1/voucherlist')
+
+async () => spec.workflows.fileHandling.steps
+
 async () => Object.entries(spec.info.domainIndex)
   .filter(([name, domain]) => [name, ...domain.tags].some(value => value.toLowerCase().includes('contact')))
-  .map(([name, domain]) => ({ name, ...domain }))
-
-async () => {
-  const op = spec.paths['/v1/voucherlist']?.get;
-  return { summary: op?.summary, parameters: op?.parameters, notes: op?.notes, examples: op?.examples };
-}`,
+  .map(([name, domain]) => ({ name, ...domain }))`,
 			inputSchema: z.object({
 				code: z.string().describe('JavaScript async arrow function to search the Lexware API catalog'),
 			}),
@@ -102,6 +107,8 @@ Use search first when you need endpoint/domain guidance; do not guess Lexware pa
 Available globals:
 
 declare const spec: LexwareApiCatalog;
+declare function find(query: string, options?: { limit?: number; kinds?: Array<'operation' | 'workflow' | 'semantics'> }): Array<{ kind: string; id: string; method?: string; path?: string; summary: string; score: number; hint: string }>; // as in search
+declare function describe(method: string, path: string): object; // as in search
 ${lexwareSdkDeclaration}
 
 lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. A GET answered with 429 is retried once automatically after Retry-After (if <= 5s) or, without that header, a 1-2s backoff; writes are never retried.
