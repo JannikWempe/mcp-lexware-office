@@ -27,9 +27,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 			.map((dir) => dir.trim())
 			.filter((dir) => dir.length > 0),
 		// Writes are blocked by default and require explicit opt-in; READ_ONLY is a hard block that wins over ALLOW_WRITES.
-		writesEnabled: env.LEXWARE_OFFICE_READ_ONLY !== 'true' && env.LEXWARE_OFFICE_ALLOW_WRITES === 'true',
+		// READ_ONLY fails closed: any value but empty or false (e.g. TRUE, 1, yes) blocks writes.
+		writesEnabled: !isReadOnly(env.LEXWARE_OFFICE_READ_ONLY) && env.LEXWARE_OFFICE_ALLOW_WRITES === 'true',
 		// Throws on entries that don't name a cataloged write, so a typo fails at startup instead of silently blocking.
 		writeAllow: env.LEXWARE_OFFICE_WRITE_ALLOW !== undefined ? parseWriteAllow(env.LEXWARE_OFFICE_WRITE_ALLOW) : undefined,
 		cacheEnabled: env.LEXWARE_OFFICE_CACHE !== 'off',
 	};
+}
+
+function isReadOnly(value: string | undefined): boolean {
+	if (value === undefined) return false;
+	const normalized = value.trim().toLowerCase();
+	return normalized !== '' && normalized !== 'false';
 }

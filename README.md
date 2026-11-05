@@ -171,7 +171,7 @@ Use this source-based setup only for development. End users should prefer the pa
 }
 ```
 
-`LEXWARE_OFFICE_READ_ONLY=true` is a hard block that wins over `ALLOW_WRITES=true`:
+`LEXWARE_OFFICE_READ_ONLY=true` is a hard block that wins over `ALLOW_WRITES=true` (any value other than empty or `false` counts):
 
 ```json
 {
