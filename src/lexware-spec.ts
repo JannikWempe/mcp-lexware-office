@@ -201,12 +201,12 @@ const salesVoucherBody = (summary: string, extraRequired: string[], extraShape: 
 const salesVoucherNotes = [
 	'Datetime fields such as voucherDate and shippingConditions.shippingDate use yyyy-MM-ddTHH:mm:ss.SSSXXX (exactly 3 millisecond digits, Z or an offset with colon); other formats are rejected with 406.',
 	'At most 300 line items. lineItems[].quantity and unitName are required except for type text, and so is unitPrice except on delivery notes, where it is optional. id (an article) is required for material and service.',
-	'Text limits: title 25, introduction and remark 2000, deliveryTerms 255, lineItems[].name 255, lineItems[].description 2000 characters.',
-	'photovoltaicEquipment is listed as a taxType in the property docs but not among the supported values of the create docs; expect a 406 if Lexware rejects it.',
+	'Text limits: title 25, introduction and remark 2000, deliveryTerms (order confirmations and delivery notes) 255, lineItems[].name 255, lineItems[].description 2000 characters.',
+	'photovoltaicEquipment is listed as a taxType in the property docs but not among the supported values of the create docs: use it only when the user asks for it, and report a 406 rather than retrying with another taxType.',
 	'electronicDocumentProfile (NONE, EN16931 = ZUGFeRD, XRechnung) is read-only: do not send it.',
 ];
 const shippingConditionsShape = { shippingConditions: { shippingType: 'service|serviceperiod|delivery|deliveryperiod|none', shippingDate: `${salesDatetimeFormat}; required unless shippingType is none`, shippingEndDate: 'required for serviceperiod and deliveryperiod, not before shippingDate' } };
-const xRechnungShape = { xRechnung: 'optional { buyerReference }; buyerReference is mandatory when xRechnung is sent. It overrides the contact\'s Leitweg-ID for this invoice; "" creates a standard invoice for an XRechnung contact' };
+const xRechnungShape = { xRechnung: { buyerReference: 'mandatory when xRechnung is sent (xRechnung itself is optional); overrides the contact\'s Leitweg-ID for this invoice, "" creates a standard invoice for an XRechnung contact' } };
 const xRechnungNote = 'Referencing a contact entitled to XRechnung creates an XRechnung invoice with extended validation. Without xRechnung the contact\'s buyer reference is used. A buyerReference is rejected with 406 if the linked contact has no buyer reference and no vendor number at the customer.';
 
 // Docs "Create a Voucher": voucherNumber, voucherDate, totals and voucherItems are optional only for voucherStatus unchecked; PUT uses the same rules.
@@ -243,7 +243,7 @@ const documentResponses = {
 	'429': 'Rate limit exceeded',
 };
 
-// HTTP status codes table: 201 on successful creation, and creates send no version, so no optimistic-locking 409; changelog 16.09.2024: creates with a resourceUri also return a Location header.
+// HTTP status codes table: 201 on successful creation; the docs document no 409 for creates (event subscriptions add their own); changelog 16.09.2024: creates with a resourceUri also return a Location header.
 const createdResponses = {
 	...Object.fromEntries(Object.entries(documentResponses).filter(([status]) => status !== '200' && status !== '409')),
 	'201': 'Created: action result { id, resourceUri, createdDate, updatedDate, version }; the Location header holds the resource URL. Check response.ok rather than one exact 2xx status.',

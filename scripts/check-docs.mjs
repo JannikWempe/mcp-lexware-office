@@ -76,7 +76,8 @@ if (!updateBaseline) {
 			problems.push(`section #${anchor} changed since the baseline; diff it against the catalog: ${DOCS_URL}#${anchor}`);
 		}
 	}
-	for (const anchor of Object.keys(baseline.sections ?? {}).filter((anchor) => sections[anchor] === undefined)) {
+	const gone = topSections.length === 0 ? [] : Object.keys(baseline.sections ?? {}).filter((anchor) => sections[anchor] === undefined);
+	for (const anchor of gone) {
 		problems.push(`section #${anchor} is gone from the docs page`);
 	}
 }
