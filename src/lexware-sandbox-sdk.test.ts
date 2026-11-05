@@ -430,6 +430,14 @@ test('lexware.updateVoucher in a dry run returns the planned PUT and the changed
 	});
 });
 
+test('lexware.updateVoucher in a dry run reports files added to a voucher without files', async () => {
+	const { files: _, ...withoutFiles } = storedVoucher;
+	const host = (patch: Record<string, unknown>) => sdkWith((input) => (input.method === 'PUT' ? dryRunResponse(input) : okResponse(structuredClone(withoutFiles)))).sdk.updateVoucher('v-1', patch);
+
+	assert.deepEqual((await host({ files: ['f-9'] })).changed, ['files']);
+	assert.deepEqual((await host({ voucherNumber: 'RE-1' })).changed, []);
+});
+
 test('lexware upload helpers in a dry run return the plan without polling', async () => {
 	const { sdk, inputs, sleeps } = sdkWith(dryRunResponse);
 

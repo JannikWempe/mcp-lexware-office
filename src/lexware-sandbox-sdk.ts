@@ -295,7 +295,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		}
 		if (putResponse.dryRun === true) {
 			const changed = Object.keys(body)
-				.filter((key) => key !== 'version' && JSON.stringify(before[key]) !== JSON.stringify(body[key]) && !(key === 'files' && before.files === undefined));
+				.filter((key) => key !== 'version' && JSON.stringify(before[key]) !== JSON.stringify(body[key]) && !(key === 'files' && before.files === undefined && keptFileIds.length === 0));
 			for (const key of ['contactId', 'useCollectiveContact']) {
 				if (before[key] !== undefined && !Object.prototype.hasOwnProperty.call(body, key)) changed.push(key);
 			}
