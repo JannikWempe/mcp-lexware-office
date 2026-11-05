@@ -50,6 +50,16 @@ test('API key and base URL are passed through, undefined when unset', () => {
 	assert.equal(empty.baseUrl, undefined);
 });
 
+test('an empty base URL falls back to the default, an invalid one fails at startup', () => {
+	for (const value of ['', '  ']) {
+		assert.equal(loadConfig({ LEXWARE_OFFICE_API_BASE_URL: value }).baseUrl, undefined, JSON.stringify(value));
+	}
+	assert.equal(loadConfig({ LEXWARE_OFFICE_API_BASE_URL: ' https://proxy.test/lexware/ ' }).baseUrl, 'https://proxy.test/lexware/');
+	for (const value of ['api.lexware.io', 'ftp://example.test']) {
+		assert.throws(() => loadConfig({ LEXWARE_OFFICE_API_BASE_URL: value }), /LEXWARE_OFFICE_API_BASE_URL .* is not an http\(s\) URL/, value);
+	}
+});
+
 test('ACCOUNT_LABEL is passed through, undefined when unset', () => {
 	assert.equal(loadConfig({}).accountLabel, undefined);
 	assert.equal(loadConfig({ LEXWARE_OFFICE_ACCOUNT_LABEL: 'Firma A' }).accountLabel, 'Firma A');

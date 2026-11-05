@@ -26,6 +26,9 @@ const argVariants = [
 	{ files: '/data/a.pdf, /data/b.pdf', mode: 'preview', dateFrom: '2026-01-01', dateTo: '2026-03-31', basis: 'paid', customer: 'Muster GmbH', details: '3 h consulting at 120 EUR net' },
 	{ mode: 'apply', basis: 'net' },
 	{ basis: 'invoiced' },
+	{ files: '', mode: '', dateFrom: '', dateTo: '', basis: '', customer: '', details: '' },
+	{ dateFrom: '2026-01-01' },
+	{ dateTo: '2026-03-31' },
 ];
 
 const renderings = workflowPrompts.flatMap((candidate) => contexts.flatMap((context) => argVariants.map((variant) => {
@@ -132,6 +135,39 @@ test('prompts render their arguments', () => {
 	assert.match(invoice, /Customer: Muster GmbH/);
 	assert.match(invoice, /Ask the user what to invoice/);
 	assert.match(invoice, /spec\.workflows\.createAndFinalizeSalesDocument/);
+});
+
+// Parses like prompts/get does, so empty strings go through the argument schemas.
+const renderParsed = (name: string, args: Record<string, string>, context: PromptContext) => {
+	const found = prompt(name);
+	return renderPrompt(found, found.argsSchema.parse(args), context);
+};
+
+test('prompts treat empty arguments as omitted', () => {
+	const profit = renderParsed('profit-report', { dateFrom: '', dateTo: ' ' }, { writesEnabled: false });
+	assert.equal(profit, render('profit-report', {}, { writesEnabled: false }));
+	assert.match(profit, /Ask the user for the period/);
+
+	const invoice = renderParsed('create-invoice', { customer: '', details: '', mode: '' }, { writesEnabled: true });
+	assert.equal(invoice, render('create-invoice', {}, { writesEnabled: true }));
+	assert.match(invoice, /Ask the user for the customer\./);
+	assert.doesNotMatch(invoice, /Customer: /);
+
+	for (const basis of ['', ' ']) {
+		assert.equal(renderParsed('revenue-report', { basis }, { writesEnabled: false }), render('revenue-report', {}, { writesEnabled: false }), JSON.stringify(basis));
+	}
+	assert.equal(renderParsed('upload-receipts', { mode: ' ' }, { writesEnabled: true }), render('upload-receipts', {}, { writesEnabled: true }));
+	assert.equal(prompt('revenue-report').argsSchema.safeParse({ basis: 'gross' }).success, false);
+	assert.equal(renderParsed('upload-receipts', { files: ' ' }, { writesEnabled: true }), render('upload-receipts', {}, { writesEnabled: true }));
+});
+
+test('prompts keep a single given date and ask only for the other one', () => {
+	const from = renderParsed('revenue-report', { dateFrom: '2026-01-01', dateTo: '' }, { writesEnabled: false });
+	assert.match(from, /Period: voucherDate from 2026-01-01\. Ask the user for the end date/);
+	assert.doesNotMatch(from, /Ask the user for the period/);
+
+	const to = renderParsed('profit-report', { dateTo: '2026-06-30' }, { writesEnabled: false });
+	assert.match(to, /Period: voucherDate to 2026-06-30\. Ask the user for the start date/);
 });
 
 test('prompt text comes from spec.workflows, so catalog edits reach the prompts', () => {

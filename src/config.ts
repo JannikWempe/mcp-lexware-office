@@ -20,7 +20,7 @@ export interface ServerConfig {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 	return {
 		apiKey: env.LEXWARE_OFFICE_API_KEY,
-		baseUrl: env.LEXWARE_OFFICE_API_BASE_URL,
+		baseUrl: parseBaseUrl(env.LEXWARE_OFFICE_API_BASE_URL),
 		accountLabel: env.LEXWARE_OFFICE_ACCOUNT_LABEL,
 		uploadDirs: (env.LEXWARE_OFFICE_UPLOAD_DIRS ?? '')
 			.split(delimiter)
@@ -33,6 +33,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 		writeAllow: env.LEXWARE_OFFICE_WRITE_ALLOW !== undefined ? parseWriteAllow(env.LEXWARE_OFFICE_WRITE_ALLOW) : undefined,
 		cacheEnabled: env.LEXWARE_OFFICE_CACHE !== 'off',
 	};
+}
+
+// Empty means unset, so the client falls back to the default. Anything else must be an http(s) URL, checked at startup
+// instead of failing every request with "Invalid URL".
+function parseBaseUrl(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	if (trimmed === undefined || trimmed === '') return undefined;
+	if (!URL.canParse(trimmed) || !['http:', 'https:'].includes(new URL(trimmed).protocol)) {
+		throw new Error(`LEXWARE_OFFICE_API_BASE_URL "${value}" is not an http(s) URL. Unset it to use the default.`);
+	}
+	return trimmed;
 }
 
 function isReadOnly(value: string | undefined): boolean {
