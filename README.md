@@ -17,7 +17,7 @@ The server uses **Code Mode**: instead of one MCP tool per API endpoint, it expo
 - **Reference data**: profile, countries, print layouts, payment conditions, recurring templates
 - **Webhooks**: create, list, inspect, and delete event subscriptions
 - **Read-only by default**: writes require explicit opt-in via environment variable
-- **Workflow prompts**: receipt uploads, revenue and profit reports, and invoices as MCP prompts generated from the catalog
+- **Workflow prompts and skills**: receipt uploads, revenue and profit reports, and invoices as MCP prompts and MCP Skills generated from the catalog
 - **Dry runs**: preview the exact writes a workflow would send, including upload hashes, without sending them
 
 ## How it works
@@ -53,7 +53,7 @@ Work too large for one `execute` call (2 requests/s, 30 s, at most 50 requests) 
 
 Reference data (posting categories, profile, countries, payment conditions, print layouts) is cached in server memory for an hour, so later `execute` calls get it without a request. Every write the server sends clears the cache. See [docs/guide.md#response-cache](docs/guide.md#response-cache).
 
-The server also ships prompts for recurring workflows: `upload-receipts`, `revenue-report`, `profit-report` and `create-invoice`. They are generated from the catalog's workflows and follow the server's write mode. See [docs/guide.md#prompts](docs/guide.md#prompts).
+The server also ships prompts for recurring workflows: `upload-receipts`, `revenue-report`, `profit-report` and `create-invoice`. They are generated from the catalog's workflows and follow the server's write mode. Clients that support the MCP Skills extension (`io.modelcontextprotocol/skills`) get the same workflows as skills at `skill://lexware-office/<name>/SKILL.md`. See [docs/guide.md#prompts](docs/guide.md#prompts) and [docs/guide.md#skills](docs/guide.md#skills).
 
 ### Binary-safe file uploads
 

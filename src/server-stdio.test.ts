@@ -23,6 +23,11 @@ interface ListedPrompt {
 	arguments?: Array<{ name: string; required?: boolean }>;
 }
 
+interface ListedSkill {
+	uri: string;
+	frontmatter: { name: string; description: string };
+}
+
 interface JsonRpcResponse {
 	id: number;
 	result?: {
@@ -30,6 +35,10 @@ interface JsonRpcResponse {
 		isError?: boolean;
 		tools?: ListedTool[];
 		prompts?: ListedPrompt[];
+		skills?: ListedSkill[];
+		skill?: ListedSkill;
+		contents?: Array<{ uri: string; mimeType?: string; text?: string }>;
+		capabilities?: { extensions?: Record<string, unknown> };
 		messages?: Array<{ role: string; content: { type: string; text: string } }>;
 		instructions?: string;
 	};
@@ -134,7 +143,7 @@ test('server lists exactly search and execute with docs and write-mode annotatio
 
 // Everything the model sees before its first call. Diff against a checked-in snapshot so description or schema
 // changes are always deliberate.
-test('instructions, tools/list and prompts/list match the snapshot in read-only and writes-enabled mode', async () => {
+test('instructions, tools/list, prompts/list and skills/list match the snapshot in read-only and writes-enabled mode', async () => {
 	const lexware = await startFakeLexware((_req, res) => res.end());
 	const actual: Record<string, unknown> = {};
 	try {
@@ -143,7 +152,10 @@ test('instructions, tools/list and prompts/list match the snapshot in read-only 
 			try {
 				const { result } = await mcp.request('tools/list', {}).response;
 				const { result: promptsResult } = await mcp.request('prompts/list', {}).response;
-				actual[mode] = { instructions: mcp.initialized.result?.instructions, tools: result?.tools, prompts: promptsResult?.prompts };
+				const { result: skillsResult } = await mcp.request('skills/list', {}).response;
+				// Without resources: their digests change with every workflow text edit.
+				const skills = skillsResult?.skills?.map(({ uri, frontmatter }) => ({ uri, frontmatter }));
+				actual[mode] = { instructions: mcp.initialized.result?.instructions, tools: result?.tools, prompts: promptsResult?.prompts, skills };
 			} finally {
 				mcp.close();
 			}
@@ -179,6 +191,36 @@ test('prompts/list and prompts/get serve the workflow prompts in both protocol e
 
 				const { error } = await mcp.request('prompts/get', { name: 'revenue-report', arguments: { basis: 'gross' } }).response;
 				assert.ok(error, `${era}: an invalid basis is rejected`);
+			} finally {
+				mcp.close();
+			}
+		}
+	} finally {
+		lexware.close();
+	}
+});
+
+test('the workflow prompts are served as skills (io.modelcontextprotocol/skills) in both protocol eras', async () => {
+	const lexware = await startFakeLexware((_req, res) => res.end());
+	try {
+		for (const era of ['2025', 'modern'] as const) {
+			const mcp = await startMcp(lexware.baseUrl, {}, era);
+			try {
+				assert.ok(mcp.initialized.result?.capabilities?.extensions?.['io.modelcontextprotocol/skills'], `${era}: capability declared`);
+
+				const { result: listed } = await mcp.request('skills/list', {}).response;
+				assert.deepEqual(listed?.skills?.map((skill) => skill.frontmatter.name), ['create-invoice', 'profit-report', 'revenue-report', 'upload-receipts'], era);
+
+				const uri = 'skill://lexware-office/upload-receipts/SKILL.md';
+				const { result: got } = await mcp.request('skills/get', { uri }).response;
+				assert.equal(got?.skill?.uri, uri, era);
+
+				const { result } = await mcp.request('resources/read', { uri }).response;
+				const text = result?.contents?.[0]?.text ?? '';
+				assert.match(text, /^---\nname: upload-receipts\n/, era);
+				// Started with LEXWARE_OFFICE_ALLOW_WRITES=false.
+				assert.match(text, /\n\nThis server is read-only/, era);
+				assert.match(text, /spec\.workflows\.uploadReceipts/, era);
 			} finally {
 				mcp.close();
 			}

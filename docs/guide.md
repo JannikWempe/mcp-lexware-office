@@ -334,6 +334,19 @@ Write prompts follow the server configuration:
 - On a read-only server, the prompt says so first: the model does the read-only steps (for `upload-receipts`, the duplicate check) and only previews the writes.
 - With `LEXWARE_OFFICE_WRITE_ALLOW`, the prompt names the writes it needs that the allowlist blocks, e.g. `POST /v1/invoices?finalize=true` when only drafts are allowed.
 
+## Skills
+
+The same workflows are also served as skills through the MCP Skills extension (`io.modelcontextprotocol/skills`, [SEP-2640](https://github.com/modelcontextprotocol/ext-skills)), for clients that load skills from MCP servers. The server declares the extension in its capabilities and answers `skills/list`, `skills/get` and `resources/read`:
+
+| Skill | URI |
+| --- | --- |
+| `upload-receipts` | `skill://lexware-office/upload-receipts/SKILL.md` |
+| `revenue-report` | `skill://lexware-office/revenue-report/SKILL.md` |
+| `profit-report` | `skill://lexware-office/profit-report/SKILL.md` |
+| `create-invoice` | `skill://lexware-office/create-invoice/SKILL.md` |
+
+Each `SKILL.md` has the prompt's name and description as frontmatter and the prompt's text as its body. Skills take no arguments, so the body is the prompt without any: the model asks the user for the period, files or customer, and write skills use write mode `apply`. Like the prompts, write skills start with the server's write mode, rendered once at startup.
+
 ## Binary-safe file uploads
 
 ### Upload helpers: `uploadVoucherFile` and `attachFileToVoucher`

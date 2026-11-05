@@ -32,7 +32,7 @@
     "smoke": "npm run -s build && node scripts/smoke.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "^2.3.1",
+    "@modelcontextprotocol/server": "^2.4.0",
     "quickjs-emscripten": "0.32.0",
     "zod": "^4.2.0"
   },

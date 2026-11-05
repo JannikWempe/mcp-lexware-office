@@ -1,4 +1,4 @@
-// Starts the built server over stdio and prints what a client sees: initialize result, tools/list and prompts/list.
+// Starts the built server over stdio and prints what a client sees: initialize result, tools/list, prompts/list and skills/list.
 // Usage: pnpm -s run smoke [--writes]. 2025-era initialize handshake; no Lexware calls are made (dummy key).
 import { spawn } from 'node:child_process';
 
@@ -42,8 +42,9 @@ const initialize = await request('initialize', { protocolVersion: '2025-11-25', 
 send({ method: 'notifications/initialized' });
 const toolsList = await request('tools/list', {});
 const promptsList = await request('prompts/list', {});
+const skillsList = await request('skills/list', {});
 clearTimeout(timer);
 child.kill();
 
-console.log(JSON.stringify({ initialize, toolsList, promptsList }, null, 2));
-process.exit([initialize, toolsList, promptsList].some((response) => response.error !== undefined) ? 1 : 0);
+console.log(JSON.stringify({ initialize, toolsList, promptsList, skillsList }, null, 2));
+process.exit([initialize, toolsList, promptsList, skillsList].some((response) => response.error !== undefined) ? 1 : 0);
