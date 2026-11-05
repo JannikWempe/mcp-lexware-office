@@ -197,6 +197,54 @@ async () => {
 }
 ```
 
+### State between `execute` calls
+
+Each `execute` call runs in a fresh sandbox. To hand intermediate results to the next call, `execute` (not `search`) has a small key/value store in server memory:
+
+```ts
+declare const state: {
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  set(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<void>;
+  keys(): Promise<string[]>;
+};
+```
+
+- Values are stored as JSON, as `JSON.stringify` would serialize them, so `get` returns a copy, or `undefined` for a missing key. `set` throws for values that are not JSON-serializable (`undefined`, functions, `BigInt`, cycles); remove a key with `delete`.
+- Limits: 1 MB per serialized value, 10 MB and 1,000 keys in total, keys of 1 to 256 characters. A `set` over a limit throws and keeps the previous value.
+- An entry expires 1 hour after it was last read or written.
+- The store lives in the server process: a restart clears it, nothing is written to disk. All `execute` calls of the server share it, so use a distinct key per task, run one batch of a task at a time (there is no locking between parallel calls) and delete the key when done.
+- A [dry run](#dry-runs) reads the stored state, but its changes are discarded when the call ends, so previewing a batch doesn't advance the real job. Its reads don't reset the 1 hour expiry either.
+- `state` calls are not Lexware requests: they don't count against `maxRequests` and don't appear in `requests`.
+
+Use it for work that doesn't fit one call (2 requests/s, 30 s timeout, `maxRequests` ≤ 50), e.g. a report that needs one detail `GET` per voucher. The first call stores the ids and a cursor:
+
+```js
+async () => {
+  const rows = await lexware.paginate({ path: '/v1/voucherlist', query: { voucherType: 'purchaseinvoice', voucherStatus: 'open,paid,paidoff,transferred,sepadebit', voucherDateFrom: '2026-01-01', voucherDateTo: '2026-03-31', size: 250 } });
+  await state.set('q1-input-tax', { ids: rows.map(row => row.id), cursor: 0, taxCents: 0 });
+  return { vouchers: rows.length };
+}
+```
+
+Each later call (with `maxRequests: 25`) processes the next batch and accumulates the totals, saving the cursor after each voucher so a timeout loses no progress; the last one returns the summary and cleans up:
+
+```js
+async () => {
+  const job = await state.get('q1-input-tax');
+  if (job === undefined) throw new Error('No job stored (expired or server restarted): run the first call again');
+  for (const id of job.ids.slice(job.cursor, job.cursor + 20)) {
+    const voucher = await lexware.json({ path: `/v1/vouchers/${id}` });
+    job.taxCents += lexware.requireMoney(voucher, 'totalTaxAmount');
+    job.cursor += 1;
+    await state.set('q1-input-tax', job); // keeps the progress if the call times out
+  }
+  if (job.cursor < job.ids.length) return { done: job.cursor, of: job.ids.length };
+  await state.delete('q1-input-tax');
+  return { vouchers: job.ids.length, inputTax: lexware.formatMoney(job.taxCents) };
+}
+```
+
 ### Tool results and metadata
 
 Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount`, `requests` and possibly `readsSummary` for `execute`, and `dryRun`/`plannedWrites` for a [dry run](#dry-runs); `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent`. No `outputSchema` is declared because `result` is arbitrary.

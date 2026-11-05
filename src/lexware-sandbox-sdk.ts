@@ -1,25 +1,28 @@
 import type { SandboxHostFunction } from './executor.js';
 import type { LexwareApiClient, LexwareRequestOptions, LexwareResponse } from './lexware-client.js';
+import { DEFAULT_STATE_LIMITS, type SandboxState } from './sandbox-state.js';
 
-// The guest-facing `lexware` object of the execute sandbox: its implementation (createLexwareSdk,
-// serialized into the guest prelude), the host binding it calls, and the declarations the
-// execute tool description shows to the model. `src/lexware-sandbox-sdk.test.ts` guards drift.
+// The guest-facing `lexware` and `state` objects of the execute sandbox: their implementations
+// (createLexwareSdk, createStateSdk, serialized into the guest prelude), the host bindings they call,
+// and the declarations the execute tool description shows to the model. Tests guard drift.
 
 // Globals the executor installs; the guest SDK sends JSON-encoded LexwareRequestInput through the
 // first, and a delay in milliseconds through the second.
 const HOST_FUNCTION = '__lexwareRequestJson';
 const SLEEP_HOST_FUNCTION = '__lexwareSleep';
+// Backs the guest `state` object with a SandboxState that outlives the execution.
+const STATE_HOST_FUNCTION = '__stateJson';
 // lexware.sleep rejects longer waits; the execute timeout (which aborts the signal) bounds the total.
 export const MAX_SLEEP_MS = 10_000;
 
-export interface LexwareSandbox {
+export interface SandboxBinding {
 	prelude: string;
 	hostFunctions: Record<string, SandboxHostFunction>;
 }
 
 // Executor options exposing `lexware` to guest code. Each sandbox request goes through
 // client.request with the per-call options plus the executor's abort signal.
-export function lexwareSandbox(client: Pick<LexwareApiClient, 'request'>, options: Omit<LexwareRequestOptions, 'signal'> = {}): LexwareSandbox {
+export function lexwareSandbox(client: Pick<LexwareApiClient, 'request'>, options: Omit<LexwareRequestOptions, 'signal'> = {}): SandboxBinding {
 	return {
 		prelude: `const lexware = (${createLexwareSdk.toString()})(globalThis.${HOST_FUNCTION}, globalThis.${SLEEP_HOST_FUNCTION});`,
 		hostFunctions: {
@@ -31,6 +34,56 @@ export function lexwareSandbox(client: Pick<LexwareApiClient, 'request'>, option
 			[SLEEP_HOST_FUNCTION]: (payload, { signal }) => sleep(Number(payload), signal),
 		},
 	};
+}
+
+// Executor options exposing `state` to guest code (execute only, not search). The guest serializes
+// values itself, so the host only ever stores and returns JSON text.
+export function stateSandbox(store: SandboxState): SandboxBinding {
+	return {
+		prelude: `const state = (${createStateSdk.toString()})(globalThis.${STATE_HOST_FUNCTION});`,
+		hostFunctions: {
+			[STATE_HOST_FUNCTION]: async (payload) => {
+				const { op, key, json } = JSON.parse(payload) as { op: StateOperation; key: string; json: string };
+				switch (op) {
+					case 'get': return store.get(key) ?? '';
+					case 'set': store.set(key, json); return '';
+					case 'delete': store.delete(key); return '';
+					case 'keys': return JSON.stringify(store.keys());
+					default: throw new Error(`Unknown state operation: ${op}`);
+				}
+			},
+		},
+	};
+}
+
+type StateOperation = 'get' | 'set' | 'delete' | 'keys';
+
+// Builds the guest `state` object. Runs inside QuickJS via Function.prototype.toString(), so it
+// must stay self-contained, like createLexwareSdk. A missing key comes back as '', never valid JSON.
+export function createStateSdk(stateJson: (payload: string) => Promise<string>) {
+	const call = (op: StateOperation, key?: unknown, json?: string) => stateJson(JSON.stringify({ op, key, json }));
+	return Object.freeze({
+		get: async (key: string): Promise<unknown> => {
+			const json = await call('get', key);
+			return json === '' ? undefined : JSON.parse(json);
+		},
+		set: async (key: string, value: unknown): Promise<void> => {
+			let json: string | undefined;
+			try {
+				json = JSON.stringify(value);
+			} catch (error) {
+				throw new Error('state.set: the value for ' + JSON.stringify(key) + ' is not JSON-serializable: ' + (error instanceof Error ? error.message : String(error)));
+			}
+			if (json === undefined) {
+				throw new Error('state.set: the value for ' + JSON.stringify(key) + ' is not JSON-serializable (' + typeof value + '). Use state.delete to remove a key.');
+			}
+			await call('set', key, json);
+		},
+		delete: async (key: string): Promise<void> => {
+			await call('delete', key);
+		},
+		keys: async (): Promise<string[]> => JSON.parse(await call('keys')),
+	});
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<string> {
@@ -634,4 +687,17 @@ type PlannedWrite = {
   sha256?: string;
   multipart?: Array<{ name: string; value?: string; filename?: string; contentType?: string; bytes?: number; sha256?: string }>; // file parts with the bytes and SHA-256 that would be uploaded
   blocked?: string; // why the write policy would reject this write in a real run
+};`;
+
+// Shown to the model in the execute tool description; keep in sync with createStateSdk and DEFAULT_STATE_LIMITS.
+export const stateDeclaration = `// Survives across execute calls of this server process, e.g. for an id list, a cursor and partial totals of a fan-out
+// split over several calls. Values are stored as JSON (as JSON.stringify would); get returns a copy, undefined if missing.
+// Limits: ${DEFAULT_STATE_LIMITS.maxValueBytes / (1024 * 1024)} MB per value, ${DEFAULT_STATE_LIMITS.maxTotalBytes / (1024 * 1024)} MB and ${DEFAULT_STATE_LIMITS.maxKeys} keys in total, keys up to ${DEFAULT_STATE_LIMITS.maxKeyLength} characters; an entry expires
+// ${DEFAULT_STATE_LIMITS.idleTtlMs / (60 * 1000)} min after it was last read or written. Calls cost no request budget. Not saved to disk: a server restart clears it.
+// A dry run reads the stored state, but its changes are discarded when the call ends.
+declare const state: {
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  set(key: string, value: unknown): Promise<void>; // throws for values that are not JSON-serializable or exceed a limit
+  delete(key: string): Promise<void>;
+  keys(): Promise<string[]>;
 };`;

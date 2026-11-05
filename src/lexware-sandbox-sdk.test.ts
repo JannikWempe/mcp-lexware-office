@@ -4,7 +4,8 @@ import test from 'node:test';
 import { QuickJsExecutor } from './executor.js';
 import type { LexwareRequestInput, LexwareRequestOptions, LexwareResponse, MultipartPart } from './lexware-client.js';
 import type { LexwareIssue } from './lexware-issues.js';
-import { createLexwareSdk, lexwareSandbox, lexwareSdkDeclaration, MAX_SLEEP_MS } from './lexware-sandbox-sdk.js';
+import { createLexwareSdk, lexwareSandbox, lexwareSdkDeclaration, MAX_SLEEP_MS, stateDeclaration, stateSandbox } from './lexware-sandbox-sdk.js';
+import { SandboxState } from './sandbox-state.js';
 
 const okResponse = (data: unknown, overrides: Partial<LexwareResponse> = {}): LexwareResponse => ({
 	ok: true,
@@ -686,14 +687,29 @@ test('sandbox requests go through client.request with per-call options and the e
 	}
 });
 
+// Method names of `declare const <name>: { ... };` in a declaration text.
+const declaredMethods = (declaration: string, name: string) =>
+	[...declaration.match(new RegExp(`^declare const ${name}: \\{\\n([\\s\\S]*?)\\n\\};`, 'm'))![1].matchAll(/^ {2}(\w+)(?:<[^>]*>)?\(/gm)].map((match) => match[1]);
+
 test('guest lexware is frozen and exposes exactly the declared helpers', async () => {
-	const declared = [...lexwareSdkDeclaration.match(/^declare const lexware: \{\n([\s\S]*?)\n\};/m)![1].matchAll(/^ {2}(\w+)(?:<[^>]*>)?\(/gm)].map((match) => match[1]);
+	const declared = declaredMethods(lexwareSdkDeclaration, 'lexware');
 
 	const execution = await runInSandbox(`async () => ({ keys: Object.keys(lexware), frozen: Object.isFrozen(lexware), onGlobal: typeof globalThis.lexware })`);
 
 	assert.equal(execution.error, undefined);
 	assert.deepEqual(execution.result, { keys: declared, frozen: true, onGlobal: 'undefined' });
 	assert.deepEqual(Object.keys(lexware), declared);
+});
+
+test('guest state is frozen and exposes exactly the declared methods, with the default limits', async () => {
+	const declared = declaredMethods(stateDeclaration, 'state');
+
+	const execution = await new QuickJsExecutor().execute(`async () => ({ keys: Object.keys(state), frozen: Object.isFrozen(state), onGlobal: typeof globalThis.state })`, {}, stateSandbox(new SandboxState()));
+
+	assert.equal(execution.error, undefined);
+	assert.deepEqual(execution.result, { keys: declared, frozen: true, onGlobal: 'undefined' });
+	assert.deepEqual(declared, ['get', 'set', 'delete', 'keys']);
+	assert.match(stateDeclaration, /1 MB per value, 10 MB and 1000 keys in total, keys up to 256 characters; an entry expires\n\/\/ 60 min after/);
 });
 
 // Top-level fields of `type <name> = { ... };` in the declaration text.

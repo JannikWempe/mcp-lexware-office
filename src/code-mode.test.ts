@@ -9,6 +9,7 @@ import type { CallToolResult } from '@modelcontextprotocol/server';
 import { AccountProfile, type AccountInfo } from './account.js';
 import { CodeMode } from './code-mode.js';
 import { LexwareApiClient, type LexwareClientOptions } from './lexware-client.js';
+import { SandboxState } from './sandbox-state.js';
 import { parseWriteAllow } from './write-policy.js';
 
 const jsonResponse = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), {
@@ -20,8 +21,8 @@ const stubAccount: AccountInfo = { organizationId: 'org-1', companyName: 'Testfi
 
 // CodeMode over the real QuickJsExecutor and a LexwareApiClient whose fetch is faked.
 // `fetched` records every attempt that actually reached fetch. The account is stubbed unless
-// `realAccount` is set, so the profile lookup doesn't show up in `fetched`.
-const codeModeWith = (handler: (path: string) => Response | Promise<Response> = () => jsonResponse(200, {}), options: LexwareClientOptions = {}, { realAccount = false } = {}) => {
+// `realAccount` is set, so the profile lookup doesn't show up in `fetched`. `state` replaces the default store.
+const codeModeWith = (handler: (path: string) => Response | Promise<Response> = () => jsonResponse(200, {}), options: LexwareClientOptions = {}, { realAccount = false, state }: { realAccount?: boolean; state?: SandboxState } = {}) => {
 	const fetched: string[] = [];
 	const client = new LexwareApiClient({
 		apiKey: 'test-key',
@@ -34,7 +35,7 @@ const codeModeWith = (handler: (path: string) => Response | Promise<Response> = 
 			return handler(path);
 		},
 	});
-	return { codeMode: new CodeMode({ client, account: realAccount ? new AccountProfile(client) : { get: async () => stubAccount } }), fetched };
+	return { codeMode: new CodeMode({ client, account: realAccount ? new AccountProfile(client) : { get: async () => stubAccount }, state }), fetched };
 };
 
 const textOf = (result: CallToolResult) => {
@@ -680,4 +681,117 @@ test('without dryRun the result has no dryRun or plannedWrites fields', async ()
 
 	assert.equal('dryRun' in payload, false);
 	assert.equal('plannedWrites' in payload, false);
+});
+
+test('a value set in one execute call can be read in the next, as a copy, without costing requests', async () => {
+	const { codeMode, fetched } = codeModeWith();
+
+	const first = payloadOf(await codeMode.execute(`async () => {
+		const job = { ids: ['a', 'b', 'c'], cursor: 0, totalCents: 0 };
+		await state.set('job', job);
+		job.cursor = 99;
+		return { stored: await state.get('job'), keys: await state.keys() };
+	}`, { maxRequests: 1 }));
+	assert.deepEqual(first.result, { stored: { ids: ['a', 'b', 'c'], cursor: 0, totalCents: 0 }, keys: ['job'] });
+
+	const second = payloadOf(await codeMode.execute(`async () => {
+		const job = await state.get('job');
+		job.cursor += 2;
+		job.totalCents += 1250;
+		await state.set('job', job);
+		return { job, missing: await state.get('nope') };
+	}`, { maxRequests: 1 }));
+	assert.deepEqual(second.result, { job: { ids: ['a', 'b', 'c'], cursor: 2, totalCents: 1250 } });
+
+	const third = payloadOf(await codeMode.execute(`async () => { await state.delete('job'); return { job: await state.get('job'), keys: await state.keys() }; }`, { maxRequests: 1 }));
+	assert.deepEqual(third.result, { keys: [] });
+	assert.equal(fetched.length, 0);
+	assert.equal(third.requestCount, 0);
+});
+
+test('state.set rejects values that are not JSON-serializable', async () => {
+	const { codeMode } = codeModeWith();
+
+	const payload = payloadOf(await codeMode.execute(`async () => {
+		const attempt = (value) => state.set('k', value).then(() => 'stored', (error) => error.message);
+		const cyclic = {};
+		cyclic.self = cyclic;
+		return {
+			undefinedValue: await attempt(undefined),
+			fn: await attempt(() => 1),
+			cyclic: await attempt(cyclic),
+			bigint: await attempt(1n),
+			badKey: await state.set('', 1).then(() => 'stored', (error) => error.message),
+			keys: await state.keys(),
+		};
+	}`, { maxRequests: 1 }));
+
+	assert.match(payload.result.undefinedValue, /state\.set: the value for "k" is not JSON-serializable \(undefined\)\. Use state\.delete/);
+	assert.match(payload.result.fn, /not JSON-serializable \(function\)/);
+	assert.match(payload.result.cyclic, /not JSON-serializable: .*circular/i);
+	assert.match(payload.result.bigint, /not JSON-serializable: /);
+	assert.match(payload.result.badKey, /state\.set expects a key of 1 to 256 characters, got 0 characters/);
+	assert.deepEqual(payload.result.keys, []);
+});
+
+test('state size limits are enforced with clear errors', async () => {
+	const { codeMode } = codeModeWith(undefined, {}, { state: new SandboxState({ limits: { maxValueBytes: 100, maxTotalBytes: 150 } }) });
+
+	const payload = payloadOf(await codeMode.execute(`async () => {
+		await state.set('a', 'x'.repeat(90));
+		const tooBig = await state.set('b', 'x'.repeat(200)).then(() => 'stored', (error) => error.message);
+		const tooMuch = await state.set('b', 'x'.repeat(90)).then(() => 'stored', (error) => error.message);
+		return { tooBig, tooMuch, keys: await state.keys() };
+	}`, { maxRequests: 1 }));
+
+	assert.match(payload.result.tooBig, /the value for "b" is 202 B serialized; the limit is 100 B per value/);
+	assert.match(payload.result.tooMuch, /storing "b" would grow the state to 186 B; the limit is 150 B in total/);
+	assert.deepEqual(payload.result.keys, ['a']);
+});
+
+test('an uncaught state error fails the execution', async () => {
+	const { codeMode } = codeModeWith();
+
+	const result = await codeMode.execute(`async () => { await state.set('k', undefined); }`, { maxRequests: 1 });
+
+	assert.equal(result.isError, true);
+	assert.match(payloadOf(result).error, /not JSON-serializable/);
+});
+
+test('state is not reachable from search', async () => {
+	const { codeMode } = codeModeWith();
+	await codeMode.execute(`async () => state.set('secret', 1)`, { maxRequests: 1 });
+
+	const payload = payloadOf(await codeMode.search(`async () => ({ state: typeof state, host: Object.getOwnPropertyNames(globalThis).filter((name) => name.startsWith('__')) })`));
+
+	assert.deepEqual(payload.result, { state: 'undefined', host: ['__capabilitiesJson'] });
+});
+
+test('a dry run reads the stored state but discards its changes', async () => {
+	const { codeMode } = codeModeWith();
+	await codeMode.execute(`async () => state.set('job', { cursor: 0 })`, { maxRequests: 1 });
+
+	const dry = payloadOf(await codeMode.execute(`async () => {
+		const job = await state.get('job');
+		await state.set('job', { cursor: job.cursor + 20 });
+		await state.set('scratch', 1);
+		await state.delete('missing');
+		return { seen: job, afterSet: await state.get('job'), keys: await state.keys() };
+	}`, { maxRequests: 1, dryRun: true }));
+	assert.deepEqual(dry.result, { seen: { cursor: 0 }, afterSet: { cursor: 20 }, keys: ['job', 'scratch'] });
+
+	const real = payloadOf(await codeMode.execute(`async () => ({ job: await state.get('job'), keys: await state.keys() })`, { maxRequests: 1 }));
+	assert.deepEqual(real.result, { job: { cursor: 0 }, keys: ['job'] });
+});
+
+test('the host rejects non-JSON text sent to the state host function directly', async () => {
+	const { codeMode } = codeModeWith();
+
+	const payload = payloadOf(await codeMode.execute(`async () => ({
+		direct: await globalThis.__stateJson(JSON.stringify({ op: 'set', key: 'k', json: '{not json' })).then(() => 'stored', (error) => error.message),
+		unknownOp: await globalThis.__stateJson(JSON.stringify({ op: 'clear' })).then(() => 'ok', (error) => error.message),
+		keys: await state.keys(),
+	})`, { maxRequests: 1 }));
+
+	assert.deepEqual(payload.result, { direct: 'state.set expects a JSON-serializable value', unknownOp: 'Unknown state operation: clear', keys: [] });
 });

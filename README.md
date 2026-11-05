@@ -48,6 +48,8 @@ The sandbox does **not** receive the Lexware API key, Node globals, filesystem a
 
 Pass `dryRun: true` to `execute` to preview writes before they happen: reads run normally, while every `POST`/`PUT`/`PATCH`/`DELETE` returns a synthetic `{ dryRun: true, status: 0, planned }` response instead of being sent, and the result lists them in `plannedWrites`, including the SHA-256 of every file that would be uploaded. Dry runs also work on a read-only server; writes the policy would reject are flagged with `blocked`. See [docs/guide.md#dry-runs](docs/guide.md#dry-runs).
 
+Work too large for one `execute` call (2 requests/s, 30 s, at most 50 requests) can be split into batches: `state.get`/`state.set` keep JSON values such as an id list, a cursor and partial totals in server memory between calls. See [docs/guide.md#state-between-execute-calls](docs/guide.md#state-between-execute-calls).
+
 ### Binary-safe file uploads
 
 Uploads are binary-safe via `multipart` parts with `contentPath` (host reads a local file from disk), `contentBase64` (binary FormData parts), or `bodyBase64` (raw binary body). The host reads/decodes and builds `Buffer` / `Blob` bodies outside the QuickJS sandbox.
