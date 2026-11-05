@@ -18,11 +18,30 @@ interface ListedTool {
 	annotations: Record<string, boolean>;
 }
 
+interface ListedPrompt {
+	name: string;
+	arguments?: Array<{ name: string; required?: boolean }>;
+}
+
 interface JsonRpcResponse {
 	id: number;
-	result?: { structuredContent?: Record<string, unknown>; isError?: boolean; tools?: ListedTool[]; instructions?: string };
-	error?: unknown;
+	result?: {
+		structuredContent?: Record<string, unknown>;
+		isError?: boolean;
+		tools?: ListedTool[];
+		prompts?: ListedPrompt[];
+		messages?: Array<{ role: string; content: { type: string; text: string } }>;
+		instructions?: string;
+	};
+	error?: { code: number; message: string };
 }
+
+// Request _meta claim of protocol revision 2026-07-28 (server/discover era).
+const modernMeta = {
+	'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+	'io.modelcontextprotocol/clientCapabilities': {},
+	'io.modelcontextprotocol/clientInfo': { name: 'test', version: '0' },
+};
 
 // Fake Lexware API on a random local port.
 async function startFakeLexware(handler: (req: IncomingMessage, res: ServerResponse) => void) {
@@ -33,8 +52,9 @@ async function startFakeLexware(handler: (req: IncomingMessage, res: ServerRespo
 	return { baseUrl: `http://127.0.0.1:${port}`, close: () => { server.closeAllConnections(); server.close(); } };
 }
 
-// Spawns the built stdio server and speaks raw JSON-RPC (2025-era initialize handshake).
-async function startMcp(baseUrl: string, env: Record<string, string> = {}) {
+// Spawns the built stdio server and speaks raw JSON-RPC: the 2025-era initialize handshake, or with
+// era 'modern' a server/discover opening and the _meta claim on every request.
+async function startMcp(baseUrl: string, env: Record<string, string> = {}, era: '2025' | 'modern' = '2025') {
 	const child = spawn(process.execPath, [serverEntry], {
 		env: { ...process.env, LEXWARE_OFFICE_API_KEY: 'test-key', LEXWARE_OFFICE_API_BASE_URL: baseUrl, LEXWARE_OFFICE_ALLOW_WRITES: 'false', ...env },
 		stdio: ['pipe', 'pipe', 'ignore'],
@@ -56,16 +76,30 @@ async function startMcp(baseUrl: string, env: Record<string, string> = {}) {
 	});
 	const send = (message: Record<string, unknown>) => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
 	let nextId = 1;
+	const timers = new Set<NodeJS.Timeout>();
+	const close = () => {
+		for (const timer of timers) clearTimeout(timer);
+		child.kill();
+	};
 	const request = (method: string, params: Record<string, unknown>) => {
 		const id = nextId++;
-		const response = new Promise<JsonRpcResponse>((resolve) => pending.set(id, resolve));
-		send({ id, method, params });
+		// Rejects instead of hanging the whole test run when a response never arrives; close() drops the timer.
+		const response = new Promise<JsonRpcResponse>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error(`no response to ${method} within 10s`)), 10_000);
+			timers.add(timer);
+			pending.set(id, (message) => { clearTimeout(timer); timers.delete(timer); resolve(message); });
+		});
+		send({ id, method, params: era === 'modern' ? { ...params, _meta: modernMeta } : params });
 		return { id, response };
 	};
 
+	if (era === 'modern') {
+		const discovered = await request('server/discover', {}).response;
+		return { initialized: discovered, request, send, close };
+	}
 	const initialized = await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' } }).response;
 	send({ method: 'notifications/initialized' });
-	return { initialized, request, send, close: () => child.kill() };
+	return { initialized, request, send, close };
 }
 
 const callExecute = (mcp: Awaited<ReturnType<typeof startMcp>>, code: string) =>
@@ -100,7 +134,7 @@ test('server lists exactly search and execute with docs and write-mode annotatio
 
 // Everything the model sees before its first call. Diff against a checked-in snapshot so description or schema
 // changes are always deliberate.
-test('instructions and tools/list match the snapshot in read-only and writes-enabled mode', async () => {
+test('instructions, tools/list and prompts/list match the snapshot in read-only and writes-enabled mode', async () => {
 	const lexware = await startFakeLexware((_req, res) => res.end());
 	const actual: Record<string, unknown> = {};
 	try {
@@ -108,7 +142,8 @@ test('instructions and tools/list match the snapshot in read-only and writes-ena
 			const mcp = await startMcp(lexware.baseUrl, { LEXWARE_OFFICE_ALLOW_WRITES: allowWrites });
 			try {
 				const { result } = await mcp.request('tools/list', {}).response;
-				actual[mode] = { instructions: mcp.initialized.result?.instructions, tools: result?.tools };
+				const { result: promptsResult } = await mcp.request('prompts/list', {}).response;
+				actual[mode] = { instructions: mcp.initialized.result?.instructions, tools: result?.tools, prompts: promptsResult?.prompts };
 			} finally {
 				mcp.close();
 			}
@@ -123,8 +158,52 @@ test('instructions and tools/list match the snapshot in read-only and writes-ena
 	assert.deepEqual(
 		actual,
 		JSON.parse(readFileSync(toolsListSnapshot, 'utf8')),
-		'Model-facing instructions or tools changed. If intended, run `UPDATE_SNAPSHOTS=1 pnpm test` and commit src/tools-list.snapshot.json.',
+		'Model-facing instructions, tools or prompts changed. If intended, run `UPDATE_SNAPSHOTS=1 pnpm test` and commit src/tools-list.snapshot.json.',
 	);
+});
+
+test('prompts/list and prompts/get serve the workflow prompts in both protocol eras', async () => {
+	const lexware = await startFakeLexware((_req, res) => res.end());
+	try {
+		for (const era of ['2025', 'modern'] as const) {
+			const mcp = await startMcp(lexware.baseUrl, {}, era);
+			try {
+				const { result: listed } = await mcp.request('prompts/list', {}).response;
+				assert.deepEqual(listed?.prompts?.map((prompt) => prompt.name), ['upload-receipts', 'revenue-report', 'profit-report', 'create-invoice'], era);
+
+				const { result } = await mcp.request('prompts/get', { name: 'revenue-report', arguments: { dateFrom: '2026-01-01', dateTo: '2026-12-31', basis: 'paid' } }).response;
+				assert.equal(result?.messages?.length, 1, era);
+				assert.equal(result?.messages?.[0]?.role, 'user', era);
+				assert.match(result?.messages?.[0]?.content.text ?? '', /Period: voucherDate 2026-01-01 to 2026-12-31\./, era);
+				assert.match(result?.messages?.[0]?.content.text ?? '', /spec\.workflows\.calculatePaidRevenue/, era);
+
+				const { error } = await mcp.request('prompts/get', { name: 'revenue-report', arguments: { basis: 'gross' } }).response;
+				assert.ok(error, `${era}: an invalid basis is rejected`);
+			} finally {
+				mcp.close();
+			}
+		}
+	} finally {
+		lexware.close();
+	}
+});
+
+test('write prompts follow the server write mode', async () => {
+	const lexware = await startFakeLexware((_req, res) => res.end());
+	try {
+		for (const [allowWrites, readOnly] of [['false', true], ['true', false]] as const) {
+			const mcp = await startMcp(lexware.baseUrl, { LEXWARE_OFFICE_ALLOW_WRITES: allowWrites });
+			try {
+				const { result } = await mcp.request('prompts/get', { name: 'upload-receipts', arguments: {} }).response;
+				const text = result?.messages?.[0]?.content.text ?? '';
+				assert.equal(text.startsWith('This server is read-only'), readOnly, allowWrites);
+			} finally {
+				mcp.close();
+			}
+		}
+	} finally {
+		lexware.close();
+	}
 });
 
 test('execute stays destructive when writes are narrowed by LEXWARE_OFFICE_WRITE_ALLOW', async () => {
