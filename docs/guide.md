@@ -313,6 +313,27 @@ Tools carry MCP annotations and titles so clients can label and gate them:
 
 The server also sends short `instructions` at initialization (search before execute starting with `find`, check `spec.info.account`, `spec.info.writesEnabled` and `spec.info.writePolicy`, aggregate inside `execute`). It is built on MCP TypeScript SDK v2 and negotiates both the 2025-era `initialize` handshake and protocol revision 2026-07-28.
 
+## Prompts
+
+The server also ships recurring workflows as MCP prompts (`prompts/list`, `prompts/get`). Clients usually offer them as slash commands or a prompt picker. A prompt returns one user message that states the task and the server's current write mode, then lists the steps and caveats of the matching `spec.workflows` entries. The text is rendered from the catalog, so it changes with the server version instead of drifting from it like a hand-written client-side prompt.
+
+| Prompt | Arguments (all optional) | Workflows |
+| --- | --- | --- |
+| `upload-receipts` | `files`: absolute paths, comma- or newline-separated; `mode` | `uploadReceipts`, `reconcileBeforeUpload` |
+| `revenue-report` | `dateFrom`, `dateTo` (`yyyy-MM-dd`); `basis`: `invoiced` (default), `paid` or `net` | `calculateInvoicedRevenue`, `calculatePaidRevenue` or `calculateNetRevenueFromInvoiceDetails`, plus `spec.info.financeReportingSemantics` |
+| `profit-report` | `dateFrom`, `dateTo` | `calculateInvoicedRevenue`, `listBookkeepingExpenses`, plus `spec.info.financeReportingSemantics` |
+| `create-invoice` | `customer`, `details`, `mode` | `findContact`, `createAndFinalizeSalesDocument` |
+
+When an argument is missing, the model asks the user; a missing `basis` uses the default and states the assumption. `mode` applies to the write prompts:
+
+- `apply` (default): send the writes once the checks pass and the user agreed to them.
+- `preview`: run the writes as [dry runs](#dry-runs) and send none.
+
+Write prompts follow the server configuration:
+
+- On a read-only server, the prompt says so first: the model does the read-only steps (for `upload-receipts`, the duplicate check) and only previews the writes.
+- With `LEXWARE_OFFICE_WRITE_ALLOW`, the prompt names the writes it needs that the allowlist blocks, e.g. `POST /v1/invoices?finalize=true` when only drafts are allowed.
+
 ## Binary-safe file uploads
 
 ### Upload helpers: `uploadVoucherFile` and `attachFileToVoucher`

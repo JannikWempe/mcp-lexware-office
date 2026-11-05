@@ -17,6 +17,7 @@ The server uses **Code Mode**: instead of one MCP tool per API endpoint, it expo
 - **Reference data**: profile, countries, print layouts, payment conditions, recurring templates
 - **Webhooks**: create, list, inspect, and delete event subscriptions
 - **Read-only by default**: writes require explicit opt-in via environment variable
+- **Workflow prompts**: receipt uploads, revenue and profit reports, and invoices as MCP prompts generated from the catalog
 - **Dry runs**: preview the exact writes a workflow would send, including upload hashes, without sending them
 
 ## How it works
@@ -51,6 +52,8 @@ Pass `dryRun: true` to `execute` to preview writes before they happen: reads run
 Work too large for one `execute` call (2 requests/s, 30 s, at most 50 requests) can be split into batches: `state.get`/`state.set` keep JSON values such as an id list, a cursor and partial totals in server memory between calls. See [docs/guide.md#state-between-execute-calls](docs/guide.md#state-between-execute-calls).
 
 Reference data (posting categories, profile, countries, payment conditions, print layouts) is cached in server memory for an hour, so later `execute` calls get it without a request. Every write the server sends clears the cache. See [docs/guide.md#response-cache](docs/guide.md#response-cache).
+
+The server also ships prompts for recurring workflows: `upload-receipts`, `revenue-report`, `profit-report` and `create-invoice`. They are generated from the catalog's workflows and follow the server's write mode. See [docs/guide.md#prompts](docs/guide.md#prompts).
 
 ### Binary-safe file uploads
 

@@ -61,6 +61,86 @@
 					"openWorldHint": true
 				}
 			}
+		],
+		"prompts": [
+			{
+				"name": "upload-receipts",
+				"title": "Upload receipts (Belege)",
+				"description": "Upload receipts to Lexware Office: check for duplicates, upload, wait for text recognition, correct fields and categories without dropping the file, and report per receipt.",
+				"arguments": [
+					{
+						"name": "files",
+						"description": "Absolute paths of the receipts on the server machine, comma- or newline-separated. Omitted: ask the user.",
+						"required": false
+					},
+					{
+						"name": "mode",
+						"description": "apply (default): send the writes once the checks pass. preview: plan the writes with execute dryRun: true and send none.",
+						"required": false
+					}
+				]
+			},
+			{
+				"name": "revenue-report",
+				"title": "Revenue report (Umsatz)",
+				"description": "Report revenue (Umsatz) for a period: invoiced or paid, gross or net, with the assumptions stated.",
+				"arguments": [
+					{
+						"name": "dateFrom",
+						"description": "Start of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.",
+						"required": false
+					},
+					{
+						"name": "dateTo",
+						"description": "End of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.",
+						"required": false
+					},
+					{
+						"name": "basis",
+						"description": "invoiced: gross invoiced/accrual revenue (the default). paid: paid/cash revenue. net: VAT-aware net revenue from invoice details.",
+						"required": false
+					}
+				]
+			},
+			{
+				"name": "profit-report",
+				"title": "Profit report",
+				"description": "Report a profit-like result for a period: invoiced revenue minus bookkeeping expenses, with the assumptions stated.",
+				"arguments": [
+					{
+						"name": "dateFrom",
+						"description": "Start of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.",
+						"required": false
+					},
+					{
+						"name": "dateTo",
+						"description": "End of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.",
+						"required": false
+					}
+				]
+			},
+			{
+				"name": "create-invoice",
+				"title": "Create an invoice",
+				"description": "Create an invoice: find the contact, build and review a draft, and finalize it only when the user asks.",
+				"arguments": [
+					{
+						"name": "customer",
+						"description": "Customer name, email or customer number. Omitted: ask the user.",
+						"required": false
+					},
+					{
+						"name": "details",
+						"description": "What to invoice: line items, quantities, prices, dates, preceding quotation or order.",
+						"required": false
+					},
+					{
+						"name": "mode",
+						"description": "apply (default): send the writes once the checks pass. preview: plan the writes with execute dryRun: true and send none.",
+						"required": false
+					}
+				]
+			}
 		]
 	},
 	"writesEnabled": {
@@ -124,6 +204,86 @@
 					"idempotentHint": false,
 					"openWorldHint": true
 				}
+			}
+		],
+		"prompts": [
+			{
+				"name": "upload-receipts",
+				"title": "Upload receipts (Belege)",
+				"description": "Upload receipts to Lexware Office: check for duplicates, upload, wait for text recognition, correct fields and categories without dropping the file, and report per receipt.",
+				"arguments": [
+					{
+						"name": "files",
+						"description": "Absolute paths of the receipts on the server machine, comma- or newline-separated. Omitted: ask the user.",
+						"required": false
+					},
+					{
+						"name": "mode",
+						"description": "apply (default): send the writes once the checks pass. preview: plan the writes with execute dryRun: true and send none.",
+						"required": false
+					}
+				]
+			},
+			{
+				"name": "revenue-report",
+				"title": "Revenue report (Umsatz)",
+				"description": "Report revenue (Umsatz) for a period: invoiced or paid, gross or net, with the assumptions stated.",
+				"arguments": [
+					{
+						"name": "dateFrom",
+						"description": "Start of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.",
+						"required": false
+					},
+					{
+						"name": "dateTo",
+						"description": "End of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.",
+						"required": false
+					},
+					{
+						"name": "basis",
+						"description": "invoiced: gross invoiced/accrual revenue (the default). paid: paid/cash revenue. net: VAT-aware net revenue from invoice details.",
+						"required": false
+					}
+				]
+			},
+			{
+				"name": "profit-report",
+				"title": "Profit report",
+				"description": "Report a profit-like result for a period: invoiced revenue minus bookkeeping expenses, with the assumptions stated.",
+				"arguments": [
+					{
+						"name": "dateFrom",
+						"description": "Start of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.",
+						"required": false
+					},
+					{
+						"name": "dateTo",
+						"description": "End of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.",
+						"required": false
+					}
+				]
+			},
+			{
+				"name": "create-invoice",
+				"title": "Create an invoice",
+				"description": "Create an invoice: find the contact, build and review a draft, and finalize it only when the user asks.",
+				"arguments": [
+					{
+						"name": "customer",
+						"description": "Customer name, email or customer number. Omitted: ask the user.",
+						"required": false
+					},
+					{
+						"name": "details",
+						"description": "What to invoice: line items, quantities, prices, dates, preceding quotation or order.",
+						"required": false
+					},
+					{
+						"name": "mode",
+						"description": "apply (default): send the writes once the checks pass. preview: plan the writes with execute dryRun: true and send none.",
+						"required": false
+					}
+				]
 			}
 		]
 	}

@@ -1114,6 +1114,31 @@ export const lexwareSpec: LexwareApiCatalog = {
 				'Vouchers in status blank (text recognition after POST /v1/files still running) have no voucherNumber or amounts yet, so they cannot match on those.',
 			],
 		},
+		uploadReceipts: {
+			summary: 'Upload receipts (Belege) end to end: duplicate check, upload, text recognition, corrections, report',
+			keywords: ['receipts', 'book receipts', 'receipt workflow', 'Belege erfassen', 'correct voucher', 'posting category', 'Kategorie'],
+			steps: [
+				'Check spec.info.writesEnabled and spec.info.writePolicy.allow: uploads need POST /v1/files, corrections PUT /v1/vouchers/{id}.',
+				'Per receipt, read voucherNumber, contact name, gross amount, currency and voucherDate from the document, then check for duplicates with lexware.findVouchers (workflow reconcileBeforeUpload). Show likely duplicates to the user and skip them unless the user confirms the upload.',
+				'Upload each remaining receipt with lexware.uploadVoucherFile({ contentPath }) (workflow fileHandling), one waiting upload per execute call. Keep fileId and voucherId, e.g. in state, so a retry never uploads a receipt twice.',
+				'extraction "done": text recognition finished and voucher holds the result. extraction "pending": GET /v1/vouchers/{id} in a later call until voucherStatus is no longer blank; never upload again.',
+				'Compare the recognized voucher with the document: voucherNumber, voucherDate, totalGrossAmount, totalTaxAmount, contact, and the voucherItems with their categoryId. Look up categories with GET /v1/posting-categories.',
+				'Correct only the fields that differ with lexware.updateVoucher(id, patch): it keeps the files array (a PUT without it deletes the uploaded file permanently) and returns the voucher before and after the update.',
+				'Report per receipt: skipped as a duplicate, uploaded (voucherId), corrected fields, or recognition still pending.',
+			],
+			relatedEndpoints: [
+				{ method: 'GET', path: '/v1/voucherlist' },
+				{ method: 'POST', path: '/v1/files' },
+				{ method: 'GET', path: '/v1/vouchers/{id}' },
+				{ method: 'PUT', path: '/v1/vouchers/{id}' },
+				{ method: 'GET', path: '/v1/posting-categories' },
+			],
+			notes: [
+				'Request budget per receipt: findVouchers 1 + pages, uploadVoucherFile up to 5, updateVoucher 3. Raise execute maxRequests or split receipts across calls.',
+				'Writes already sent are not rolled back when a call fails; check the requests audit log before retrying.',
+				'The field rules for corrections are in the notes of PUT /v1/vouchers/{id}: e.g. omit voucherStatus unless finalizing an unchecked voucher to open, and unchecked net vouchers are rejected.',
+			],
+		},
 		findContact: {
 			summary: 'Find a contact by email/name/number/role',
 			steps: [

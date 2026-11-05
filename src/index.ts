@@ -10,6 +10,7 @@ import { loadConfig, type ServerConfig } from './config.js';
 import { LexwareApiClient } from './lexware-client.js';
 import { lexwareSdkDeclaration, stateDeclaration } from './lexware-sandbox-sdk.js';
 import { lexwareSpec } from './lexware-spec.js';
+import { workflowPrompts } from './prompts.js';
 import { ResponseCache } from './response-cache.js';
 import { VERSION } from './version.js';
 
@@ -37,7 +38,7 @@ const cacheNote = config.cacheEnabled ? `\n\nReference data (GET ${cachedPaths.j
 
 /**
  * One McpServer per connection; serveStdio picks the protocol era (2025-era initialize or 2026-07-28 server/discover).
- * Instructions, tool descriptions and schemas are model-facing: server-stdio.test.ts pins them in
+ * Instructions, tool descriptions, schemas and the prompt list are model-facing: server-stdio.test.ts pins them in
  * tools-list.snapshot.json; preview with `pnpm -s run smoke [--writes]`.
  */
 function createServer(): McpServer {
@@ -186,6 +187,16 @@ async () => {
 		},
 		async ({ code, maxRequests, dryRun }, ctx) => codeMode.execute(code, { maxRequests, dryRun, signal: ctx.mcpReq.signal }),
 	);
+
+	for (const prompt of workflowPrompts) {
+		server.registerPrompt(
+			prompt.name,
+			{ title: prompt.title, description: prompt.description, argsSchema: prompt.argsSchema },
+			(args) => ({
+				messages: [{ role: 'user', content: { type: 'text', text: prompt.render(args, { writesEnabled: writes, writeAllow: config.writeAllow }) } }],
+			}),
+		);
+	}
 
 	return server;
 }
