@@ -351,23 +351,31 @@ test('reference data is cached across execute calls unless LEXWARE_OFFICE_CACHE=
 });
 
 test('client cancellation aborts the in-flight Lexware request', async () => {
-	let received!: () => void;
-	const requestReceived = new Promise<void>((resolve) => { received = resolve; });
-	let aborted!: () => void;
-	const requestAborted = new Promise<void>((resolve) => { aborted = resolve; });
-	const lexware = await startFakeLexware((_req, res) => {
-		// Never respond; resolve once the server side sees the connection dropped.
-		res.on('close', aborted);
-		received();
+	let received!: (path: string) => void;
+	const requestReceived = new Promise<string>((resolve) => { received = resolve; });
+	let aborted!: (path: string) => void;
+	const requestAborted = new Promise<string>((resolve) => { aborted = resolve; });
+	const lexware = await startFakeLexware((req, res) => {
+		// execute loads the account profile first; answer it so the guest's request is the one left hanging.
+		if (req.url?.startsWith('/v1/profile')) {
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({ organizationId: 'org-1', companyName: 'Testfirma GmbH' }));
+			return;
+		}
+		// Never respond; report once the server side sees the connection dropped.
+		const path = req.url ?? '';
+		res.on('close', () => aborted(path));
+		received(path);
 	});
 	const mcp = await startMcp(lexware.baseUrl);
 	try {
 		const { id } = callExecute(mcp, 'async () => lexware.request({ path: "/v1/contacts" })');
-		await requestReceived;
+		assert.equal(await requestReceived, '/v1/contacts');
 		mcp.send({ method: 'notifications/cancelled', params: { requestId: id, reason: 'test' } });
 
-		const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 5_000).unref());
-		assert.equal(await Promise.race([requestAborted.then(() => 'aborted'), timeout]), 'aborted');
+		// Well below the 25 s request timeout and the 5 s profile timeout, so only the cancellation can close it.
+		const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 2_000).unref());
+		assert.equal(await Promise.race([requestAborted, timeout]), '/v1/contacts');
 	} finally {
 		mcp.close();
 		lexware.close();
