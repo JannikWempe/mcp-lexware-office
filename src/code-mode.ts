@@ -1,6 +1,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/server';
 
 import type { AccountInfo, AccountProfile } from './account.js';
+import { catalogLookupPrelude } from './catalog-lookup.js';
 import { type CodeExecutor, QuickJsExecutor } from './executor.js';
 import { type LexwareApiClient, type RequestLogEntry, untilAborted } from './lexware-client.js';
 import { lexwareSandbox } from './lexware-sandbox-sdk.js';
@@ -57,6 +58,7 @@ export class CodeMode {
 				memoryLimitBytes: MEMORY_LIMIT_BYTES,
 				filename: 'lexware-search.js',
 				signal: options.signal,
+				prelude: catalogLookupPrelude,
 			},
 		);
 
@@ -80,6 +82,7 @@ export class CodeMode {
 			}
 			requestCount += 1;
 		};
+		const sandbox = lexwareSandbox(this.client, { beforeSend, onSettled: (entry) => requests.push(entry) });
 		const execution = await this.executor.execute(
 			code,
 			{ spec: await this.sandboxSpec(options.signal) },
@@ -88,7 +91,8 @@ export class CodeMode {
 				memoryLimitBytes: MEMORY_LIMIT_BYTES,
 				filename: 'lexware-execute.js',
 				signal: options.signal,
-				...lexwareSandbox(this.client, { beforeSend, onSettled: (entry) => requests.push(entry) }),
+				...sandbox,
+				prelude: `${catalogLookupPrelude}\n${sandbox.prelude}`,
 			},
 		);
 

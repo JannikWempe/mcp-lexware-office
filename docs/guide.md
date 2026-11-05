@@ -55,7 +55,20 @@ This gives better coverage for:
 
 `search` runs a sandboxed JavaScript async arrow function against a curated OpenAPI-lite catalog in `src/lexware-spec.ts`.
 
-Example:
+The sandbox has two lookup helpers next to `spec`, so discovery stays compact instead of returning whole catalog sections:
+
+- `find(query, { limit?, kinds? })` ranks operations, workflows and the explanatory `spec.info` sections (`kind: 'semantics'`) by the words of the query. It matches operation ids, paths, summaries, parameter names, tags and workflow keywords, including the German synonyms in the catalog (`beleg`, `umsatz`, `mahnungen`, …). Each match is `{ kind, id, method?, path?, summary, score, hint }`; `hint` says where to read the full entry. `limit` defaults to 8 (max 25); `kinds` narrows to `'operation'`, `'workflow'` and/or `'semantics'`.
+- `describe(method, path)` returns a compact view of one operation: summary, description, parameters, request body summary and required fields, responses, notes and `docsUrl`. A concrete path such as `/v1/vouchers/<uuid>` resolves to its `{id}` template.
+
+```js
+async () => find('upload beleg')
+// [{ kind: 'operation', id: 'uploadFile', method: 'POST', path: '/v1/files', hint: 'describe("POST", "/v1/files")', … },
+//  { kind: 'workflow', id: 'fileHandling', hint: 'spec.workflows.fileHandling', … }, …]
+```
+
+`find` and `describe` are available in `execute` too.
+
+Custom filters over `spec` still work:
 
 ```js
 async () => {
@@ -98,7 +111,7 @@ Both sandboxes see which Lexware organization the server is connected to in `spe
 
 ### `execute`
 
-`execute` uses the same sandbox plus one host capability: `lexware.request`.
+`execute` uses the same sandbox (including `find` and `describe`) plus one host capability: `lexware.request`.
 
 Example:
 
@@ -166,7 +179,7 @@ Tools carry MCP annotations and titles so clients can label and gate them:
 - `search` — `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 - `execute` — `openWorldHint: true`, `idempotentHint: false`; `readOnlyHint`/`destructiveHint` follow the write mode at server startup (`readOnlyHint: true` when writes are blocked, `destructiveHint: true` when `LEXWARE_OFFICE_ALLOW_WRITES=true`, also with a write allowlist).
 
-The server also sends short `instructions` at initialization (search before execute, check `spec.info.account`, `spec.info.writesEnabled` and `spec.info.writePolicy`, aggregate inside `execute`). It is built on MCP TypeScript SDK v2 and negotiates both the 2025-era `initialize` handshake and protocol revision 2026-07-28.
+The server also sends short `instructions` at initialization (search before execute starting with `find`, check `spec.info.account`, `spec.info.writesEnabled` and `spec.info.writePolicy`, aggregate inside `execute`). It is built on MCP TypeScript SDK v2 and negotiates both the 2025-era `initialize` handshake and protocol revision 2026-07-28.
 
 ## Binary-safe file uploads
 
