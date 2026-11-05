@@ -179,6 +179,10 @@ test('prompts/list and prompts/get serve the workflow prompts in both protocol e
 
 				const { error } = await mcp.request('prompts/get', { name: 'revenue-report', arguments: { basis: 'gross' } }).response;
 				assert.ok(error, `${era}: an invalid basis is rejected`);
+
+				const { result: partial, error: partialError } = await mcp.request('prompts/get', { name: 'revenue-report', arguments: { dateFrom: '2026-01-01', dateTo: '', basis: '' } }).response;
+				assert.equal(partialError, undefined, `${era}: empty arguments are accepted`);
+				assert.match(partial?.messages?.[0]?.content.text ?? '', /Period: voucherDate from 2026-01-01\. Ask the user for the end date/, era);
 			} finally {
 				mcp.close();
 			}

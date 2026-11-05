@@ -35,6 +35,14 @@ test('encoded path separators are blocked even when the template matches', () =>
 	}
 });
 
+test("';' and encoded ';' in write paths are blocked even when the template matches", () => {
+	const rules = parseWriteAllow('uploadFileToVoucher');
+	for (const path of ['/v1/vouchers/..;/files', '/v1/vouchers/%2e%2e;/files', '/v1/vouchers/abc%3Bx/files', '/v1/vouchers/abc;jsessionid=1/files']) {
+		assert.match(writeAllowViolation(rules, { method: 'POST', path, query: query(), operationId: 'uploadFileToVoucher' }) ?? '', /and ';' in write paths/, path);
+	}
+	assert.equal(writeAllowViolation(rules, { method: 'POST', path: '/v1/vouchers/abc/files', query: query(), operationId: 'uploadFileToVoucher' }), undefined);
+});
+
 test('finalize requires a ?finalize rule; drafts are allowed by either', () => {
 	const drafts = parseWriteAllow('POST /v1/invoices');
 	const finalize = parseWriteAllow('POST /v1/invoices?finalize');

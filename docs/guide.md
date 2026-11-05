@@ -324,7 +324,7 @@ The server also ships recurring workflows as MCP prompts (`prompts/list`, `promp
 | `profit-report` | `dateFrom`, `dateTo` | `calculateInvoicedRevenue`, `listBookkeepingExpenses`, plus `spec.info.financeReportingSemantics` |
 | `create-invoice` | `customer`, `details`, `mode` | `findContact`, `createAndFinalizeSalesDocument` |
 
-When an argument is missing, the model asks the user; a missing `basis` uses the default and states the assumption. `mode` applies to the write prompts:
+When an argument is missing or empty, the model asks the user; with only one of `dateFrom` and `dateTo` given, it asks for the other; a missing `basis` uses the default and states the assumption. `mode` applies to the write prompts:
 
 - `apply` (default): send the writes once the checks pass and the user agreed to them.
 - `preview`: run the writes as [dry runs](#dry-runs) and send none.
@@ -474,7 +474,7 @@ With writes enabled, `LEXWARE_OFFICE_WRITE_ALLOW` narrows them down to a list. U
 - Entries are separated by commas or newlines. Each is either `METHOD /v1/path` using the catalog's path template, or an operationId (`uploadFile, uploadFileToVoucher, updateVoucher` is equivalent to the example above). Path parameter names don't matter: `{id}` matches `{subscriptionId}`.
 - Sales document endpoints with a `finalize` parameter (invoices, quotations, order confirmations, credit notes, delivery notes) only allow drafts unless the entry ends in `?finalize`: `POST /v1/invoices` creates drafts only, `POST /v1/invoices?finalize` also allows `finalize=true`. Any `finalize` value other than `false` counts as finalizing.
 - Entries that don't name a cataloged write (typos, read endpoints, `?finalize` on an endpoint without it) and an empty value stop the server at startup with an error.
-- Writes to paths not in the catalog, and write paths containing an encoded `/` or `\` (`%2F`, `%5C`), are always blocked while an allowlist is set.
+- Writes to paths not in the catalog, and write paths containing an encoded `/` or `\` (`%2F`, `%5C`) or a `;` (also `%3B`), are always blocked while an allowlist is set.
 - Blocked writes are rejected before sending (`sent: false` in `requests`), don't count against `maxRequests`, and the error lists the allowed writes.
 - `spec.info.writePolicy` shows the policy to the model: `{ enabled, allow }`, where `allow` is `'all'` or the list of allowed writes in `METHOD /v1/template` form.
 - `LEXWARE_OFFICE_READ_ONLY=true` and a missing `ALLOW_WRITES=true` still block every write; the allowlist only narrows enabled writes.

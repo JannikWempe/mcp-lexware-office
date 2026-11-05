@@ -86,9 +86,10 @@ export const requestsFinalize = (query: URLSearchParams) => [...query].some(([ke
 // cataloged operation the request matched; uncataloged writes never match a rule.
 export function writeAllowViolation(rules: WriteAllowRule[], request: { method: string; path: string; query: URLSearchParams; operationId?: string }): string | undefined {
 	const allowed = `Allowed: ${rules.map(describeRule).join(', ')}. See spec.info.writePolicy.`;
-	// A path parameter with an encoded separator matches a template here but might route elsewhere upstream.
-	if (/%(2f|5c)/i.test(request.path)) {
-		return `${request.method} ${request.path} is blocked: LEXWARE_OFFICE_WRITE_ALLOW rejects encoded '/' or '\\' in write paths. ${allowed}`;
+	// A path parameter with an encoded separator or a ';' matrix parameter (e.g. /v1/vouchers/..;/files) matches a
+	// template here but might route elsewhere upstream: Tomcat/Spring-style servers strip ';...' before resolving '..'.
+	if (/%(2f|5c|3b)|;/i.test(request.path)) {
+		return `${request.method} ${request.path} is blocked: LEXWARE_OFFICE_WRITE_ALLOW rejects encoded '/' or '\\' and ';' in write paths. ${allowed}`;
 	}
 	const matching = rules.filter((rule) => rule.operationId === request.operationId);
 	if (matching.length === 0) {

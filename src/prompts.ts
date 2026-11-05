@@ -19,7 +19,7 @@ interface PromptWrite {
 	finalize?: boolean;
 }
 
-export interface WorkflowPrompt<Args extends z.ZodObject = z.ZodObject<Record<string, z.ZodOptional<z.ZodString | z.ZodEnum>>>> {
+export interface WorkflowPrompt<Args extends z.ZodObject = z.ZodObject> {
 	name: string;
 	title: string;
 	description: string;
@@ -33,8 +33,17 @@ export interface WorkflowPrompt<Args extends z.ZodObject = z.ZodObject<Record<st
 // Infers the typed render args per prompt; the list below widens them so index.ts registers every prompt alike.
 const definePrompt = <Args extends z.ZodObject>(prompt: WorkflowPrompt<Args>): WorkflowPrompt => prompt;
 
-const dateArg = (bound: string) => z.string().optional().describe(`${bound} of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.`);
-const modeArg = z.enum(['apply', 'preview']).optional().describe('apply (default): send the writes once the checks pass. preview: plan the writes with execute dryRun: true and send none.');
+// Clients may send '' for an argument the user left empty; treat it like an omitted one, so the model asks for it.
+const given = (value: string | undefined) => {
+	const trimmed = value?.trim();
+	return trimmed === '' ? undefined : trimmed;
+};
+const textArg = (description: string) => z.string().optional().transform(given).describe(description);
+const enumArg = <const Values extends [string, ...string[]]>(values: Values, description: string) =>
+	z.enum(values).or(z.literal('')).optional().transform((value) => (value === '' ? undefined : value)).describe(description);
+
+const dateArg = (bound: string) => textArg(`${bound} of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.`);
+const modeArg = enumArg(['apply', 'preview'], 'apply (default): send the writes once the checks pass. preview: plan the writes with execute dryRun: true and send none.');
 
 // Throws on a key the catalog doesn't have, so a renamed entry fails the tests instead of rendering "undefined".
 const lookup = <T>(record: Record<string, T>, key: string, kind: string): T => {
@@ -76,10 +85,12 @@ const writeModeSection = (writes: PromptWrite[], mode: 'apply' | 'preview', cont
 		: `${policy}Write mode apply: send the writes once the checks pass and the user agreed to them; preview a write with execute dryRun: true first when the user should review it.`;
 };
 
-const periodLine = (dateFrom: string | undefined, dateTo: string | undefined) =>
-	dateFrom !== undefined && dateTo !== undefined
-		? `Period: voucherDate ${dateFrom} to ${dateTo}.`
-		: 'Ask the user for the period (voucherDate from and to, yyyy-MM-dd) unless it is clear from the conversation.';
+const periodLine = (dateFrom: string | undefined, dateTo: string | undefined) => {
+	if (dateFrom !== undefined && dateTo !== undefined) return `Period: voucherDate ${dateFrom} to ${dateTo}.`;
+	if (dateFrom !== undefined) return `Period: voucherDate from ${dateFrom}. Ask the user for the end date (yyyy-MM-dd) unless it is clear from the conversation.`;
+	if (dateTo !== undefined) return `Period: voucherDate to ${dateTo}. Ask the user for the start date (yyyy-MM-dd) unless it is clear from the conversation.`;
+	return 'Ask the user for the period (voucherDate from and to, yyyy-MM-dd) unless it is clear from the conversation.';
+};
 
 const semantics = lexwareSpec.info.financeReportingSemantics;
 
@@ -106,7 +117,7 @@ const uploadReceipts = definePrompt({
 	title: 'Upload receipts (Belege)',
 	description: 'Upload receipts to Lexware Office: check for duplicates, upload, wait for text recognition, correct fields and categories without dropping the file, and report per receipt.',
 	argsSchema: z.object({
-		files: z.string().optional().describe('Absolute paths of the receipts on the server machine, comma- or newline-separated. Omitted: ask the user.'),
+		files: textArg('Absolute paths of the receipts on the server machine, comma- or newline-separated. Omitted: ask the user.'),
 		mode: modeArg,
 	}),
 	writes: [{ method: 'POST', path: '/v1/files' }, { method: 'PUT', path: '/v1/vouchers/{id}' }],
@@ -132,7 +143,7 @@ const revenueReport = definePrompt({
 	argsSchema: z.object({
 		dateFrom: dateArg('Start'),
 		dateTo: dateArg('End'),
-		basis: z.enum(['invoiced', 'paid', 'net']).optional().describe('invoiced: gross invoiced/accrual revenue (the default). paid: paid/cash revenue. net: VAT-aware net revenue from invoice details.'),
+		basis: enumArg(['invoiced', 'paid', 'net'], 'invoiced: gross invoiced/accrual revenue (the default). paid: paid/cash revenue. net: VAT-aware net revenue from invoice details.'),
 	}),
 	writes: [],
 	render(args) {
@@ -177,8 +188,8 @@ const createInvoice = definePrompt({
 	title: 'Create an invoice',
 	description: 'Create an invoice: find the contact, build and review a draft, and finalize it only when the user asks.',
 	argsSchema: z.object({
-		customer: z.string().optional().describe('Customer name, email or customer number. Omitted: ask the user.'),
-		details: z.string().optional().describe('What to invoice: line items, quantities, prices, dates, preceding quotation or order.'),
+		customer: textArg('Customer name, email or customer number. Omitted: ask the user.'),
+		details: textArg('What to invoice: line items, quantities, prices, dates, preceding quotation or order.'),
 		mode: modeArg,
 	}),
 	writes: [{ method: 'POST', path: '/v1/invoices' }, { method: 'POST', path: '/v1/invoices', finalize: true }],

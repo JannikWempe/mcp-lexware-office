@@ -364,7 +364,9 @@ export class LexwareApiClient {
 			throw error;
 		}
 
-		const url = new URL(normalized.path, this.baseUrl);
+		// Appends the request path, so a base URL with a path prefix (e.g. a proxy at https://proxy.test/lexware) keeps it.
+		const url = new URL(this.baseUrl);
+		url.pathname = `${url.pathname.replace(/\/+$/, '')}${normalized.path}`;
 		url.search = normalized.query.toString();
 
 		const timeoutController = new AbortController();
@@ -897,7 +899,8 @@ async function parseResponse(response: Response, request: NormalizedRequest, max
 	const isTextual = isTextualResponse(contentType, request.accept);
 	if (!isTextual) {
 		// Avoid buffering the full binary body — use Content-Length if available.
-		response.body?.cancel();
+		// Not awaited; catch so a stream that already errored can't reject unhandled and exit the process.
+		void response.body?.cancel().catch(() => {});
 		const contentLengthHeader = response.headers.get('content-length');
 		const contentLengthBytes = contentLengthHeader !== null ? Number(contentLengthHeader) : NaN;
 		const binaryMeta = Number.isFinite(contentLengthBytes) && contentLengthBytes >= 0
