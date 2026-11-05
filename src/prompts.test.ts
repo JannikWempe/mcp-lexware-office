@@ -100,6 +100,7 @@ test('write prompts say up front when the server is read-only', () => {
 test('write prompts name the writes LEXWARE_OFFICE_WRITE_ALLOW blocks', () => {
 	const upload = render('upload-receipts', {}, { writesEnabled: true, writeAllow: parseWriteAllow('POST /v1/files') });
 	assert.match(upload, /^LEXWARE_OFFICE_WRITE_ALLOW blocks PUT \/v1\/vouchers\/\{id\} \(/);
+	assert.doesNotMatch(render('upload-receipts', {}, { writesEnabled: true, writeAllow: parseWriteAllow('POST /v1/files, PUT /v1/vouchers/{id}') }), /LEXWARE_OFFICE_WRITE_ALLOW blocks/);
 
 	const draftsOnly = render('create-invoice', {}, { writesEnabled: true, writeAllow: parseWriteAllow('POST /v1/invoices') });
 	assert.match(draftsOnly, /^LEXWARE_OFFICE_WRITE_ALLOW blocks POST \/v1\/invoices\?finalize=true \(/);

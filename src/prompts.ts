@@ -71,7 +71,9 @@ const describeWrite = ({ method, path, finalize }: PromptWrite) => `${method} ${
 const blockedWrites = (writes: PromptWrite[], rules: WriteAllowRule[]) => writes.filter((write) => {
 	const operationId = lexwareSpec.paths[write.path]?.[write.method.toLowerCase() as HttpMethod]?.operationId;
 	const query = new URLSearchParams(write.finalize === true ? { finalize: 'true' } : {});
-	return writeAllowViolation(rules, { method: write.method, path: write.path, query, operationId }) !== undefined;
+	// Bookkeeping vouchers finalize via voucherStatus; other writes ignore it.
+	const body = { voucherStatus: write.finalize === true ? 'open' : 'unchecked' };
+	return writeAllowViolation(rules, { method: write.method, path: write.path, query, body, operationId }) !== undefined;
 });
 
 const writeModeSection = (writes: PromptWrite[], mode: 'apply' | 'preview', context: PromptContext): string => {

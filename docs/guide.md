@@ -169,7 +169,7 @@ type UploadSent = { bytes: number; parts: Array<{ name: string; filename?: strin
 
 `lexware.updateVoucher` updates a bookkeeping voucher without the usual `PUT /v1/vouchers/{id}` pitfalls, in 3 requests (`GET`, `PUT`, `GET`) against `maxRequests`:
 
-- It starts from the current voucher, drops the read-only fields (`id`, `organizationId`, `voucherStatus`, `contactName`, `createdDate`, `updatedDate`) and applies `patch` shallowly: arrays such as `voucherItems` are replaced as a whole. Set `voucherStatus: 'open'` in `patch` to finalize an `unchecked` voucher.
+- It starts from the current voucher, drops the read-only fields (`id`, `organizationId`, `voucherStatus`, `contactName`, `createdDate`, `updatedDate`) and applies `patch` shallowly: arrays such as `voucherItems` are replaced as a whole. Set `voucherStatus: 'open'` in `patch` to finalize an `unchecked` voucher; with an allowlist, that needs a `?finalize` entry (see [Write allowlist](#write-allowlist)).
 - `useCollectiveContact: true` in `patch` also drops `contactId`; a `contactId` in `patch` without `useCollectiveContact` drops a current `useCollectiveContact`.
 - It sends the current `version`; `patch.version` is rejected. With `expectedVersion` set, a voucher at a different version throws without writing.
 - Lexware permanently deletes files left out of a PUT. The helper keeps `files` and throws without writing if the merged `files` would drop a current file id, unless `allowFileRemoval: true`.
@@ -486,6 +486,7 @@ With writes enabled, `LEXWARE_OFFICE_WRITE_ALLOW` narrows them down to a list. U
 
 - Entries are separated by commas or newlines. Each is either `METHOD /v1/path` using the catalog's path template, or an operationId (`uploadFile, uploadFileToVoucher, updateVoucher` is equivalent to the example above). Path parameter names don't matter: `{id}` matches `{subscriptionId}`.
 - Sales document endpoints with a `finalize` parameter (invoices, quotations, order confirmations, credit notes, delivery notes) only allow drafts unless the entry ends in `?finalize`: `POST /v1/invoices` creates drafts only, `POST /v1/invoices?finalize` also allows `finalize=true`. Any `finalize` value other than `false` counts as finalizing.
+- Bookkeeping vouchers are finalized through the body's `voucherStatus`, so `?finalize` also applies to `PUT /v1/vouchers/{id}` (`updateVoucher`) and `POST /v1/vouchers` (`createVoucher`). Without it, a `PUT` may only omit `voucherStatus` or send `unchecked` (sending `open` finalizes, even for an already open voucher), and a `POST` must send `voucherStatus: 'unchecked'` (Lexware creates an open voucher when it is omitted). A body the server can't read as a JSON object counts as finalizing. Behavior change: a plain `createVoucher` entry no longer allows creating open vouchers; add `POST /v1/vouchers?finalize` for that.
 - Entries that don't name a cataloged write (typos, read endpoints, `?finalize` on an endpoint without it) and an empty value stop the server at startup with an error.
 - Writes to paths not in the catalog, and write paths containing an encoded `/` or `\` (`%2F`, `%5C`) or a `;` (also `%3B`), are always blocked while an allowlist is set.
 - Blocked writes are rejected before sending (`sent: false` in `requests`), don't count against `maxRequests`, and the error lists the allowed writes.

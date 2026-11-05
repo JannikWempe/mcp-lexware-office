@@ -8,12 +8,13 @@ const query = (search = '') => new URLSearchParams(search);
 test('METHOD path and operationId entries resolve to the same rule; ?finalize is kept', () => {
 	assert.deepEqual(parseWriteAllow('POST /v1/invoices'), parseWriteAllow('createInvoice'));
 	assert.deepEqual(describeWritePolicy(true, parseWriteAllow('createInvoice?finalize')).allow, ['POST /v1/invoices?finalize']);
+	assert.deepEqual(describeWritePolicy(true, parseWriteAllow('updateVoucher?finalize, POST /v1/vouchers?finalize')).allow, ['PUT /v1/vouchers/{id}?finalize', 'POST /v1/vouchers?finalize']);
 	assert.deepEqual(describeWritePolicy(true, parseWriteAllow('DELETE /v1/event-subscriptions/{id}')).allow, ['DELETE /v1/event-subscriptions/{subscriptionId}']);
 });
 
 test('invalid entries name the entry in the error', () => {
 	assert.throws(() => parseWriteAllow('POST /v1/files, PUT /v1/contact/{id}'), /"PUT \/v1\/contact\/\{id\}" does not match a cataloged write.*Known writes: .*PUT \/v1\/contacts\/\{id\}/);
-	assert.throws(() => parseWriteAllow('PUT /v1/vouchers/{id}?finalize'), /PUT \/v1\/vouchers\/\{id\} has no finalize parameter/);
+	assert.throws(() => parseWriteAllow('POST /v1/files?finalize'), /POST \/v1\/files cannot finalize/);
 	assert.throws(() => parseWriteAllow('   '), /set but empty/);
 });
 
@@ -55,6 +56,46 @@ test('finalize requires a ?finalize rule; drafts are allowed by either', () => {
 		assert.equal(writeAllowViolation(finalize, request(search)), undefined, search);
 	}
 	assert.equal(writeAllowViolation(finalize, request('')), undefined);
+});
+
+test('updateVoucher with a voucherStatus other than unchecked requires a ?finalize rule', () => {
+	const edits = parseWriteAllow('PUT /v1/vouchers/{id}');
+	const finalize = parseWriteAllow('updateVoucher?finalize');
+	const request = (body: unknown, extra: object = {}) => ({ method: 'PUT', path: '/v1/vouchers/abc', query: query(), operationId: 'updateVoucher', body, ...extra });
+
+	for (const body of [undefined, { version: 1 }, { voucherStatus: 'unchecked' }, { voucherStatus: ' Unchecked ' }, { voucherStatus: null }, '{"version":1}']) {
+		assert.equal(writeAllowViolation(edits, request(body)), undefined, JSON.stringify(body));
+	}
+	for (const body of [{ voucherStatus: 'open' }, { VoucherStatus: 'open' }, { voucherStatus: 'unchecked', VOUCHERSTATUS: 'open' }, { voucherStatus: 1 }, '{"voucherStatus":"open"}']) {
+		assert.match(writeAllowViolation(edits, request(body)) ?? '', /is blocked: it would finalize the voucher.*omit voucherStatus to edit without finalizing, or ask the server operator to add "PUT \/v1\/vouchers\/\{id\}\?finalize"\. Allowed: PUT \/v1\/vouchers\/\{id\}\./, JSON.stringify(body));
+		assert.equal(writeAllowViolation(finalize, request(body)), undefined, JSON.stringify(body));
+	}
+	assert.match(writeAllowViolation(edits, request({ voucherStatus: 'open' })) ?? '', /^PUT \/v1\/vouchers\/abc with voucherStatus "open" is blocked/);
+});
+
+test('createVoucher requires voucherStatus unchecked unless a ?finalize rule allows it', () => {
+	const unchecked = parseWriteAllow('createVoucher');
+	const finalize = parseWriteAllow('POST /v1/vouchers?finalize');
+	const request = (body: unknown) => ({ method: 'POST', path: '/v1/vouchers', query: query(), operationId: 'createVoucher', body });
+
+	for (const body of [{ voucherStatus: 'unchecked' }, { VoucherStatus: 'UNCHECKED' }]) {
+		assert.equal(writeAllowViolation(unchecked, request(body)), undefined, JSON.stringify(body));
+	}
+	for (const body of [undefined, {}, { voucherStatus: null }, { voucherStatus: 'open' }, { voucherStatus: 'unchecked', VoucherStatus: 'open' }]) {
+		assert.match(writeAllowViolation(unchecked, request(body)) ?? '', /^POST \/v1\/vouchers with .* is blocked: .*send voucherStatus 'unchecked' to create an unchecked voucher, or ask the server operator to add "POST \/v1\/vouchers\?finalize"/, JSON.stringify(body));
+		assert.equal(writeAllowViolation(finalize, request(body)), undefined, JSON.stringify(body));
+	}
+	assert.match(writeAllowViolation(unchecked, request({})) ?? '', /^POST \/v1\/vouchers with no voucherStatus is blocked/);
+});
+
+test('a voucher body that cannot be inspected counts as finalizing', () => {
+	const rules = parseWriteAllow('updateVoucher, createVoucher');
+	const bodies = [{ body: 'not json' }, { body: '["x"]' }, { body: [] }, { body: 'null' }, { body: null }, { bodyBase64: 'e30=' }, { multipart: [{ name: 'voucherStatus', value: 'unchecked' }] }];
+	for (const [method, path, operationId] of [['PUT', '/v1/vouchers/abc', 'updateVoucher'], ['POST', '/v1/vouchers', 'createVoucher']]) {
+		for (const body of bodies) {
+			assert.match(writeAllowViolation(rules, { method, path, query: query(), operationId, ...body }) ?? '', /with a body that is not a JSON object is blocked/, `${method} ${JSON.stringify(body)}`);
+		}
+	}
 });
 
 test('requestsFinalize treats anything but an explicit false as finalizing', () => {
