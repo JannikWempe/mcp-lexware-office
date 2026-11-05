@@ -134,6 +134,30 @@ test('a write stops cache hits as soon as it is sent, before its response arrive
 	assert.deepEqual(read.data, { version: 2 });
 });
 
+test('a GET answered while a write is in flight is neither served from nor stored in the cache', async () => {
+	let version = 1;
+	let releaseWrite!: () => void;
+	let writeSent!: () => void;
+	const sent = new Promise<void>((resolve) => { writeSent = resolve; });
+	const { client, fetched } = cachingClient(async (method) => {
+		if (method === 'GET') return jsonResponse(200, { version });
+		writeSent();
+		await new Promise<void>((resolve) => { releaseWrite = resolve; });
+		return jsonResponse(200, {});
+	});
+	const write = client.request({ method: 'POST', path: '/v1/contacts', body: {} });
+	await sent;
+	await client.request({ path: '/v1/profile' });
+	version = 2; // Lexware applies the write before answering it.
+	const duringWrite = await client.request({ path: '/v1/profile' });
+	releaseWrite();
+	await write;
+	const afterWrite = await client.request({ path: '/v1/profile' });
+	assert.deepEqual([duringWrite.cached, duringWrite.data], [undefined, { version: 2 }]);
+	assert.deepEqual([afterWrite.cached, afterWrite.data], [undefined, { version: 2 }]);
+	assert.deepEqual(fetched, ['POST /v1/contacts', 'GET /v1/profile', 'GET /v1/profile', 'GET /v1/profile']);
+});
+
 test('a GET in flight while a write is sent is not stored', async () => {
 	let releaseGet!: () => void;
 	const getHeld = new Promise<void>((resolve) => { releaseGet = resolve; });

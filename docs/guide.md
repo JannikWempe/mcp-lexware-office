@@ -257,7 +257,7 @@ How it behaves:
 - Only `2xx` responses with JSON data are cached. Errors, text and binary responses are always fetched.
 - The cache key is the path, the query (in any order), `accept` and `includeAllHeaders`.
 - A cache hit is not sent: it doesn't count against `maxRequests`, doesn't wait for the rate limiter, and the response carries `cached: true`, without the `x-ratelimit-*`, `x-request-id` and `retry-after` headers of the original request. It appears in `requests` as `{ "method": "GET", "path": "/v1/posting-categories", "status": 200, "ok": true, "write": false, "sent": false, "cached": true, "durationMs": 0 }`, or in `readsSummary.cached` when reads are summarized.
-- Every write the server sends clears the whole cache when it is sent and again when it completes, whatever its outcome. Writes that are not sent (blocked, [dry runs](#dry-runs)) keep it.
+- Every write the server sends clears the whole cache when it is sent and again when it completes, whatever its outcome. While a write is in flight, reads skip the cache. Writes that are not sent (blocked, [dry runs](#dry-runs)) keep it.
 - `lexware.request({ path: '/v1/posting-categories', cache: false })` skips the cache and stores the fresh response.
 - Lists and details of business data (vouchers, invoices, contacts, ...) are never cached, so polls such as waiting for a voucher to leave `blank` always see the current state. To hand such data to the next call, use [`state`](#state-between-execute-calls).
 - The cache lives in the server process, holds at most 200 responses and 5 MB (least recently used first out), and is cleared by a restart. Changes made outside this server, e.g. in the Lexware web app, show up after at most an hour; pass `cache: false` if you need them sooner.

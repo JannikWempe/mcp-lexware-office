@@ -157,6 +157,13 @@ export interface UploadEcho {
 	parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }>;
 }
 
+interface SendProgress {
+	// The attempt was handed to fetch.
+	sent: boolean;
+	// Set for a sent write; tells the response cache the write settled.
+	writeSettled?: () => void;
+}
+
 interface CacheSlot {
 	cache: ResponseCache;
 	key: string;
@@ -298,7 +305,7 @@ export class LexwareApiClient {
 	private async attempt(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number): Promise<LexwareResponse> {
 		const startedAt = Date.now();
 		const write = WRITE_METHODS.has(normalized.method);
-		const progress = { sent: false };
+		const progress: SendProgress = { sent: false };
 		const log = (result: Pick<RequestLogEntry, 'status' | 'ok' | 'error' | 'dryRun'>) => options.onSettled?.({
 			method: normalized.method,
 			path: normalized.path,
@@ -316,16 +323,14 @@ export class LexwareApiClient {
 			log({ error: sanitizeFetchErrorMessage(error, apiKey) });
 			throw error;
 		} finally {
-			// Any write that reached fetch may have changed data, whatever its outcome. Clearing
-			// everything is coarse but never serves stale reference data after a write. Cleared again
-			// on completion, so GETs that were stored while the write was in flight are dropped too.
-			if (write && progress.sent) this.responseCache?.clear();
+			// Any write that reached fetch may have changed data, whatever its outcome.
+			progress.writeSettled?.();
 		}
 		log({ status: response.status, ok: response.ok, ...(response.dryRun && { dryRun: true as const }) });
 		return response;
 	}
 
-	private async send(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number, progress: { sent: boolean }): Promise<LexwareResponse> {
+	private async send(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number, progress: SendProgress): Promise<LexwareResponse> {
 		const write = WRITE_METHODS.has(normalized.method);
 		const blocked = write ? this.writeBlockedReason(normalized) : undefined;
 		if (blocked !== undefined && !options.dryRun) throw new Error(blocked);
@@ -386,8 +391,9 @@ export class LexwareApiClient {
 			let response: Response;
 			try {
 				progress.sent = true;
-				// Lexware may apply a write before its response arrives: stop serving pre-write data now.
-				if (write) this.responseCache?.clear();
+				// Lexware may apply a write before its response arrives: stop serving cached data now.
+				// Clearing everything is coarse but never serves stale reference data after a write.
+				if (write) progress.writeSettled = this.responseCache?.writeSent();
 				response = await this.fetchImpl(url, {
 					method: normalized.method,
 					headers,

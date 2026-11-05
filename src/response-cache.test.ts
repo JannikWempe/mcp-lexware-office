@@ -58,14 +58,33 @@ test('replacing a key keeps the byte count exact', () => {
 	assert.equal(cache.get('b'), '1');
 });
 
-test('clear() drops all entries and rejects a set with an older generation', () => {
+test('a sent write drops all entries and rejects a set with an older generation', () => {
 	const cache = new ResponseCache();
 	const before = cache.generation;
 	cache.set('a', '1', 60_000, before);
-	cache.clear();
+	cache.writeSent()();
 	assert.equal(cache.get('a'), undefined);
 	cache.set('b', '2', 60_000, before);
 	assert.equal(cache.get('b'), undefined);
 	cache.set('b', '2', 60_000, cache.generation);
 	assert.equal(cache.get('b'), '2');
+});
+
+test('while a write is in flight nothing is served or stored, and its end clears again', () => {
+	const cache = new ResponseCache();
+	cache.set('a', '1', 60_000, cache.generation);
+	const first = cache.writeSent();
+	const second = cache.writeSent();
+	cache.set('b', '2', 60_000, cache.generation);
+	assert.equal(cache.get('b'), undefined);
+	first();
+	first();
+	cache.set('c', '3', 60_000, cache.generation);
+	assert.equal(cache.get('c'), undefined, 'the second write is still in flight');
+	const generation = cache.generation;
+	second();
+	cache.set('d', '4', 60_000, generation);
+	assert.equal(cache.get('d'), undefined, 'a response requested before the write settled is not stored');
+	cache.set('d', '4', 60_000, cache.generation);
+	assert.equal(cache.get('d'), '4');
 });
