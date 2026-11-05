@@ -8,7 +8,7 @@ import { catalogLookupDeclaration } from './catalog-lookup.js';
 import { CodeMode, LEXWARE_REQUEST_TIMEOUT_MS } from './code-mode.js';
 import { loadConfig, type ServerConfig } from './config.js';
 import { LexwareApiClient } from './lexware-client.js';
-import { lexwareSdkDeclaration } from './lexware-sandbox-sdk.js';
+import { lexwareSdkDeclaration, stateDeclaration } from './lexware-sandbox-sdk.js';
 import { VERSION } from './version.js';
 
 let config: ServerConfig;
@@ -109,6 +109,7 @@ Available globals:
 declare const spec: LexwareApiCatalog;
 ${catalogLookupDeclaration}
 ${lexwareSdkDeclaration}
+${stateDeclaration}
 
 lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. To update a bookkeeping voucher, use lexware.updateVoucher instead of a hand-built PUT: a PUT without the current files array deletes them permanently. Before uploading a document, check for an existing voucher with lexware.findVouchers; unlike the exact voucherlist voucherNumber filter, it also matches differently formatted numbers. A GET answered with 429 is retried once automatically after Retry-After (if <= 5s) or, without that header, a 1-2s backoff; writes are never retried.
 
@@ -119,6 +120,8 @@ maxRequests bounds the HTTP attempts actually sent to Lexware, including automat
 dryRun: true previews writes without sending them. Reads run normally, so the script can still make data-dependent decisions. Each POST, PUT, PATCH, or DELETE is not sent and returns a synthetic { ok: true, status: 0, dryRun: true, planned } response without data (lexware.json returns undefined). This also happens when writes are disabled or not allowlisted; planned.blocked then says why a real run would reject it. contentPath files are still read and hashed, so planned.multipart shows the exact bytes and sha256. The tool result adds dryRun: true and plannedWrites: every planned write in order, with method, path, query, and body (large bodies are shrunk). A script that needs a write's response, e.g. a new id, should branch with if (response.dryRun) …. Planned writes don't count against maxRequests; a dry run plans at most 100.
 
 This server is read-only by default. POST, PUT, PATCH, and DELETE are blocked unless the server is started with LEXWARE_OFFICE_ALLOW_WRITES=true. Setting LEXWARE_OFFICE_READ_ONLY=true is a hard block that overrides ALLOW_WRITES. Check spec.info.writesEnabled to branch before attempting a write. LEXWARE_OFFICE_WRITE_ALLOW can further restrict writes to a list: spec.info.writePolicy.allow is then the only writes permitted ('METHOD /v1/template'; a '?finalize' suffix also allows finalize=true, otherwise sales documents can only be created as drafts). Writes outside it are rejected before sending.
+
+Every execute call starts a fresh sandbox; only state carries data to the next call. Split work that exceeds one call (2 requests/s, 30 s, maxRequests <= 50) into batches, keep the ids, a cursor and partial totals in state, and return only progress until the last batch. state is shared by all execute calls of this server, including dry runs; use distinct keys per task and delete them when done.
 
 Example:
 
@@ -132,6 +135,29 @@ File upload example (bookkeeping Beleg). Never inline file bytes in code — pas
 async () => {
   const { fileId, voucherId, extraction, voucher, sent } = await lexware.uploadVoucherFile({ contentPath: '/absolute/path/to/receipt.pdf' });
   return { fileId, voucherId, extraction, status: voucher?.voucherStatus, voucherNumber: voucher?.voucherNumber, sent };
+}
+
+Batched fan-out across calls (input tax of each purchase invoice needs one detail GET). Call 1 stores the ids and a cursor:
+
+async () => {
+  const rows = await lexware.paginate({ path: '/v1/voucherlist', query: { voucherType: 'purchaseinvoice', voucherStatus: 'open,paid,paidoff,transferred,sepadebit', voucherDateFrom: '2026-01-01', voucherDateTo: '2026-03-31', size: 250 } });
+  await state.set('q1-input-tax', { ids: rows.map(row => row.id), cursor: 0, taxCents: 0 });
+  return { vouchers: rows.length };
+}
+
+Later calls (maxRequests: 30) process the next batch and accumulate; the last one returns the summary:
+
+async () => {
+  const job = await state.get('q1-input-tax');
+  for (const id of job.ids.slice(job.cursor, job.cursor + 25)) {
+    const voucher = await lexware.json({ path: \`/v1/vouchers/\${id}\` });
+    job.taxCents += lexware.requireMoney(voucher, 'totalTaxAmount');
+    job.cursor += 1;
+  }
+  await state.set('q1-input-tax', job);
+  if (job.cursor < job.ids.length) return { done: job.cursor, of: job.ids.length };
+  await state.delete('q1-input-tax');
+  return { vouchers: job.ids.length, inputTax: lexware.formatMoney(job.taxCents) };
 }`,
 			inputSchema: z.object({
 				code: z.string().describe('JavaScript async arrow function to execute a constrained Lexware API workflow'),

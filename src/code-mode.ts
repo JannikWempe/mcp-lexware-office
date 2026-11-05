@@ -4,8 +4,9 @@ import type { AccountInfo, AccountProfile } from './account.js';
 import { catalogLookupPrelude } from './catalog-lookup.js';
 import { type CodeExecutor, QuickJsExecutor } from './executor.js';
 import { type LexwareApiClient, type PlannedWrite, type RequestLogEntry, untilAborted } from './lexware-client.js';
-import { lexwareSandbox } from './lexware-sandbox-sdk.js';
+import { lexwareSandbox, stateSandbox } from './lexware-sandbox-sdk.js';
 import { lexwareSpec } from './lexware-spec.js';
+import { SandboxState } from './sandbox-state.js';
 import { truncateJson } from './truncate.js';
 
 // Keep a single Lexware request shorter than the execute timeout so that a slow request
@@ -30,6 +31,8 @@ export interface CodeModeOptions {
 	executor?: CodeExecutor;
 	// Shown as spec.info.account.
 	account: Pick<AccountProfile, 'get'>;
+	// Guest `state` of execute, shared by all execute calls of this instance.
+	state?: SandboxState;
 }
 
 export interface RunOptions {
@@ -48,11 +51,13 @@ export class CodeMode {
 	private readonly client: LexwareApiClient;
 	private readonly executor: CodeExecutor;
 	private readonly account: Pick<AccountProfile, 'get'>;
+	private readonly state: SandboxState;
 
 	constructor(options: CodeModeOptions) {
 		this.client = options.client;
 		this.executor = options.executor ?? new QuickJsExecutor();
 		this.account = options.account;
+		this.state = options.state ?? new SandboxState();
 	}
 
 	async search(code: string, options: RunOptions = {}): Promise<CallToolResult> {
@@ -100,6 +105,7 @@ export class CodeMode {
 			requestCount += 1;
 		};
 		const sandbox = lexwareSandbox(this.client, { beforeSend, onSettled: (entry) => requests.push(entry), dryRun, onPlanned });
+		const state = stateSandbox(this.state);
 		const execution = await this.executor.execute(
 			code,
 			{ spec: await this.sandboxSpec(options.signal) },
@@ -108,8 +114,8 @@ export class CodeMode {
 				memoryLimitBytes: MEMORY_LIMIT_BYTES,
 				filename: 'lexware-execute.js',
 				signal: options.signal,
-				...sandbox,
-				prelude: `${catalogLookupPrelude}\n${sandbox.prelude}`,
+				hostFunctions: { ...sandbox.hostFunctions, ...state.hostFunctions },
+				prelude: `${catalogLookupPrelude}\n${sandbox.prelude}\n${state.prelude}`,
 			},
 		);
 
