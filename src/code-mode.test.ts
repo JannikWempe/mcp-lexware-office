@@ -577,14 +577,14 @@ test('a dry run shows how bodies would be encoded', async () => {
 
 	const payload = payloadOf(await codeMode.execute(`async () => {
 		await lexware.request({ method: 'POST', path: '/v1/contacts', body: 'true' });
-		await lexware.request({ method: 'POST', path: '/v1/contacts', body: 'true', rawBody: true, contentType: 'text/plain' });
+		await lexware.request({ method: 'POST', path: '/v1/contacts', body: 'true', rawBody: true });
 		await lexware.request({ method: 'POST', path: '/v1/contacts', bodyBase64: '${bytes.toString('base64')}', contentType: 'application/xml' });
 	}`, { maxRequests: 1, dryRun: true }));
 
-	assert.deepEqual(payload.plannedWrites.map(({ contentType, body, bytes, sha256 }: Record<string, unknown>) => ({ contentType, body, bytes, sha256 })), [
-		{ contentType: 'application/json', body: 'true', bytes: undefined, sha256: undefined },
-		{ contentType: 'text/plain', body: 'true', bytes: undefined, sha256: undefined },
-		{ contentType: 'application/xml', body: undefined, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
+	assert.deepEqual(payload.plannedWrites.map(({ contentType, body, rawBody, bytes, sha256 }: Record<string, unknown>) => ({ contentType, body, rawBody, bytes, sha256 })), [
+		{ contentType: 'application/json', body: 'true', rawBody: undefined, bytes: undefined, sha256: undefined },
+		{ contentType: 'application/octet-stream', body: 'true', rawBody: true, bytes: undefined, sha256: undefined },
+		{ contentType: 'application/xml', body: undefined, rawBody: undefined, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
 	]);
 });
 
@@ -612,7 +612,8 @@ test('a dry run caps the number of planned writes', async () => {
 	const { codeMode } = codeModeWith(undefined, { writesEnabled: true });
 
 	const result = await codeMode.execute(`async () => {
-		for (let index = 0; index < 101; index += 1) await lexware.request({ method: 'POST', path: '/v1/contacts', body: { index } });
+		for (let index = 0; index < 100; index += 1) await lexware.request({ method: 'POST', path: '/v1/contacts', body: { index } });
+		await lexware.request({ method: 'POST', path: '/v1/files', multipart: [{ name: 'file', contentPath: '/tmp/receipt.pdf' }] });
 	}`, { maxRequests: 1, dryRun: true });
 
 	assert.equal(result.isError, true);
@@ -622,6 +623,32 @@ test('a dry run caps the number of planned writes', async () => {
 	assert.ok(payload.truncated, 'expected plannedWrites to be shrunk');
 	assert.equal(payload.requests.filter((entry: Record<string, unknown>) => entry.dryRun).length, 100);
 	assert.deepEqual(payload.requests.at(-1), { ...payload.requests.at(-1), sent: false, error: 'Dry run exceeded 100 planned writes' });
+});
+
+test('a dry-run write cancelled while it is planned rejects its plan', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'lexware-dry-run-'));
+	try {
+		const receipt = join(dir, 'receipt.pdf');
+		await writeFile(receipt, '%PDF');
+		const client = new LexwareApiClient({ apiKey: 'test-key', uploadDirs: [dir], fetchImpl: async () => assert.fail('dry runs must not fetch') });
+		const controller = new AbortController();
+		let planning: Promise<unknown> | undefined;
+
+		const request = client.request({ method: 'POST', path: '/v1/files', multipart: [{ name: 'file', contentPath: receipt }] }, {
+			dryRun: true,
+			signal: controller.signal,
+			onPlanned: (write) => {
+				planning = write;
+				controller.abort();
+			},
+		});
+
+		await assert.rejects(request, /cancelled/);
+		assert.ok(planning);
+		await assert.rejects(planning, /cancelled/);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
 });
 
 test('without dryRun the result has no dryRun or plannedWrites fields', async () => {

@@ -273,6 +273,7 @@ type PlannedWrite = {
   operationId?: string;
   contentType?: string; // Content-Type header that would be sent
   body?: unknown;
+  rawBody?: true; // body is sent verbatim, not JSON-encoded
   bytes?: number; // bodyBase64: decoded size
   sha256?: string;
   multipart?: Array<{ name: string; value?: string; filename?: string; contentType?: string; bytes?: number; sha256?: string }>; // file parts with the bytes and SHA-256 that would be uploaded

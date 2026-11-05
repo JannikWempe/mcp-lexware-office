@@ -69,8 +69,9 @@ export interface LexwareRequestOptions {
 	// Writes are not sent: each returns a synthetic `dryRun` response and is reported to onPlanned,
 	// also when the write policy would block it. Reads run normally.
 	dryRun?: boolean;
-	// Called synchronously when a dry run plans a write, so calls arrive in request order, with the
-	// plan that settles once the body is serialized. Throwing fails that write unsent, e.g. to cap plans.
+	// Called synchronously when a dry run is about to plan a write, so calls arrive in request order,
+	// before the body is serialized. The promise resolves with the plan the script receives, or rejects
+	// if planning fails or is cancelled. Throwing fails that write unsent, e.g. to cap plans.
 	onPlanned?: (write: Promise<PlannedWrite>) => void;
 }
 
@@ -84,6 +85,8 @@ export interface PlannedWrite {
 	// The Content-Type header that would be sent; multipart/form-data gets its boundary from fetch.
 	contentType?: string;
 	body?: unknown;
+	// `body` is sent verbatim, not JSON-encoded.
+	rawBody?: true;
 	// bodyBase64 requests: the decoded bytes.
 	bytes?: number;
 	sha256?: string;
@@ -276,13 +279,20 @@ export class LexwareApiClient {
 		if (signal?.aborted) throw cancelledError();
 
 		if (write && options.dryRun) {
-			const planning = planWrite(normalized, this.uploadDirs, blocked);
-			// Rejections reach the caller through the await below, even if onPlanned throws first.
+			let settle!: { resolve: (write: PlannedWrite) => void; reject: (error: unknown) => void };
+			const planning = new Promise<PlannedWrite>((resolve, reject) => { settle = { resolve, reject }; });
 			planning.catch(() => {});
+			// Before any file is read, so a rejected write costs nothing.
 			options.onPlanned?.(planning);
-			const planned = await planning;
-			if (signal?.aborted) throw cancelledError();
-			return dryRunResponse(normalized, planned);
+			try {
+				const planned = await planWrite(normalized, this.uploadDirs, blocked);
+				if (signal?.aborted) throw cancelledError();
+				settle.resolve(planned);
+				return dryRunResponse(normalized, planned);
+			} catch (error) {
+				settle.reject(error);
+				throw error;
+			}
 		}
 
 		try {
@@ -672,6 +682,7 @@ async function planWrite(request: NormalizedRequest, uploadDirs: string[], block
 		...(request.matched !== undefined && { operationId: request.matched.operation.operationId }),
 		...(contentType !== undefined && { contentType }),
 		...(request.body !== undefined && { body: request.body }),
+		...(request.body !== undefined && request.rawBody && { rawBody: true as const }),
 		...(request.bodyBase64 !== undefined && sent !== undefined && { bytes: sent.bytes, sha256: sent.sha256 }),
 		...(request.multipart !== undefined && {
 			multipart: request.multipart.map((part) => part.value !== undefined
