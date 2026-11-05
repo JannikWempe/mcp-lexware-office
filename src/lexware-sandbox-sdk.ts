@@ -5,8 +5,12 @@ import type { LexwareApiClient, LexwareRequestOptions, LexwareResponse } from '.
 // serialized into the guest prelude), the host binding it calls, and the declarations the
 // execute tool description shows to the model. `src/lexware-sandbox-sdk.test.ts` guards drift.
 
-// Global the executor installs; the guest SDK sends JSON-encoded LexwareRequestInput through it.
+// Globals the executor installs; the guest SDK sends JSON-encoded LexwareRequestInput through the
+// first, and a delay in milliseconds through the second.
 const HOST_FUNCTION = '__lexwareRequestJson';
+const SLEEP_HOST_FUNCTION = '__lexwareSleep';
+// lexware.sleep rejects longer waits; the execute timeout (which aborts the signal) bounds the total.
+export const MAX_SLEEP_MS = 10_000;
 
 export interface LexwareSandbox {
 	prelude: string;
@@ -17,22 +21,50 @@ export interface LexwareSandbox {
 // client.request with the per-call options plus the executor's abort signal.
 export function lexwareSandbox(client: Pick<LexwareApiClient, 'request'>, options: Omit<LexwareRequestOptions, 'signal'> = {}): LexwareSandbox {
 	return {
-		prelude: `const lexware = (${createLexwareSdk.toString()})(globalThis.${HOST_FUNCTION});`,
+		prelude: `const lexware = (${createLexwareSdk.toString()})(globalThis.${HOST_FUNCTION}, globalThis.${SLEEP_HOST_FUNCTION});`,
 		hostFunctions: {
 			[HOST_FUNCTION]: async (payload, { signal }) => {
 				const request = JSON.parse(payload) as unknown;
 				const response = await client.request(request, { ...options, signal });
 				return JSON.stringify(response);
 			},
+			[SLEEP_HOST_FUNCTION]: (payload, { signal }) => sleep(Number(payload), signal),
 		},
 	};
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<string> {
+	if (!Number.isFinite(ms) || ms < 0 || ms > MAX_SLEEP_MS) {
+		return Promise.reject(new Error(`lexware.sleep expects 0 to ${MAX_SLEEP_MS} ms, got ${ms}`));
+	}
+	return new Promise((resolve, reject) => {
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(new Error('lexware.sleep was aborted: the execution ended'));
+		};
+		const timer = setTimeout(() => {
+			signal.removeEventListener('abort', onAbort);
+			resolve('');
+		}, ms);
+		if (signal.aborted) {
+			onAbort();
+			return;
+		}
+		signal.addEventListener('abort', onAbort, { once: true });
+	});
 }
 
 // Builds the guest `lexware` object on top of a host function taking and returning JSON.
 // Runs inside QuickJS via Function.prototype.toString(), so it must stay self-contained:
 // no references to imports or module-scope values (type-only references are fine).
-export function createLexwareSdk(requestJson: (payload: string) => Promise<string>) {
+export function createLexwareSdk(requestJson: (payload: string) => Promise<string>, sleepHost?: (payload: string) => Promise<string>) {
 	const request = async (input?: unknown): Promise<LexwareResponse> => JSON.parse(await requestJson(JSON.stringify(input ?? {})));
+	const sleep = async (ms: number): Promise<void> => {
+		if (sleepHost === undefined) {
+			throw new Error('lexware.sleep is not available in this sandbox');
+		}
+		await sleepHost(String(ms));
+	};
 	const assertOkJsonResponse = (response: LexwareResponse, helperName: string): unknown => {
 		if (!response || typeof response !== 'object') {
 			throw new Error(helperName + ' expected lexware.request to return a LexwareResponse object');
@@ -272,6 +304,209 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 			.filter((key) => key !== 'version' && key !== 'updatedDate' && JSON.stringify(before[key]) !== JSON.stringify(afterRecord[key]));
 		return { before, after, changed };
 	};
+	const uploadContentTypes: Record<string, string> = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', xml: 'application/xml' };
+	type FileInput = { contentPath?: string; contentBase64?: string; filename?: string; contentType?: string };
+	const filePart = (input: FileInput, helperName: string): Record<string, unknown> => {
+		if (!isObjectLike(input) || Array.isArray(input)) {
+			throw new Error(helperName + ' expects an object: { contentPath | contentBase64, filename?, contentType? }');
+		}
+		if ((input.contentPath === undefined) === (input.contentBase64 === undefined)) {
+			throw new Error(helperName + ' expects exactly one of contentPath or contentBase64');
+		}
+		if (input.contentBase64 !== undefined && input.filename === undefined) {
+			throw new Error(helperName + ' needs a filename with contentBase64, e.g. receipt.pdf');
+		}
+		let contentType = input.contentType;
+		if (contentType === undefined) {
+			const name = String(input.filename !== undefined ? input.filename : input.contentPath);
+			const extension = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '';
+			contentType = uploadContentTypes[extension];
+			if (contentType === undefined) {
+				throw new Error(helperName + ' cannot infer contentType from ' + JSON.stringify(name) + '; pass contentType (Lexware accepts pdf, jpg, png and xml)');
+			}
+		}
+		const part: Record<string, unknown> = { name: 'file', contentType };
+		for (const field of ['contentPath', 'contentBase64', 'filename'] as const) {
+			if (input[field] !== undefined) part[field] = input[field];
+		}
+		return part;
+	};
+	// POST /v1/files, then poll the created voucher after 2, 4 and 8 s (capped by timeoutMs) until text recognition has
+	// replaced status blank: 1 + up to 4 requests. Never re-uploads; a timeout returns extraction 'pending'.
+	const uploadVoucherFile = async (input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{
+		fileId: string;
+		voucherId: string;
+		sent: unknown;
+		voucher?: unknown;
+		extraction: 'done' | 'pending' | 'skipped';
+	}> => {
+		const part = filePart(input, 'lexware.uploadVoucherFile');
+		const waitForExtraction = input.waitForExtraction !== undefined ? input.waitForExtraction : true;
+		if (typeof waitForExtraction !== 'boolean' && !(isObjectLike(waitForExtraction) && !Array.isArray(waitForExtraction))) {
+			throw new Error('lexware.uploadVoucherFile input.waitForExtraction must be a boolean or { timeoutMs }');
+		}
+		const timeoutMs = typeof waitForExtraction === 'object' && waitForExtraction.timeoutMs !== undefined ? Number(waitForExtraction.timeoutMs) : 15_000;
+		// Capped so that one waiting upload fits into the 30 s execute timeout together with its requests.
+		if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 15_000) {
+			throw new Error('lexware.uploadVoucherFile input.waitForExtraction.timeoutMs must be 0 to 15000 ms');
+		}
+		const response = await request({ method: 'POST', path: '/v1/files', multipart: [part, { name: 'type', value: 'voucher' }] });
+		const data = assertOkJsonResponse(response, 'lexware.uploadVoucherFile');
+		if (!isObjectLike(data) || typeof data.id !== 'string' || typeof data.voucherId !== 'string') {
+			throw new Error('lexware.uploadVoucherFile expected POST /v1/files to return { id, voucherId }, got status ' + response.status + ': ' + JSON.stringify(data));
+		}
+		const uploaded = { fileId: data.id, voucherId: data.voucherId, sent: response.sent };
+		if (waitForExtraction === false) {
+			return { ...uploaded, extraction: 'skipped' };
+		}
+		let voucher: unknown;
+		let waited = 0;
+		for (const delayMs of [2_000, 4_000, 8_000, Infinity]) {
+			const stepMs = Math.min(delayMs, timeoutMs - waited);
+			if (stepMs <= 0) break;
+			try {
+				await sleep(stepMs);
+				waited += stepMs;
+				voucher = assertOkJsonResponse(await request({ path: '/v1/vouchers/' + encodeURIComponent(data.voucherId) }), 'lexware.uploadVoucherFile');
+			} catch (error) {
+				throw new Error('lexware.uploadVoucherFile: the upload succeeded (fileId ' + data.id + ', voucherId ' + data.voucherId + '), but waiting for text recognition failed. Do not upload again; GET /v1/vouchers/' + data.voucherId + ' later. Cause: ' + (error instanceof Error ? error.message : String(error)));
+			}
+			if (isObjectLike(voucher) && voucher.voucherStatus !== 'blank') {
+				return { ...uploaded, voucher, extraction: 'done' };
+			}
+		}
+		return { ...uploaded, ...(voucher !== undefined && { voucher }), extraction: 'pending' };
+	};
+	// POST /v1/vouchers/{id}/files: 1 request. Later voucher PUTs must keep the returned fileId.
+	const attachFileToVoucher = async (voucherId: string, input: FileInput): Promise<{ fileId: string; sent: unknown }> => {
+		if (typeof voucherId !== 'string' || voucherId.length === 0) {
+			throw new Error('lexware.attachFileToVoucher expects a non-empty voucher id string');
+		}
+		const part = filePart(input, 'lexware.attachFileToVoucher');
+		const response = await request({ method: 'POST', path: '/v1/vouchers/' + encodeURIComponent(voucherId) + '/files', multipart: [part] });
+		const data = assertOkJsonResponse(response, 'lexware.attachFileToVoucher');
+		if (!isObjectLike(data) || typeof data.id !== 'string') {
+			throw new Error('lexware.attachFileToVoucher expected POST /v1/vouchers/{id}/files to return { id }, got status ' + response.status + ': ' + JSON.stringify(data));
+		}
+		return { fileId: data.id, sent: response.sent };
+	};
+	// Ignores case, spaces, dashes, dots and the leading zeros of the first digit group: 'RE-0042' and 're 42' compare equal.
+	const normalizeVoucherNumber = (value: unknown): string => typeof value === 'string'
+		? value.toLowerCase().replace(/[\s.\-–—]/g, '').replace(/^([a-z]*)0+(?=\d)/, '$1')
+		: '';
+	const allowedCriteria = ['voucherNumber', 'contactName', 'amount', 'currency', 'dateFrom', 'dateTo', 'voucherType', 'voucherStatus'];
+	// Duplicate check before an upload: an exact voucherNumber query (1 request); if that finds nothing, pages /v1/voucherlist
+	// within dateFrom..dateTo (1 + pages requests) and ranks the rows locally. Returns candidates; never decides a duplicate.
+	const findVouchers = async (
+		criteria: { voucherNumber?: string; contactName?: string | RegExp; amount?: number; currency?: string; dateFrom?: string; dateTo?: string; voucherType?: string; voucherStatus?: string },
+		options: { maxPages?: number } = {},
+	): Promise<Array<{ row: unknown; score: number; matched: string[] }>> => {
+		if (!isObjectLike(criteria) || Array.isArray(criteria)) {
+			throw new Error('lexware.findVouchers criteria must be an object');
+		}
+		const unknownKeys = Object.keys(criteria).filter((key) => !allowedCriteria.includes(key));
+		if (unknownKeys.length > 0) {
+			throw new Error('lexware.findVouchers criteria has unknown keys ' + unknownKeys.join(', ') + '. Allowed: ' + allowedCriteria.join(', '));
+		}
+		if (options == null || typeof options !== 'object' || Array.isArray(options)) {
+			throw new Error('lexware.findVouchers options must be an object when provided');
+		}
+		const maxPages = options.maxPages !== undefined ? options.maxPages : 4;
+		if (!(Number.isInteger(maxPages) && maxPages >= 1)) {
+			throw new Error('lexware.findVouchers options.maxPages must be a positive integer');
+		}
+		const { voucherNumber, contactName, amount, currency, dateFrom, dateTo } = criteria;
+		if (voucherNumber === undefined && contactName === undefined && amount === undefined) {
+			throw new Error('lexware.findVouchers needs at least one of criteria.voucherNumber, contactName or amount');
+		}
+		const wantedNumber = normalizeVoucherNumber(voucherNumber);
+		if (voucherNumber !== undefined && wantedNumber.length === 0) {
+			throw new Error('lexware.findVouchers criteria.voucherNumber must be a string with letters or digits');
+		}
+		if (contactName !== undefined && !(contactName instanceof RegExp) && !(typeof contactName === 'string' && contactName.length > 0)) {
+			throw new Error('lexware.findVouchers criteria.contactName must be a non-empty string or a RegExp');
+		}
+		if (amount !== undefined && !(typeof amount === 'number' && Number.isFinite(amount))) {
+			throw new Error('lexware.findVouchers criteria.amount must be a finite number');
+		}
+		if (currency !== undefined && typeof currency !== 'string') {
+			throw new Error('lexware.findVouchers criteria.currency must be a string');
+		}
+		for (const [name, date] of [['dateFrom', dateFrom], ['dateTo', dateTo]]) {
+			if (date !== undefined && !(typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date))) {
+				throw new Error('lexware.findVouchers criteria.' + name + ' must be a yyyy-MM-dd string');
+			}
+		}
+		const hasWindow = dateFrom !== undefined && dateTo !== undefined;
+		if (hasWindow && dateFrom > dateTo) {
+			throw new Error('lexware.findVouchers criteria.dateFrom must not be after dateTo');
+		}
+		if (voucherNumber === undefined && !hasWindow) {
+			throw new Error('lexware.findVouchers without criteria.voucherNumber needs criteria.dateFrom and dateTo to bound the voucherlist scan');
+		}
+		const contactPattern = contactName instanceof RegExp ? new RegExp(contactName.source, contactName.flags.replace(/[gyi]/g, '') + 'i') : undefined;
+		const wantedContact = typeof contactName === 'string' ? contactName.toLowerCase() : undefined;
+		const amountCents = amount !== undefined ? toCents(amount) : undefined;
+		const baseQuery = {
+			voucherType: criteria.voucherType !== undefined ? criteria.voucherType : 'purchaseinvoice,purchasecreditnote,salesinvoice,salescreditnote',
+			voucherStatus: criteria.voucherStatus !== undefined ? criteria.voucherStatus : 'any',
+		};
+		// Weights are powers of two, so a voucherNumber match outranks any mix of the others.
+		const rank = (rows: unknown[]) => rows
+			.filter((row) => !(currency !== undefined && isObjectLike(row) && typeof row.currency === 'string' && row.currency.toLowerCase() !== currency.toLowerCase()))
+			.map((row) => {
+				const voucher = isObjectLike(row) ? row : {};
+				const matched: string[] = [];
+				let score = 0;
+				if (voucherNumber !== undefined && normalizeVoucherNumber(voucher.voucherNumber) === wantedNumber) {
+					score += 8;
+					matched.push('voucherNumber');
+				}
+				// Unchecked vouchers can lack totalAmount; rows without a numeric one skip amount matching.
+				const totalAmount = voucher.totalAmount;
+				const hasAmount = typeof totalAmount === 'number' ? Number.isFinite(totalAmount) : typeof totalAmount === 'string' && decimalStringPattern.test(totalAmount.trim());
+				if (amountCents !== undefined && hasAmount && Math.abs(toCents(totalAmount) - amountCents) <= 1) {
+					score += 4;
+					matched.push('amount');
+				}
+				const rowContact = typeof voucher.contactName === 'string' ? voucher.contactName : '';
+				if (contactPattern !== undefined ? contactPattern.test(rowContact) : wantedContact !== undefined && rowContact.toLowerCase().includes(wantedContact)) {
+					score += 2;
+					matched.push('contactName');
+				}
+				const date = typeof voucher.voucherDate === 'string' ? voucher.voucherDate.slice(0, 10) : '';
+				if (hasWindow && date >= dateFrom && date <= dateTo) {
+					score += 1;
+					matched.push('date');
+				}
+				return { row, score, matched };
+			})
+			// A date match alone is no candidate.
+			.filter((candidate) => candidate.score > 1)
+			.sort((a, b) => b.score - a.score);
+		const path = '/v1/voucherlist';
+		if (voucherNumber !== undefined) {
+			const exactCandidates = rank(await paginate({ path, query: { ...baseQuery, voucherNumber: voucherNumber.trim() } }, { maxPages: 1 }));
+			if (exactCandidates.length > 0) {
+				return exactCandidates;
+			}
+			if (!hasWindow) {
+				throw new Error('lexware.findVouchers: no candidate has the exact number ' + JSON.stringify(voucherNumber) + '. Pass criteria.dateFrom and dateTo to also search differently formatted numbers in that voucherDate window.');
+			}
+		}
+		// Scanning only part of the window could miss a duplicate, so a window with more than maxPages pages throws.
+		const windowQuery = { ...baseQuery, voucherDateFrom: dateFrom, voucherDateTo: dateTo };
+		const firstPage = assertOkJsonResponse(await request({ path, query: { ...windowQuery, page: 0, size: 250 } }), 'lexware.findVouchers') as { content?: unknown; last?: unknown; totalPages?: unknown } | null;
+		if (!firstPage || typeof firstPage !== 'object' || !Array.isArray(firstPage.content)) {
+			throw new Error('lexware.findVouchers expected response.data.content to be an array');
+		}
+		const totalPages = typeof firstPage.totalPages === 'number' ? firstPage.totalPages : firstPage.last === true ? 1 : maxPages + 1;
+		if (totalPages > maxPages) {
+			throw new Error('lexware.findVouchers: the voucherDate window ' + dateFrom + '..' + dateTo + ' has ' + (typeof firstPage.totalPages === 'number' ? totalPages : 'more than ' + maxPages) + ' voucherlist pages, more than options.maxPages=' + maxPages + '. Narrow the window, or raise options.maxPages and the execute maxRequests (1 + pages requests).');
+		}
+		const otherRows = totalPages > 1 ? await paginate({ path, query: { ...windowQuery, page: 1 } }, { maxPages: totalPages - 1 }) : [];
+		return rank([...firstPage.content, ...otherRows]);
+	};
 	return Object.freeze({
 		request,
 		json,
@@ -281,6 +516,10 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		sumMoney,
 		formatMoney,
 		updateVoucher,
+		uploadVoucherFile,
+		attachFileToVoucher,
+		sleep,
+		findVouchers,
 	});
 }
 
@@ -294,10 +533,20 @@ export const lexwareSdkDeclaration = `declare const lexware: {
   requireMoney(row: unknown, fieldPath: string): number;
   sumMoney(rows: unknown[], fieldPath: string): number;
   formatMoney(cents: number, currency?: string): string;
+  // GET, shallow-merge patch (read-only fields dropped, files and version kept), PUT, GET to verify: 3 requests. Throws
+  // without writing on an expectedVersion mismatch or if files would lose an id (unless allowFileRemoval). Details: spec PUT /v1/vouchers/{id} notes.
   updateVoucher(id: string, patch: Record<string, unknown>, options?: { expectedVersion?: number; allowFileRemoval?: boolean }): Promise<{ before: unknown; after: unknown; changed: string[] }>;
+  // POST /v1/files (type=voucher), then polls the voucher after 2, 4, 8 s until it is no longer blank (timeoutMs default and max 15000):
+  // up to 5 requests. One waiting upload per execute call (30 s timeout); for batches pass waitForExtraction: false. Never re-uploads;
+  // extraction 'pending' on timeout means GET /v1/vouchers/{voucherId} later.
+  uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped' }>;
+  attachFileToVoucher(voucherId: string, input: FileInput): Promise<{ fileId: string; sent: UploadSent }>; // POST /v1/vouchers/{id}/files, 1 request
+  sleep(ms: number): Promise<void>; // 0-${MAX_SLEEP_MS} ms per call; the 30 s execute timeout bounds the total
+  // Duplicate check before uploads. Exact voucherNumber query (1 request); if no candidate, pages /v1/voucherlist in dateFrom..dateTo (required,
+  // else throws): 1 + pages requests; throws if the window has more than maxPages (default 4) pages. Ranks rows by voucherNumber ignoring
+  // case/spaces/dashes/dots/leading zeros (8), totalAmount ±0.01 (4), contactName (2), date (1). Never decides; check the candidates.
+  findVouchers(criteria: { voucherNumber?: string; contactName?: string | RegExp; amount?: number; currency?: string; dateFrom?: string; dateTo?: string; voucherType?: string; voucherStatus?: string }, options?: { maxPages?: number }): Promise<Array<{ row: unknown; score: number; matched: string[] }>>;
 };
-// updateVoucher: GET, shallow-merge patch (read-only fields dropped, files and version kept), PUT, GET to verify: 3 requests.
-// Throws without writing on an expectedVersion mismatch or if files would lose an id (unless allowFileRemoval). Details: spec PUT /v1/vouchers/{id} notes.
 
 type LexwareRequest = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -322,6 +571,16 @@ type MultipartPart = {
   contentType?: string;
 };
 // Exactly one of value, contentBase64, or contentPath per part.
+
+type FileInput = {
+  contentPath?: string; // as in MultipartPart; requires LEXWARE_OFFICE_UPLOAD_DIRS
+  contentBase64?: string; // needs filename
+  filename?: string;
+  contentType?: string; // default from the filename/contentPath extension: pdf, jpg/jpeg, png, xml
+};
+// Exactly one of contentPath or contentBase64.
+
+type UploadSent = { bytes: number; parts: Array<{ name: string; filename?: string; bytes: number; sha256: string }> };
 
 type LexwareResponse<T = unknown> = {
   ok: boolean;

@@ -23,7 +23,7 @@ The server uses **Code Mode**: instead of one MCP tool per API endpoint, it expo
 The server exposes two MCP tools:
 
 - `search` — runs a sandboxed JavaScript async arrow function against a curated OpenAPI-lite Lexware catalog.
-- `execute` — runs a sandboxed JavaScript async arrow function with one host capability, `lexware.request`, for relative `/v1/...` Lexware API calls.
+- `execute` — runs a sandboxed JavaScript async arrow function with the `lexware` SDK: `lexware.request` for relative `/v1/...` Lexware API calls, plus helpers for pagination, money, voucher updates, uploads and waiting (`lexware.sleep`).
 
 Both tools declare MCP annotations (`search` is read-only; `execute` is marked destructive only when writes are enabled) and return `structuredContent` alongside the JSON text block. Built on the MCP TypeScript SDK v2 (protocol revision 2026-07-28 and 2025-era clients). See [docs/guide.md](docs/guide.md#tool-results-and-metadata).
 
@@ -49,7 +49,16 @@ The sandbox does **not** receive the Lexware API key, Node globals, filesystem a
 
 Uploads are binary-safe via `multipart` parts with `contentPath` (host reads a local file from disk), `contentBase64` (binary FormData parts), or `bodyBase64` (raw binary body). The host reads/decodes and builds `Buffer` / `Blob` bodies outside the QuickJS sandbox.
 
-Preferred: `contentPath` — pass the file's absolute path instead of inlining bytes. Requires `LEXWARE_OFFICE_ALLOW_WRITES=true` (uploads are writes) and `LEXWARE_OFFICE_UPLOAD_DIRS` (see [Upload directories](#upload-directories)); the file must be on the machine running the MCP server:
+Preferred: `contentPath` — pass the file's absolute path instead of inlining bytes. Requires `LEXWARE_OFFICE_ALLOW_WRITES=true` (uploads are writes) and `LEXWARE_OFFICE_UPLOAD_DIRS` (see [Upload directories](#upload-directories)); the file must be on the machine running the MCP server. `lexware.uploadVoucherFile` uploads a Beleg and waits for Lexware's text recognition in the same call:
+
+```js
+async () => {
+  const { voucherId, extraction, voucher } = await lexware.uploadVoucherFile({ contentPath: '/absolute/path/to/receipt.pdf' });
+  return { voucherId, extraction, voucherNumber: voucher?.voucherNumber };
+}
+```
+
+The raw request it sends:
 
 ```js
 async () => {

@@ -694,6 +694,7 @@ export const lexwareSpec: LexwareApiCatalog = {
 					'Observed voucherlist summary amount fields: totalAmount (summary total) and openAmount (outstanding amount). openAmount is not additional revenue.',
 					'Voucherlist summaries do not include VAT-aware net amount fields; fetch /v1/invoices/{id} details when net/tax-exclusive revenue is required.',
 					'Do not default missing financial amount fields to zero; missing fields usually indicate a wrong endpoint or schema drift.',
+					'The voucherNumber filter matches exactly. To find a voucher whose number may be formatted differently (spaces, dashes, dots, case, leading zeros), use lexware.findVouchers in execute; see workflow reconcileBeforeUpload.',
 				],
 				examples: [
 					{ purpose: 'Gross invoiced/accrual revenue default', path: '/v1/voucherlist?voucherType=invoice&voucherStatus=open,paid&page=0&size=250' },
@@ -1013,11 +1014,13 @@ export const lexwareSpec: LexwareApiCatalog = {
 			keywords: ['upload', 'beleg', 'receipt', 'pdf', 'multipart', 'contentPath', 'file'],
 			steps: [
 				'Check spec.info.writesEnabled first — uploads are writes and are blocked when it is false.',
-				'For bookkeeping file upload, POST to /v1/files using the multipart request field with parts file and type=voucher (see example).',
+				'Before uploading a Beleg, check that it is not in Lexware yet with lexware.findVouchers (workflow reconcileBeforeUpload).',
+				'For bookkeeping file upload, prefer lexware.uploadVoucherFile({ contentPath }) in execute: it POSTs /v1/files with type=voucher and polls GET /v1/vouchers/{voucherId} until text recognition replaced status blank (up to 5 requests, about 15 s, so one waiting upload per execute call; for several files pass waitForExtraction: false and read the vouchers in a later call). extraction "pending" means recognition is still running: GET the voucher in a later call, never upload again.',
+				'Without the helper, POST to /v1/files using the multipart request field with parts file and type=voucher (see example); the voucher stays blank for a few seconds. Wait in the sandbox with lexware.sleep(ms) (max 10000 per call).',
 				'For a file on the server machine, set contentPath to its absolute path — the host reads the file from disk, so never inline file bytes or base64 in the code string.',
 				'For bytes you already hold as base64, use contentBase64 instead of contentPath.',
 				'Verify the upload via response.sent (bytes and sha256 per binary part) and the returned file id.',
-				'To attach a file directly to a voucher, POST the same multipart shape (file part only) to /v1/vouchers/{id}/files.',
+				'To attach a file directly to a voucher, use lexware.attachFileToVoucher(voucherId, { contentPath }) or POST the same multipart shape (file part only) to /v1/vouchers/{id}/files.',
 				'To download a bookkeeping voucher file, GET /v1/files/{id}. lexware.request sends Accept: */* by default; pass accept for a specific representation (application/pdf, application/xml, image/png, image/jpeg).',
 				'To download a sales document, GET /v1/{documentType}/{id}/file (default Accept: */*). Drafts have no file (409), except dunnings.',
 				'For the XRechnung XML of an invoice, credit note or down-payment invoice, pass accept: "application/xml"; it comes back as response.text. Binary PDFs come back as metadata only.',
@@ -1044,6 +1047,27 @@ export const lexwareSpec: LexwareApiCatalog = {
 						],
 					},
 				},
+			],
+		},
+		reconcileBeforeUpload: {
+			summary: 'Check whether a document (Beleg) already exists in Lexware before uploading it',
+			keywords: ['duplicate check', 'already uploaded', 'exists', 'reconcile', 'voucher number', 'Belegnummer', 'Dublette', 'before upload', 'find voucher'],
+			steps: [
+				'Extract voucherNumber, contactName, amount (gross total), currency and voucherDate from the document.',
+				'Call lexware.findVouchers({ voucherNumber, contactName, amount, currency, dateFrom, dateTo }) in execute with a voucherDate window around the document date, e.g. ±30 days. It queries the exact voucherNumber first (1 request) and, if that finds no candidate, pages /v1/voucherlist in the window (1 + pages requests). A window with more than options.maxPages pages (default 4) throws instead of being checked partially.',
+				'Inspect the ranked candidates { row, score, matched }: voucherNumber 8, amount 4, contactName 2, date 1. Present likely duplicates to the user; the helper never decides.',
+				'Upload only when no candidate is a duplicate (see workflow fileHandling), in a separate execute call: a waiting lexware.uploadVoucherFile needs most of the 30 s timeout.',
+			],
+			relatedEndpoints: [
+				{ method: 'GET', path: '/v1/voucherlist' },
+				{ method: 'POST', path: '/v1/files' },
+			],
+			notes: [
+				'voucherNumber is compared ignoring case, spaces, dashes, dots and the leading zeros of the first digit group: 123 456 7890 matches 1234567890, RE-0042 matches RE-42.',
+				'Without dateFrom and dateTo, an exact-number miss throws instead of scanning voucherlist; criteria without voucherNumber always need the window.',
+				'voucherType defaults to the bookkeeping types purchaseinvoice,purchasecreditnote,salesinvoice,salescreditnote and voucherStatus to any; pass voucherType: \'any\' to include sales documents such as invoice and creditnote.',
+				'Voucherlist rows of unchecked vouchers can lack totalAmount (and voucherNumber); amount matching skips them, so match those on contactName and date.',
+				'Vouchers in status blank (text recognition after POST /v1/files still running) have no voucherNumber or amounts yet, so they cannot match on those.',
 			],
 		},
 		findContact: {
