@@ -448,7 +448,7 @@ To enable writes, set:
 
 Priority order (highest wins):
 
-1. `LEXWARE_OFFICE_READ_ONLY=true` → writes always blocked
+1. `LEXWARE_OFFICE_READ_ONLY=true` → writes always blocked. It fails closed: any value other than empty or `false` (e.g. `TRUE`, `1`, `yes`) counts.
 2. `LEXWARE_OFFICE_ALLOW_WRITES=true` → writes allowed
 3. Default (neither set) → writes blocked
 

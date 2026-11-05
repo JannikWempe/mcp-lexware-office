@@ -20,6 +20,15 @@ test('READ_ONLY=true overrides ALLOW_WRITES=true', () => {
 	assert.equal(loadConfig({ LEXWARE_OFFICE_READ_ONLY: 'false', LEXWARE_OFFICE_ALLOW_WRITES: 'true' }).writesEnabled, true);
 });
 
+test('READ_ONLY fails closed: any value but empty or false blocks writes', () => {
+	for (const value of ['TRUE', ' true', '1', 'yes', 'on']) {
+		assert.equal(loadConfig({ LEXWARE_OFFICE_READ_ONLY: value, LEXWARE_OFFICE_ALLOW_WRITES: 'true' }).writesEnabled, false, `READ_ONLY=${value}`);
+	}
+	for (const value of ['', '  ', 'FALSE', ' false ']) {
+		assert.equal(loadConfig({ LEXWARE_OFFICE_READ_ONLY: value, LEXWARE_OFFICE_ALLOW_WRITES: 'true' }).writesEnabled, true, `READ_ONLY=${JSON.stringify(value)}`);
+	}
+});
+
 test('UPLOAD_DIRS is split on the path delimiter, trimmed, and empty entries dropped', () => {
 	assert.deepEqual(loadConfig({}).uploadDirs, []);
 	assert.deepEqual(loadConfig({ LEXWARE_OFFICE_UPLOAD_DIRS: '' }).uploadDirs, []);

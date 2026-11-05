@@ -18,7 +18,10 @@ const EXECUTE_TIMEOUT_MS = 30_000;
 const SEARCH_TIMEOUT_MS = 1_000;
 // `search` doesn't wait longer than this for a cold or slow profile lookup.
 const SEARCH_ACCOUNT_WAIT_MS = 1_000;
-const MEMORY_LIMIT_BYTES = 32 * 1024 * 1024;
+const SEARCH_MEMORY_LIMIT_BYTES = 32 * 1024 * 1024;
+// Inline contentBase64 uploads hold several copies of the file in the sandbox (source, string, JSON
+// payload): about 8x its size. This fits the client's 25 MB upload limit.
+const EXECUTE_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
 // Up to this many successful reads are listed in `requests`; more are collapsed into `readsSummary`.
 const MAX_LISTED_READS = 5;
 // A planned write's body in `plannedWrites` is shrunk structurally beyond this many characters.
@@ -66,7 +69,7 @@ export class CodeMode {
 			{ spec: await this.sandboxSpec(options.signal, SEARCH_ACCOUNT_WAIT_MS) },
 			{
 				timeoutMs: SEARCH_TIMEOUT_MS,
-				memoryLimitBytes: MEMORY_LIMIT_BYTES,
+				memoryLimitBytes: SEARCH_MEMORY_LIMIT_BYTES,
 				filename: 'lexware-search.js',
 				signal: options.signal,
 				prelude: catalogLookupPrelude,
@@ -112,7 +115,7 @@ export class CodeMode {
 			{ spec: await this.sandboxSpec(options.signal) },
 			{
 				timeoutMs: EXECUTE_TIMEOUT_MS,
-				memoryLimitBytes: MEMORY_LIMIT_BYTES,
+				memoryLimitBytes: EXECUTE_MEMORY_LIMIT_BYTES,
 				filename: 'lexware-execute.js',
 				signal: options.signal,
 				hostFunctions: { ...sandbox.hostFunctions, ...state.hostFunctions },

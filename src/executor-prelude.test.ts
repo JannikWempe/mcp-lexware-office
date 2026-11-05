@@ -50,3 +50,17 @@ test('prelude errors are reported like guest errors', async () => {
 
 	assert.match(execution.error ?? '', /prelude failed/);
 });
+
+test('a trailing semicolon or comment after the function is accepted', async () => {
+	const executor = new QuickJsExecutor();
+	for (const code of [
+		'async () => {\n  return 1\n} // main',
+		'async () => 1;',
+		'async () => 1 ;;\n\n',
+		'async () => 1; // main',
+		'async () => {\n  return 1\n}; // main',
+		'async () => 1;\n/* x */',
+	]) {
+		assert.deepEqual(await executor.execute(code, {}), { result: 1, logs: [] }, JSON.stringify(code));
+	}
+});

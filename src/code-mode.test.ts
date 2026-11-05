@@ -529,6 +529,20 @@ test('a dry run sends reads, plans writes without fetching them, and marks the s
 	]);
 });
 
+test('an inline contentBase64 upload up to the 25 MB client limit fits into the execute memory limit', async () => {
+	const { codeMode } = codeModeWith();
+	const bytes = 25 * 1024 * 1024;
+	const contentBase64 = Buffer.alloc(bytes, 7).toString('base64');
+
+	const result = await codeMode.execute(`async () => {
+		const upload = await lexware.uploadVoucherFile({ contentBase64: '${contentBase64}', filename: 'receipt.pdf' });
+		return upload.planned.multipart[0].bytes;
+	}`, { maxRequests: 1, dryRun: true });
+
+	assert.equal(result.isError, undefined, textOf(result).slice(0, 300));
+	assert.equal(payloadOf(result).result, bytes);
+});
+
 test('a dry run plans writes the policy would block and flags why', async () => {
 	const script = `async () => {
 		const response = await lexware.request({ method: 'POST', path: '/v1/invoices', query: { finalize: true }, body: {} });

@@ -1,5 +1,7 @@
 import {
 	newQuickJSWASMModule,
+	newVariant,
+	RELEASE_SYNC,
 	shouldInterruptAfterDeadline,
 	type QuickJSContext,
 	type QuickJSDeferredPromise,
@@ -45,6 +47,13 @@ export interface CodeExecutionResult {
 
 const DEFAULT_TIMEOUT_MS = 1_000;
 const DEFAULT_MEMORY_LIMIT_BYTES = 32 * 1024 * 1024;
+// This QuickJS build has no malloc_usable_size, so runtime.setMemoryLimit counts a fixed overhead per
+// allocation, not its size: typed arrays and long strings barely count. The hard cap is therefore the
+// WASM heap itself. The build requires 16 MB of initial memory (static data, stack, heap) and allows
+// at most 2 GB; the heap may grow by memoryLimitBytes beyond the initial 16 MB.
+const WASM_PAGE_BYTES = 64 * 1024;
+const WASM_INITIAL_BYTES = 16 * 1024 * 1024;
+const WASM_MAX_PAGES = 32 * 1024;
 // QuickJS checks this limit against the WASM shadow stack, but its native recursion also uses the
 // host (V8) stack, which overflows first above roughly 512 KB. Stay below that, so runaway guest
 // recursion is a catchable QuickJS InternalError instead of a host stack overflow. Not configurable
@@ -53,6 +62,9 @@ const MAX_STACK_SIZE_BYTES = 256 * 1024;
 const DEFAULT_MAX_LOG_ENTRIES = 25;
 const DEFAULT_MAX_LOG_CHARS = 8_000;
 const CANCELLED_MESSAGE = 'Execution cancelled by client';
+// A host result copied into a full WASM heap fails as an out-of-bounds write rather than a QuickJS out of memory.
+const HOST_OUT_OF_MEMORY_MESSAGE =
+	'Sandbox out of memory: a value passed into the sandbox (e.g. a large API response) did not fit into its memory limit. Request less data per call, e.g. smaller pages.';
 const HOST_STACK_OVERFLOW_MESSAGE =
 	'Sandbox stack overflow: a value is nested too deeply or recursion went too deep. Flatten deeply nested data before returning, logging or serializing it.';
 
@@ -75,9 +87,16 @@ export class QuickJsExecutor implements CodeExecutor {
 
 		if (options.signal?.aborted) return { error: `Error: ${CANCELLED_MESSAGE}`, logs: [] };
 
+		const memoryLimitBytes = options.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES;
+		if (!Number.isSafeInteger(memoryLimitBytes) || memoryLimitBytes < 0) throw new Error(`Invalid memoryLimitBytes: ${memoryLimitBytes}`);
 		// A fresh WASM module per execution (a few ms) isolates failures: when an engine call breaks
 		// (see `markEngineFailed` below), this run's module is dropped without touching runs on other modules.
-		const QuickJS = await newQuickJSWASMModule();
+		// Its own bounded memory makes runaway allocations a catchable "out of memory" (see WASM_INITIAL_BYTES).
+		const wasmMemory = new WebAssembly.Memory({
+			initial: WASM_INITIAL_BYTES / WASM_PAGE_BYTES,
+			maximum: Math.min(WASM_MAX_PAGES, Math.ceil((WASM_INITIAL_BYTES + memoryLimitBytes) / WASM_PAGE_BYTES)),
+		});
+		const QuickJS = await newQuickJSWASMModule(newVariant(RELEASE_SYNC, { wasmMemory }));
 		// Recheck: the signal may have aborted while QuickJS was loading. Everything below runs
 		// synchronously up to evalCode, so no later abort can slip in before guest code starts.
 		if (options.signal?.aborted) return { error: `Error: ${CANCELLED_MESSAGE}`, logs: [] };
@@ -97,20 +116,24 @@ export class QuickJsExecutor implements CodeExecutor {
 		engineFailedPromise.catch(() => { /* raced below; may fire after execution has ended */ });
 		const markEngineFailed = (error: unknown) => {
 			if (engineFailure !== undefined) return;
-			engineFailure = isHostStackOverflow(error) ? HOST_STACK_OVERFLOW_MESSAGE : `Sandbox engine failure: ${stringifyHostError(error)}`;
+			engineFailure = isHostStackOverflow(error)
+				? HOST_STACK_OVERFLOW_MESSAGE
+				: isWasmOutOfBounds(error) ? HOST_OUT_OF_MEMORY_MESSAGE : `Sandbox engine failure: ${stringifyHostError(error)}`;
 			rejectEngineFailed(new Error(engineFailure));
 		};
 		const engineFailureResult = (): CodeExecutionResult => ({ error: `Error: ${engineFailure}`, logs });
 
 		const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-		const memoryLimitBytes = options.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES;
 		const maxLogEntries = options.maxLogEntries ?? DEFAULT_MAX_LOG_ENTRIES;
 		const maxLogChars = options.maxLogChars ?? DEFAULT_MAX_LOG_CHARS;
 		const filename = options.filename ?? 'sandbox.js';
 
 		runtime.setMemoryLimit(memoryLimitBytes);
 		runtime.setMaxStackSize(MAX_STACK_SIZE_BYTES);
-		const deadlinePassed = shouldInterruptAfterDeadline(Date.now() + timeoutMs);
+		// One deadline for both the interrupt handler and the wall-clock timer below, so synchronous guest
+		// work before the first await counts against timeoutMs too.
+		const deadline = Date.now() + timeoutMs;
+		const deadlinePassed = shouldInterruptAfterDeadline(deadline);
 		// Also stop guest code once execution has ended (e.g. continuations spinning during teardown
 		// after a cancellation) or the runtime has failed.
 		runtime.setInterruptHandler((rt) =>
@@ -233,7 +256,11 @@ export class QuickJsExecutor implements CodeExecutor {
   const __capabilities = JSON.parse(globalThis.__capabilitiesJson);
   const { ${capabilityNames.join(', ')} } = __capabilities;
 ${options.prelude ?? ''}
-  const __userFunction = (${code});
+  // No parentheses around the code and a line of its own for the closing semicolon, so a trailing
+  // semicolon or comment (async () => 1; // main) still parses.
+  const __userFunction =
+${code}
+  ;
   if (typeof __userFunction !== "function") {
     throw new Error("Code must evaluate to a function, for example: async () => ({ ok: true })");
   }
@@ -261,7 +288,7 @@ ${options.prelude ?? ''}
 
 			let resolved;
 			try {
-				resolved = await withTimeoutAndCancel(Promise.race([nativePromise, engineFailedPromise]), timeoutMs, options.signal);
+				resolved = await withTimeoutAndCancel(Promise.race([nativePromise, engineFailedPromise]), deadline, timeoutMs, options.signal);
 				sandboxNativePromise = undefined;
 			} catch (error) {
 				return { error: String(error), logs };
@@ -341,14 +368,20 @@ ${options.prelude ?? ''}
 
 			// A failed runtime is left for the garbage collector together with its module (see `markEngineFailed`).
 			if (engineFailure === undefined) {
-				vm.dispose();
-				runtime.dispose();
+				try {
+					vm.dispose();
+					runtime.dispose();
+				} catch {
+					// QuickJS can leak objects when it runs out of memory in a continuation, and JS_FreeRuntime
+					// then aborts this module. The result is already settled; the module is dropped like a failed one.
+				}
 			}
 		}
 	}
 }
 
-function withTimeoutAndCancel<T>(promise: Promise<T>, timeoutMs: number, signal: AbortSignal | undefined): Promise<T> {
+// Rejects at the absolute `deadline`; timeoutMs only appears in the message.
+function withTimeoutAndCancel<T>(promise: Promise<T>, deadline: number, timeoutMs: number, signal: AbortSignal | undefined): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 		const cleanup = () => {
@@ -366,7 +399,7 @@ function withTimeoutAndCancel<T>(promise: Promise<T>, timeoutMs: number, signal:
 		timeout = setTimeout(() => {
 			cleanup();
 			reject(new Error(`Execution timed out after ${timeoutMs}ms`));
-		}, timeoutMs);
+		}, Math.max(0, deadline - Date.now()));
 		signal?.addEventListener('abort', onAbort, { once: true });
 		promise.then(
 			(value) => {
@@ -386,6 +419,10 @@ function dumpAndDispose(vm: QuickJSContext, handle: QuickJSHandle): unknown {
 	const value = vm.dump(handle);
 	if (handle.alive) handle.dispose();
 	return value;
+}
+
+function isWasmOutOfBounds(error: unknown): boolean {
+	return error instanceof WebAssembly.RuntimeError && /memory access out of bounds/i.test(error.message);
 }
 
 function isHostStackOverflow(error: unknown): boolean {
