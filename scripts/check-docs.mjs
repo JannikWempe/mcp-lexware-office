@@ -7,6 +7,7 @@
 // the current changelog date and section hashes.
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { lexwareSpec } from '../build/lexware-spec.js';
 
@@ -51,9 +52,13 @@ for (const { path, url } of docsUrls) {
 // One hash per top-level (h1) section, e.g. #invoices-endpoint with its property tables and operations, covering the
 // visible text only. The changelog has its own check above.
 const topSections = [...html.matchAll(/<h1[^>]*\sid=['"]([^'"]+)['"][^>]*>/g)].map((match) => ({ id: match[1], start: match.index }));
+if (topSections.length === 0) {
+	problems.push('no top-level <h1 id> sections found on the docs page; the page structure changed');
+}
 const sections = {};
 topSections.forEach((section, index) => {
 	if (section.id === 'change-log') return;
+	if (sections[section.id] !== undefined) problems.push(`duplicate top-level section id #${section.id}`);
 	const text = html
 		.slice(section.start, topSections[index + 1]?.start ?? html.length)
 		.replace(/<script[\s\S]*?<\/script>/g, '')
@@ -94,7 +99,7 @@ if (changelogStart === -1) {
 if (updateBaseline && problems.length === 0) {
 	const latestChangelogEntry = changelogEntries.map((entry) => entry.date).sort().at(-1) ?? baseline.latestChangelogEntry;
 	writeFileSync(baselinePath, `${JSON.stringify({ latestChangelogEntry, sections }, null, '\t')}\n`);
-	console.log(`Stored ${Object.keys(sections).length} section hashes and changelog date ${latestChangelogEntry} in ${baselinePath.pathname}.`);
+	console.log(`Stored ${Object.keys(sections).length} section hashes and changelog date ${latestChangelogEntry} in ${fileURLToPath(baselinePath)}.`);
 }
 
 if (problems.length > 0) {

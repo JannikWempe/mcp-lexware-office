@@ -194,7 +194,7 @@ const DOCUMENTED_SALES_REQUIRED: Record<string, string[]> = {
 	'/v1/quotations': ['voucherDate', 'expirationDate', 'address', 'lineItems', 'totalPrice', 'taxConditions'],
 	'/v1/credit-notes': ['voucherDate', 'address', 'lineItems', 'totalPrice', 'taxConditions'],
 	'/v1/delivery-notes': ['voucherDate', 'address', 'lineItems', 'taxConditions', 'shippingConditions'],
-	'/v1/dunnings': ['voucherDate', 'address', 'lineItems', 'taxConditions', 'shippingConditions', 'totalPrice'],
+	'/v1/dunnings': ['voucherDate', 'address', 'lineItems', 'totalPrice', 'taxConditions', 'shippingConditions'],
 };
 
 const DOCUMENTED_SALES_TAX_TYPES = ['net', 'gross', 'vatfree', 'intraCommunitySupply', 'constructionService13b', 'externalService13b', 'thirdPartyCountryService', 'thirdPartyCountryDelivery', 'photovoltaicEquipment'];
@@ -237,18 +237,15 @@ test('sales document bodies document the full enums, datetime format and limits'
 		assert.match(shape.taxConditions.taxSubType, /distanceSales\|electronicServices/);
 		const notesText = JSON.stringify(operation.notes);
 		assert.match(notesText, /At most 300 line items/);
+		assert.match(notesText, /unitPrice except on delivery notes, where it is optional/);
 		assert.match(notesText, /title 25, introduction and remark 2000/);
 		assert.match(notesText, /other formats are rejected with 406/);
 		assert.match(notesText, /electronicDocumentProfile .* is read-only/);
-		const hasShipping = expectedIncludes(path, 'shippingConditions');
-		assert.equal('shippingConditions' in (operation.requestBody?.shape as object), hasShipping, `POST ${path} shippingConditions shape`);
+		const requiresShipping = DOCUMENTED_SALES_REQUIRED[path]?.includes('shippingConditions');
+		assert.equal('shippingConditions' in (operation.requestBody?.shape as object), requiresShipping, `POST ${path} shippingConditions shape`);
 	}
 	assert.ok('xRechnung' in (salesCreate('/v1/invoices').requestBody?.shape as object));
 });
-
-function expectedIncludes(path: string, field: string): boolean {
-	return DOCUMENTED_SALES_REQUIRED[path]?.includes(field) ?? false;
-}
 
 test('pursue rules are spelled out per document type', () => {
 	const param = (path: string): string => salesCreate(path).parameters?.find((parameter) => parameter.name === 'precedingSalesVoucherId')?.description ?? '';
@@ -258,7 +255,7 @@ test('pursue rules are spelled out per document type', () => {
 	assert.match(param('/v1/invoices'), /alternative or optional line items, or a draft order confirmation or delivery note/);
 	assert.match(param('/v1/delivery-notes'), /draft order confirmation/);
 	assert.match(param('/v1/credit-notes'), /draft invoice is rejected with 406, and a closing invoice cannot be pursued/);
-	assert.match(JSON.stringify(salesCreate('/v1/credit-notes').notes), /Only one credit note can relate to an invoice.*immediately paidoff/);
+	assert.match(JSON.stringify(salesCreate('/v1/credit-notes').notes), /Only one credit note can relate to an invoice.*immediately gets status paidoff/);
 	assert.match(param('/v1/dunnings'), /down-payment invoice/);
 	assert.match(JSON.stringify(salesCreate('/v1/dunnings').notes), /taxConditions must match the invoice/);
 	assert.equal(salesCreate('/v1/quotations').parameters?.some((parameter) => parameter.name === 'precedingSalesVoucherId'), false);
@@ -270,6 +267,7 @@ test('creates document 201 instead of the shared 200', () => {
 		if (!operation || operation.requestBody?.contentType === 'multipart/form-data') continue;
 		assert.ok(operation.responses?.['201'], `POST ${path} has no 201 response`);
 		assert.equal(operation.responses['200'], undefined, `POST ${path} still documents 200`);
+		if (path !== '/v1/event-subscriptions') assert.equal(operation.responses['409'], undefined, `POST ${path} documents an optimistic-locking 409`);
 	}
 });
 
@@ -286,6 +284,7 @@ test('event subscriptions list every documented event type and the create semant
 test('contact update explains the more-than-one-entry restriction', () => {
 	const notesText = JSON.stringify(lexwareSpec.paths['/v1/contacts/{id}']?.put?.notes);
 	assert.match(notesText, /cannot be updated via the API if any of these lists has more than one entry/);
+	assert.doesNotMatch(notesText, /replaced as a whole/);
 	for (const list of ['addresses.billing', 'addresses.shipping', 'emailAddresses', 'phoneNumbers', 'company.contactPersons']) {
 		assert.match(notesText, new RegExp(list.replace('.', '\\.')));
 	}
