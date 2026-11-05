@@ -21,6 +21,7 @@
   },
   "files": [
     "build",
+    "!build/*.test.js",
     "docs"
   ],
   "scripts": {
