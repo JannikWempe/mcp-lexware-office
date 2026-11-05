@@ -39,6 +39,15 @@ test('find ranks specific operations for English and German queries', () => {
 	assert.equal(ids('ausgaben 2025', 1)[0], 'listBookkeepingExpenses');
 });
 
+test('find folds umlauts and matches German plurals', () => {
+	assert.ok(ids('Auftragsbestätigungen', 3).includes('createOrderConfirmation'), ids('Auftragsbestätigungen', 3).join(', '));
+	assert.equal(ids('auftragsbestätigung erstellen', 1)[0], 'createOrderConfirmation');
+	assert.deepEqual(find('Auftragsbestätigung'), find('auftragsbestaetigung'));
+	assert.equal(ids('buchungskategorien', 1)[0], 'listPostingCategories');
+	assert.equal(ids('kontakt löschen', 1)[0], ids('kontakt loeschen', 1)[0]);
+	assert.equal(ids('kontakt ändern', 1)[0], 'updateContact');
+});
+
 test('find returns semantics entries with a readable hint', () => {
 	const match = find('voucher status', { kinds: ['semantics'] })[0];
 	assert.deepEqual({ kind: match?.kind, id: match?.id, hint: match?.hint }, { kind: 'semantics', id: 'voucherStatusSemantics', hint: 'spec.info.voucherStatusSemantics' });
@@ -89,7 +98,7 @@ test('describe returns a compact operation view and resolves concrete paths', ()
 });
 
 test('the prelude runs self-contained in QuickJS and matches the host implementation', async () => {
-	const queries = ['upload beleg', 'umsatz 2026', 'mahnung', 'GET /v1/vouchers/{id}'];
+	const queries = ['upload beleg', 'umsatz 2026', 'mahnung', 'Auftragsbestätigungen', 'GET /v1/vouchers/{id}'];
 	const execution = await new QuickJsExecutor().execute(
 		`async () => ({ found: queries.map((query) => find(query)), described: describe('GET', '/v1/voucherlist'), onGlobal: typeof globalThis.find })`,
 		{ spec: lexwareSpec, queries },

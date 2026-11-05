@@ -64,3 +64,27 @@ test('a trailing semicolon or comment after the function is accepted', async () 
 		assert.deepEqual(await executor.execute(code, {}), { result: 1, logs: [] }, JSON.stringify(code));
 	}
 });
+
+test('error positions are relative to the submitted code, not the prelude', async () => {
+	const executor = new QuickJsExecutor();
+	const options = { filename: 'user.js', prelude: Array.from({ length: 50 }, (_, i) => `const p${i} = ${i};`).join('\n') };
+
+	const thrown = await executor.execute(`async () => {\n  const a = p1;\n  throw new Error('boom');\n}`, {}, options);
+	assert.match(thrown.error ?? '', /^Error: boom\n {4}at .*\(user\.js:3:\d+\)/);
+
+	const syntax = await executor.execute(`async () => {\n  const a = ;\n}`, {}, options);
+	assert.match(syntax.error ?? '', /^SyntaxError: .*\n {4}at user\.js:2:\d+/);
+});
+
+test('code that is no function is rejected', async () => {
+	const execution = await new QuickJsExecutor().execute(`({ ok: true })`, {});
+
+	assert.match(execution.error ?? '', /Code must evaluate to a function/);
+});
+
+test('a function expression or a plain function is accepted', async () => {
+	const executor = new QuickJsExecutor();
+	for (const code of ['async function main() { return 1 }', 'async function () { return 1 }', '() => 1', 'function () { return 1 }']) {
+		assert.deepEqual(await executor.execute(code, {}), { result: 1, logs: [] }, code);
+	}
+});
