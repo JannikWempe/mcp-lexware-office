@@ -62,6 +62,9 @@ const MAX_STACK_SIZE_BYTES = 256 * 1024;
 const DEFAULT_MAX_LOG_ENTRIES = 25;
 const DEFAULT_MAX_LOG_CHARS = 8_000;
 const CANCELLED_MESSAGE = 'Execution cancelled by client';
+// A host result copied into a full WASM heap fails as an out-of-bounds write rather than a QuickJS out of memory.
+const HOST_OUT_OF_MEMORY_MESSAGE =
+	'Sandbox out of memory: a value passed into the sandbox (e.g. a large API response) did not fit into its memory limit. Request less data per call, e.g. smaller pages.';
 const HOST_STACK_OVERFLOW_MESSAGE =
 	'Sandbox stack overflow: a value is nested too deeply or recursion went too deep. Flatten deeply nested data before returning, logging or serializing it.';
 
@@ -85,6 +88,7 @@ export class QuickJsExecutor implements CodeExecutor {
 		if (options.signal?.aborted) return { error: `Error: ${CANCELLED_MESSAGE}`, logs: [] };
 
 		const memoryLimitBytes = options.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES;
+		if (!Number.isSafeInteger(memoryLimitBytes) || memoryLimitBytes < 0) throw new Error(`Invalid memoryLimitBytes: ${memoryLimitBytes}`);
 		// A fresh WASM module per execution (a few ms) isolates failures: when an engine call breaks
 		// (see `markEngineFailed` below), this run's module is dropped without touching runs on other modules.
 		// Its own bounded memory makes runaway allocations a catchable "out of memory" (see WASM_INITIAL_BYTES).
@@ -112,7 +116,9 @@ export class QuickJsExecutor implements CodeExecutor {
 		engineFailedPromise.catch(() => { /* raced below; may fire after execution has ended */ });
 		const markEngineFailed = (error: unknown) => {
 			if (engineFailure !== undefined) return;
-			engineFailure = isHostStackOverflow(error) ? HOST_STACK_OVERFLOW_MESSAGE : `Sandbox engine failure: ${stringifyHostError(error)}`;
+			engineFailure = isHostStackOverflow(error)
+				? HOST_STACK_OVERFLOW_MESSAGE
+				: isWasmOutOfBounds(error) ? HOST_OUT_OF_MEMORY_MESSAGE : `Sandbox engine failure: ${stringifyHostError(error)}`;
 			rejectEngineFailed(new Error(engineFailure));
 		};
 		const engineFailureResult = (): CodeExecutionResult => ({ error: `Error: ${engineFailure}`, logs });
@@ -250,8 +256,11 @@ export class QuickJsExecutor implements CodeExecutor {
   const __capabilities = JSON.parse(globalThis.__capabilitiesJson);
   const { ${capabilityNames.join(', ')} } = __capabilities;
 ${options.prelude ?? ''}
-  const __userFunction = (${stripTrailingSemicolons(code)}
-);
+  // No parentheses around the code and a line of its own for the closing semicolon, so a trailing
+  // semicolon or comment (async () => 1; // main) still parses.
+  const __userFunction =
+${code}
+  ;
   if (typeof __userFunction !== "function") {
     throw new Error("Code must evaluate to a function, for example: async () => ({ ok: true })");
   }
@@ -359,17 +368,16 @@ ${options.prelude ?? ''}
 
 			// A failed runtime is left for the garbage collector together with its module (see `markEngineFailed`).
 			if (engineFailure === undefined) {
-				vm.dispose();
-				runtime.dispose();
+				try {
+					vm.dispose();
+					runtime.dispose();
+				} catch {
+					// QuickJS can leak objects when it runs out of memory in a continuation, and JS_FreeRuntime
+					// then aborts this module. The result is already settled; the module is dropped like a failed one.
+				}
 			}
 		}
 	}
-}
-
-// The user code goes inside `(…\n)`: the newline keeps a trailing // comment from swallowing the
-// closing parenthesis, and a trailing `;` would be a syntax error there.
-function stripTrailingSemicolons(code: string): string {
-	return code.replace(/[;\s]+$/, '');
 }
 
 // Rejects at the absolute `deadline`; timeoutMs only appears in the message.
@@ -411,6 +419,10 @@ function dumpAndDispose(vm: QuickJSContext, handle: QuickJSHandle): unknown {
 	const value = vm.dump(handle);
 	if (handle.alive) handle.dispose();
 	return value;
+}
+
+function isWasmOutOfBounds(error: unknown): boolean {
+	return error instanceof WebAssembly.RuntimeError && /memory access out of bounds/i.test(error.message);
 }
 
 function isHostStackOverflow(error: unknown): boolean {
