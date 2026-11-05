@@ -10,7 +10,7 @@ import { loadConfig, type ServerConfig } from './config.js';
 import { LexwareApiClient } from './lexware-client.js';
 import { lexwareSdkDeclaration, stateDeclaration } from './lexware-sandbox-sdk.js';
 import { lexwareSpec } from './lexware-spec.js';
-import { workflowPrompts } from './prompts.js';
+import { renderPrompt, workflowPrompts } from './prompts.js';
 import { ResponseCache } from './response-cache.js';
 import { VERSION } from './version.js';
 
@@ -193,7 +193,7 @@ async () => {
 			prompt.name,
 			{ title: prompt.title, description: prompt.description, argsSchema: prompt.argsSchema },
 			(args) => ({
-				messages: [{ role: 'user', content: { type: 'text', text: prompt.render(args, { writesEnabled: writes, writeAllow: config.writeAllow }) } }],
+				messages: [{ role: 'user', content: { type: 'text', text: renderPrompt(prompt, args, { writesEnabled: writes, writeAllow: config.writeAllow }) } }],
 			}),
 		);
 	}

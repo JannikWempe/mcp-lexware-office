@@ -76,20 +76,30 @@ async function startMcp(baseUrl: string, env: Record<string, string> = {}, era: 
 	});
 	const send = (message: Record<string, unknown>) => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
 	let nextId = 1;
+	const timers = new Set<NodeJS.Timeout>();
+	const close = () => {
+		for (const timer of timers) clearTimeout(timer);
+		child.kill();
+	};
 	const request = (method: string, params: Record<string, unknown>) => {
 		const id = nextId++;
-		const response = new Promise<JsonRpcResponse>((resolve) => pending.set(id, resolve));
+		// Rejects instead of hanging the whole test run when a response never arrives; close() drops the timer.
+		const response = new Promise<JsonRpcResponse>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error(`no response to ${method} within 10s`)), 10_000);
+			timers.add(timer);
+			pending.set(id, (message) => { clearTimeout(timer); timers.delete(timer); resolve(message); });
+		});
 		send({ id, method, params: era === 'modern' ? { ...params, _meta: modernMeta } : params });
 		return { id, response };
 	};
 
 	if (era === 'modern') {
 		const discovered = await request('server/discover', {}).response;
-		return { initialized: discovered, request, send, close: () => child.kill() };
+		return { initialized: discovered, request, send, close };
 	}
 	const initialized = await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' } }).response;
 	send({ method: 'notifications/initialized' });
-	return { initialized, request, send, close: () => child.kill() };
+	return { initialized, request, send, close };
 }
 
 const callExecute = (mcp: Awaited<ReturnType<typeof startMcp>>, code: string) =>
@@ -163,9 +173,9 @@ test('prompts/list and prompts/get serve the workflow prompts in both protocol e
 
 				const { result } = await mcp.request('prompts/get', { name: 'revenue-report', arguments: { dateFrom: '2026-01-01', dateTo: '2026-12-31', basis: 'paid' } }).response;
 				assert.equal(result?.messages?.length, 1, era);
-				assert.equal(result?.messages?.[0]?.role, 'user');
-				assert.match(result?.messages?.[0]?.content.text ?? '', /Period: voucherDate 2026-01-01 to 2026-12-31\./);
-				assert.match(result?.messages?.[0]?.content.text ?? '', /spec\.workflows\.calculatePaidRevenue/);
+				assert.equal(result?.messages?.[0]?.role, 'user', era);
+				assert.match(result?.messages?.[0]?.content.text ?? '', /Period: voucherDate 2026-01-01 to 2026-12-31\./, era);
+				assert.match(result?.messages?.[0]?.content.text ?? '', /spec\.workflows\.calculatePaidRevenue/, era);
 
 				const { error } = await mcp.request('prompts/get', { name: 'revenue-report', arguments: { basis: 'gross' } }).response;
 				assert.ok(error, `${era}: an invalid basis is rejected`);

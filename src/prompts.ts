@@ -24,25 +24,27 @@ export interface WorkflowPrompt<Args extends z.ZodObject = z.ZodObject<Record<st
 	title: string;
 	description: string;
 	argsSchema: Args;
-	// Writes the workflow sends; empty for read-only workflows.
+	// Writes the workflow sends; empty for read-only workflows. renderPrompt puts the write mode in front of them.
 	writes: PromptWrite[];
-	render(args: z.infer<Args>, context: PromptContext): string;
+	// The task and workflow text; the method syntax lets typed args widen to WorkflowPrompt.
+	render(args: z.infer<Args>): string;
 }
 
-// Typed render args per prompt; the list below erases them so index.ts can register every prompt alike.
-const definePrompt = <Args extends z.ZodObject>(prompt: WorkflowPrompt<Args>) => prompt as unknown as WorkflowPrompt;
+// Infers the typed render args per prompt; the list below widens them so index.ts registers every prompt alike.
+const definePrompt = <Args extends z.ZodObject>(prompt: WorkflowPrompt<Args>): WorkflowPrompt => prompt;
 
 const dateArg = (bound: string) => z.string().optional().describe(`${bound} of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.`);
 const modeArg = z.enum(['apply', 'preview']).optional().describe('apply (default): send the writes once the checks pass. preview: plan the writes with execute dryRun: true and send none.');
 
-const workflow = (key: string) => {
-	const entry = lexwareSpec.workflows[key];
-	if (entry === undefined) throw new Error(`Unknown workflow ${key}`);
+// Throws on a key the catalog doesn't have, so a renamed entry fails the tests instead of rendering "undefined".
+const lookup = <T>(record: Record<string, T>, key: string, kind: string): T => {
+	const entry = record[key];
+	if (entry === undefined) throw new Error(`Unknown ${kind} ${key}`);
 	return entry;
 };
 
 const renderWorkflow = (key: string): string => {
-	const { summary, steps, notes } = workflow(key);
+	const { summary, steps, notes } = lookup(lexwareSpec.workflows, key, 'workflow');
 	return [
 		`## ${summary} (spec.workflows.${key})`,
 		...steps.map((step, index) => `${index + 1}. ${step}`),
@@ -60,11 +62,10 @@ const blockedWrites = (writes: PromptWrite[], rules: WriteAllowRule[]) => writes
 	return writeAllowViolation(rules, { method: write.method, path: write.path, query, operationId }) !== undefined;
 });
 
-// Said up front, so the model doesn't plan writes the server will reject.
-const writeModeSection = (writes: PromptWrite[], mode: 'apply' | 'preview' | undefined, context: PromptContext): string => {
+const writeModeSection = (writes: PromptWrite[], mode: 'apply' | 'preview', context: PromptContext): string => {
 	const needed = writes.map(describeWrite).join(', ');
 	if (!context.writesEnabled) {
-		return `This server is read-only (spec.info.writesEnabled is false) and rejects the writes this workflow needs (${needed}). Do the read-only steps, preview the writes with execute dryRun: true, and tell the user that sending them needs the server started with LEXWARE_OFFICE_ALLOW_WRITES=true.`;
+		return `This server is read-only (spec.info.writesEnabled is false) and rejects the writes this workflow needs (${needed}). Do the read-only steps, preview the writes with execute dryRun: true, and tell the user that sending them needs the server started with LEXWARE_OFFICE_ALLOW_WRITES=true and without LEXWARE_OFFICE_READ_ONLY=true.`;
 	}
 	const blocked = context.writeAllow !== undefined ? blockedWrites(writes, context.writeAllow) : [];
 	const policy = blocked.length > 0
@@ -89,18 +90,16 @@ const renderReportingSemantics = (terms: string[], metrics: string[]): string =>
 	...semantics.defaultPolicy.notes.map((note) => `- ${note}`),
 	'',
 	'Ambiguous terms:',
-	...terms.map((term) => `- ${term}: ${semantics.ambiguousTerms[term]}`),
+	...terms.map((term) => `- ${term}: ${lookup(semantics.ambiguousTerms, term, 'ambiguous term')}`),
 	'',
 	'Metrics:',
 	...metrics.flatMap((key) => {
-		const metric = semantics.metrics[key];
+		const metric = lookup(semantics.metrics, key, 'metric');
 		return [`- ${key}: ${metric.summary} (workflow ${metric.workflow})`, ...metric.caveats.map((caveat) => `  - ${caveat}`)];
 	}),
 ].join('\n');
 
-const sections = (...parts: Array<string | undefined>) => parts.filter((part) => part !== undefined).join('\n\n');
-
-const uploadWrites: PromptWrite[] = [{ method: 'POST', path: '/v1/files' }, { method: 'PUT', path: '/v1/vouchers/{id}' }];
+const sections = (...parts: string[]) => parts.join('\n\n');
 
 const uploadReceipts = definePrompt({
 	name: 'upload-receipts',
@@ -110,11 +109,10 @@ const uploadReceipts = definePrompt({
 		files: z.string().optional().describe('Absolute paths of the receipts on the server machine, comma- or newline-separated. Omitted: ask the user.'),
 		mode: modeArg,
 	}),
-	writes: uploadWrites,
-	render(args, context) {
+	writes: [{ method: 'POST', path: '/v1/files' }, { method: 'PUT', path: '/v1/vouchers/{id}' }],
+	render(args) {
 		const files = args.files?.split(/[,\n]/).map((file) => file.trim()).filter((file) => file.length > 0) ?? [];
 		return sections(
-			writeModeSection(uploadWrites, args.mode, context),
 			files.length > 0
 				? `Task: upload these receipts to Lexware Office:\n${files.map((file) => `- ${file}`).join('\n')}`
 				: 'Task: upload receipts to Lexware Office. Ask the user for the absolute paths of the files on the server machine (contentPath needs LEXWARE_OFFICE_UPLOAD_DIRS).',
@@ -174,8 +172,6 @@ const profitReport = definePrompt({
 	},
 });
 
-const invoiceWrites: PromptWrite[] = [{ method: 'POST', path: '/v1/invoices' }, { method: 'POST', path: '/v1/invoices', finalize: true }];
-
 const createInvoice = definePrompt({
 	name: 'create-invoice',
 	title: 'Create an invoice',
@@ -185,11 +181,10 @@ const createInvoice = definePrompt({
 		details: z.string().optional().describe('What to invoice: line items, quantities, prices, dates, preceding quotation or order.'),
 		mode: modeArg,
 	}),
-	writes: invoiceWrites,
-	render(args, context) {
+	writes: [{ method: 'POST', path: '/v1/invoices' }, { method: 'POST', path: '/v1/invoices', finalize: true }],
+	render(args) {
 		const { customer, details } = args;
 		return sections(
-			writeModeSection(invoiceWrites, args.mode, context),
 			[
 				'Task: create an invoice (POST /v1/invoices).',
 				customer !== undefined ? `Customer: ${customer}` : 'Ask the user for the customer.',
@@ -204,3 +199,7 @@ const createInvoice = definePrompt({
 });
 
 export const workflowPrompts: WorkflowPrompt[] = [uploadReceipts, revenueReport, profitReport, createInvoice];
+
+// The prompt text for prompts/get. Write prompts start with the server's write mode, so the model doesn't plan writes it can't send.
+export const renderPrompt = (prompt: WorkflowPrompt, args: z.infer<WorkflowPrompt['argsSchema']>, context: PromptContext): string =>
+	prompt.writes.length > 0 ? sections(writeModeSection(prompt.writes, args.mode === 'preview' ? 'preview' : 'apply', context), prompt.render(args)) : prompt.render(args);

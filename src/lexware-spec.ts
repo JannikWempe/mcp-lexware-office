@@ -1121,9 +1121,9 @@ export const lexwareSpec: LexwareApiCatalog = {
 				'Check spec.info.writesEnabled and spec.info.writePolicy.allow: uploads need POST /v1/files, corrections PUT /v1/vouchers/{id}.',
 				'Per receipt, read voucherNumber, contact name, gross amount, currency and voucherDate from the document, then check for duplicates with lexware.findVouchers (workflow reconcileBeforeUpload). Show likely duplicates to the user and skip them unless the user confirms the upload.',
 				'Upload each remaining receipt with lexware.uploadVoucherFile({ contentPath }) (workflow fileHandling), one waiting upload per execute call. Keep fileId and voucherId, e.g. in state, so a retry never uploads a receipt twice.',
-				'extraction "done": text recognition finished and voucher holds the result. extraction "pending": GET /v1/vouchers/{id} in a later call until voucherStatus is no longer blank; never upload again.',
+				'extraction "done": text recognition finished and voucher holds the result. extraction "pending": GET /v1/vouchers/{id} in a later call until voucherStatus is no longer blank; never upload again. In a dry run (dryRun: true, extraction "skipped") nothing was uploaded and there is no voucher to correct: report the planned uploads and stop.',
 				'Compare the recognized voucher with the document: voucherNumber, voucherDate, totalGrossAmount, totalTaxAmount, contact, and the voucherItems with their categoryId. Look up categories with GET /v1/posting-categories.',
-				'Correct only the fields that differ with lexware.updateVoucher(id, patch): it keeps the files array (a PUT without it deletes the uploaded file permanently) and returns the voucher before and after the update.',
+				'Correct only the fields that differ with lexware.updateVoucher(id, patch): it keeps the files array (a PUT without it deletes the uploaded file permanently) and returns the voucher before and after the update (in a dry run: before and the planned PUT).',
 				'Report per receipt: skipped as a duplicate, uploaded (voucherId), corrected fields, or recognition still pending.',
 			],
 			relatedEndpoints: [

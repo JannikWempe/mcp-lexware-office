@@ -315,7 +315,7 @@ The server also sends short `instructions` at initialization (search before exec
 
 ## Prompts
 
-The server also ships recurring workflows as MCP prompts (`prompts/list`, `prompts/get`). Clients usually offer them as slash commands or a prompt picker. A prompt returns one user message that states the task and the server's current write mode, then lists the steps and caveats of the matching `spec.workflows` entries. The text is rendered from the catalog, so it changes with the server version instead of drifting from it like a hand-written client-side prompt.
+The server also ships recurring workflows as MCP prompts (`prompts/list`, `prompts/get`). Clients usually offer them as slash commands or a prompt picker. A prompt returns one user message that states the task and the server's current write mode, then lists the steps and caveats of the matching `spec.workflows` entries. The text is rendered from the catalog, so it always matches the server version you run.
 
 | Prompt | Arguments (all optional) | Workflows |
 | --- | --- | --- |
