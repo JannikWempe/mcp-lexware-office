@@ -69,7 +69,9 @@ export interface LexwareRequestOptions {
 	// Writes are not sent: each returns a synthetic `dryRun` response and is reported to onPlanned,
 	// also when the write policy would block it. Reads run normally.
 	dryRun?: boolean;
-	onPlanned?: (write: PlannedWrite) => void;
+	// Called synchronously when a dry run plans a write, so calls arrive in request order, with the
+	// plan that settles once the body is serialized. Throwing fails that write unsent, e.g. to cap plans.
+	onPlanned?: (write: Promise<PlannedWrite>) => void;
 }
 
 // A write a dry run did not send: what would have gone out, with the hashes of binary payloads.
@@ -79,11 +81,13 @@ export interface PlannedWrite {
 	path: string;
 	query: Record<string, string[]>;
 	operationId?: string;
+	// The Content-Type header that would be sent; multipart/form-data gets its boundary from fetch.
+	contentType?: string;
 	body?: unknown;
 	// bodyBase64 requests: the decoded bytes.
 	bytes?: number;
 	sha256?: string;
-	multipart?: Array<{ name: string; value?: string; filename?: string; bytes?: number; sha256?: string }>;
+	multipart?: Array<{ name: string; value?: string; filename?: string; contentType?: string; bytes?: number; sha256?: string }>;
 	blocked?: string;
 }
 
@@ -272,9 +276,12 @@ export class LexwareApiClient {
 		if (signal?.aborted) throw cancelledError();
 
 		if (write && options.dryRun) {
-			const planned = await planWrite(normalized, this.uploadDirs, blocked);
+			const planning = planWrite(normalized, this.uploadDirs, blocked);
+			// Rejections reach the caller through the await below, even if onPlanned throws first.
+			planning.catch(() => {});
+			options.onPlanned?.(planning);
+			const planned = await planning;
 			if (signal?.aborted) throw cancelledError();
-			options.onPlanned?.(planned);
 			return dryRunResponse(normalized, planned);
 		}
 
@@ -654,17 +661,22 @@ async function serializeRequestBody(request: NormalizedRequest, headers: Record<
 // Serializes the body like a real send, so a dry run applies the same validation and upload-dir
 // checks and reports the exact bytes and SHA-256 that would be uploaded.
 async function planWrite(request: NormalizedRequest, uploadDirs: string[], blocked: string | undefined): Promise<PlannedWrite> {
-	const { sent } = await serializeRequestBody(request, {}, uploadDirs);
+	const headers: Record<string, string> = {};
+	const { sent } = await serializeRequestBody(request, headers, uploadDirs);
+	const contentType = request.multipart !== undefined ? 'multipart/form-data' : headers['Content-Type'];
 	const binaryParts = [...(sent?.parts ?? [])];
 	return {
 		method: request.method,
 		path: request.path,
 		query: queryToObject(request.query),
 		...(request.matched !== undefined && { operationId: request.matched.operation.operationId }),
+		...(contentType !== undefined && { contentType }),
 		...(request.body !== undefined && { body: request.body }),
 		...(request.bodyBase64 !== undefined && sent !== undefined && { bytes: sent.bytes, sha256: sent.sha256 }),
 		...(request.multipart !== undefined && {
-			multipart: request.multipart.map((part) => part.value !== undefined ? { name: part.name, value: part.value } : binaryParts.shift()!),
+			multipart: request.multipart.map((part) => part.value !== undefined
+				? { name: part.name, value: part.value }
+				: { ...binaryParts.shift()!, contentType: part.contentType ?? 'application/octet-stream' }),
 		}),
 		...(blocked !== undefined && { blocked }),
 	};

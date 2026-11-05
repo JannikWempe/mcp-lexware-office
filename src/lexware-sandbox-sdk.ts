@@ -271,9 +271,10 @@ type PlannedWrite = {
   path: string;
   query: Record<string, string[]>;
   operationId?: string;
+  contentType?: string; // Content-Type header that would be sent
   body?: unknown;
   bytes?: number; // bodyBase64: decoded size
   sha256?: string;
-  multipart?: Array<{ name: string; value?: string; filename?: string; bytes?: number; sha256?: string }>; // file parts with the bytes and SHA-256 that would be uploaded
+  multipart?: Array<{ name: string; value?: string; filename?: string; contentType?: string; bytes?: number; sha256?: string }>; // file parts with the bytes and SHA-256 that would be uploaded
   blocked?: string; // why the write policy would reject this write in a real run
 };`;

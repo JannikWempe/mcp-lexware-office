@@ -160,7 +160,7 @@ declare const lexware: {
 
 Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount`, `requests` and possibly `readsSummary` for `execute`, and `dryRun`/`plannedWrites` for a [dry run](#dry-runs); `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent`. No `outputSchema` is declared because `result` is arbitrary.
 
-Results whose JSON exceeds 24,000 characters are shrunk structurally, so the text block stays valid JSON: arrays keep their leading items followed by a `"[truncated: N more items]"` element, the largest object values are shrunk first (down to a `"[truncated: N chars]"` marker), objects with too many keys keep their leading keys plus a `"[truncated]"` entry naming the dropped ones, and long strings are clipped. `ok`, `requestCount`, `requests`, `readsSummary`, `dryRun` and `plannedWrites` are kept whole unless they alone come close to the limit. A top-level `truncated: { originalChars, note }` field then signals that the result is incomplete. Summarize or filter inside `execute` to avoid it.
+Results whose JSON exceeds 24,000 characters are shrunk structurally, so the text block stays valid JSON: arrays keep their leading items followed by a `"[truncated: N more items]"` element, the largest object values are shrunk first (down to a `"[truncated: N chars]"` marker), objects with too many keys keep their leading keys plus a `"[truncated]"` entry naming the dropped ones, and long strings are clipped. `ok`, `requestCount`, `requests`, `readsSummary` and `dryRun` are kept whole unless they alone come close to the limit. A top-level `truncated: { originalChars, note }` field then signals that the result is incomplete. Summarize or filter inside `execute` to avoid it.
 
 `lexware.request` responses include only the headers useful for follow-up logic: `content-type`, `content-length`, `content-disposition`, `location`, `retry-after`, `x-request-id` and `x-ratelimit-*`. Pass `includeAllHeaders: true` to get every upstream header.
 
@@ -178,9 +178,10 @@ Call `execute` with `dryRun: true` to preview what a script would write before i
 
 - Reads (`GET`) run normally, so the script can still make data-dependent decisions. They count against `maxRequests` as usual.
 - Writes (`POST`, `PUT`, `PATCH`, `DELETE`) are not sent and don't count against `maxRequests`. `lexware.request` returns a synthetic response instead: `{ ok: true, status: 0, statusText: 'DRY RUN – not sent', dryRun: true, request, planned }`, without `data`. `lexware.json` returns `undefined` for it.
-- `planned` is what would have been sent: `{ method, path, query, operationId?, body?, bytes?, sha256?, multipart?, blocked? }`. For `contentPath` parts the host still reads and hashes the file, with the usual `LEXWARE_OFFICE_UPLOAD_DIRS` checks, so `planned.multipart` lists the exact `bytes` and `sha256` per file part. `bodyBase64` bodies show `bytes` and `sha256`.
-- The tool result adds `dryRun: true` and `plannedWrites`, which lists every planned write in order. Bodies larger than 4,000 characters are shrunk structurally there; the script itself sees them whole in `response.planned`.
+- `planned` is what would have been sent: `{ method, path, query, operationId?, contentType?, body?, bytes?, sha256?, multipart?, blocked? }`. For `contentPath` parts the host still reads and hashes the file, with the usual `LEXWARE_OFFICE_UPLOAD_DIRS` checks, so `planned.multipart` lists the exact `bytes` and `sha256` per file part. `bodyBase64` bodies show `bytes` and `sha256`.
+- The tool result adds `dryRun: true` and `plannedWrites`, which lists every planned write in order. Bodies larger than 4,000 characters are shrunk structurally there; the script itself sees them whole in `response.planned`. If the whole result is too large, `plannedWrites` is shrunk like `result`, while `requests` still lists every planned write.
 - In `requests`, planned writes appear with `status: 0`, `sent: false` and `dryRun: true`.
+- A dry run plans at most 100 writes; the next write fails with `Dry run exceeded 100 planned writes`.
 
 A script that needs a write's response, e.g. the `id` of a created contact or the `voucherId` of an upload, gets no data in a dry run. Branch on it:
 

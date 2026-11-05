@@ -483,7 +483,7 @@ test('a dry run sends reads, plans writes without fetching them, and marks the s
 	assert.equal(result.isError, undefined);
 	const payload = payloadOf(result);
 	assert.deepEqual(fetched, ['GET /v1/contacts/c1']);
-	const planned = { method: 'PUT', path: '/v1/contacts/c1', query: { note: ['x'] }, operationId: 'updateContact', body: { version: 3, roles: { customer: {} } } };
+	const planned = { method: 'PUT', path: '/v1/contacts/c1', query: { note: ['x'] }, operationId: 'updateContact', contentType: 'application/json', body: { version: 3, roles: { customer: {} } } };
 	assert.deepEqual(payload.result.response, {
 		ok: true,
 		status: 0,
@@ -497,7 +497,7 @@ test('a dry run sends reads, plans writes without fetching them, and marks the s
 	});
 	assert.equal(payload.result.viaJson, true);
 	assert.equal(payload.dryRun, true);
-	assert.deepEqual(payload.plannedWrites, [planned, { method: 'POST', path: '/v1/contacts', query: {}, operationId: 'createContact', body: { version: 0 } }]);
+	assert.deepEqual(payload.plannedWrites, [planned, { method: 'POST', path: '/v1/contacts', query: {}, operationId: 'createContact', contentType: 'application/json', body: { version: 0 } }]);
 	// Only the read was sent, so a budget of 1 suffices.
 	assert.equal(payload.requestCount, 1);
 	assert.deepEqual(payload.requests.map(({ method, write, sent, status, dryRun }: Record<string, unknown>) => ({ method, write, sent, status, dryRun })), [
@@ -543,10 +543,13 @@ test('a dry run hashes contentPath uploads and still enforces the upload dirs', 
 
 		assert.equal(payload.result.dryRun, true);
 		assert.match(payload.result.outside, /outside the allowed upload directories/);
-		assert.deepEqual(payload.plannedWrites.map(({ multipart }: Record<string, unknown>) => multipart), [[
-			{ name: 'file', filename: 'receipt.pdf', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
-			{ name: 'type', value: 'voucher' },
-		]]);
+		assert.deepEqual(payload.plannedWrites.map(({ contentType, multipart }: Record<string, unknown>) => ({ contentType, multipart })), [{
+			contentType: 'multipart/form-data',
+			multipart: [
+				{ name: 'file', filename: 'receipt.pdf', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), contentType: 'application/pdf' },
+				{ name: 'type', value: 'voucher' },
+			],
+		}]);
 		assert.deepEqual(fetched, []);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
@@ -566,6 +569,59 @@ test('a dry run shrinks large planned bodies in plannedWrites but passes them wh
 	const body = payload.plannedWrites[0].body;
 	assert.ok(JSON.stringify(body, null, 2).length <= 4_000);
 	assert.ok(body.truncated, 'expected a truncation hint');
+});
+
+test('a dry run shows how bodies would be encoded', async () => {
+	const { codeMode } = codeModeWith(undefined, { writesEnabled: true });
+	const bytes = Buffer.from('<xml/>');
+
+	const payload = payloadOf(await codeMode.execute(`async () => {
+		await lexware.request({ method: 'POST', path: '/v1/contacts', body: 'true' });
+		await lexware.request({ method: 'POST', path: '/v1/contacts', body: 'true', rawBody: true, contentType: 'text/plain' });
+		await lexware.request({ method: 'POST', path: '/v1/contacts', bodyBase64: '${bytes.toString('base64')}', contentType: 'application/xml' });
+	}`, { maxRequests: 1, dryRun: true }));
+
+	assert.deepEqual(payload.plannedWrites.map(({ contentType, body, bytes, sha256 }: Record<string, unknown>) => ({ contentType, body, bytes, sha256 })), [
+		{ contentType: 'application/json', body: 'true', bytes: undefined, sha256: undefined },
+		{ contentType: 'text/plain', body: 'true', bytes: undefined, sha256: undefined },
+		{ contentType: 'application/xml', body: undefined, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
+	]);
+});
+
+test('a dry run lists concurrent writes in request order, even when an earlier one reads a file', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'lexware-dry-run-'));
+	try {
+		const receipt = join(dir, 'receipt.pdf');
+		await writeFile(receipt, '%PDF');
+		const { codeMode } = codeModeWith(undefined, { writesEnabled: true, uploadDirs: [dir] });
+
+		const payload = payloadOf(await codeMode.execute(`async () => {
+			await Promise.all([
+				lexware.request({ method: 'POST', path: '/v1/files', multipart: [{ name: 'file', contentPath: ${JSON.stringify(receipt)} }] }),
+				lexware.request({ method: 'POST', path: '/v1/contacts', body: {} }),
+			]);
+		}`, { maxRequests: 1, dryRun: true }));
+
+		assert.deepEqual(payload.plannedWrites.map(({ path }: Record<string, unknown>) => path), ['/v1/files', '/v1/contacts']);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('a dry run caps the number of planned writes', async () => {
+	const { codeMode } = codeModeWith(undefined, { writesEnabled: true });
+
+	const result = await codeMode.execute(`async () => {
+		for (let index = 0; index < 101; index += 1) await lexware.request({ method: 'POST', path: '/v1/contacts', body: { index } });
+	}`, { maxRequests: 1, dryRun: true });
+
+	assert.equal(result.isError, true);
+	const payload = payloadOf(result);
+	assert.match(payload.error, /Dry run exceeded 100 planned writes/);
+	// The 101 entries exceed the result limit together with the plans; `requests` stays whole.
+	assert.ok(payload.truncated, 'expected plannedWrites to be shrunk');
+	assert.equal(payload.requests.filter((entry: Record<string, unknown>) => entry.dryRun).length, 100);
+	assert.deepEqual(payload.requests.at(-1), { ...payload.requests.at(-1), sent: false, error: 'Dry run exceeded 100 planned writes' });
 });
 
 test('without dryRun the result has no dryRun or plannedWrites fields', async () => {
