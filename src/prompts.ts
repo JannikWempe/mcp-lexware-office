@@ -23,6 +23,8 @@ export interface WorkflowPrompt<Args extends z.ZodObject = z.ZodObject<Record<st
 	name: string;
 	title: string;
 	description: string;
+	// Completes "Use when …" in the skill description, so hosts pick this skill over others with similar names.
+	useWhen: string;
 	argsSchema: Args;
 	// Writes the workflow sends; empty for read-only workflows. renderPrompt puts the write mode in front of them.
 	writes: PromptWrite[];
@@ -73,7 +75,7 @@ const writeModeSection = (writes: PromptWrite[], mode: 'apply' | 'preview', cont
 		: '';
 	return mode === 'preview'
 		? `${policy}Write mode preview: run every execute call that writes with dryRun: true and report its plannedWrites. Send no writes.`
-		: `${policy}Write mode apply: send the writes once the checks pass and the user agreed to them; preview a write with execute dryRun: true first when the user should review it.`;
+		: `${policy}Send the writes once the checks pass and the user agreed to them; preview a write with execute dryRun: true first when the user should review it.`;
 };
 
 const periodLine = (dateFrom: string | undefined, dateTo: string | undefined) =>
@@ -105,6 +107,7 @@ const uploadReceipts = definePrompt({
 	name: 'upload-receipts',
 	title: 'Upload receipts (Belege)',
 	description: 'Upload receipts to Lexware Office: check for duplicates, upload, wait for text recognition, correct fields and categories without dropping the file, and report per receipt.',
+	useWhen: 'the user wants to upload, book or reconcile receipts or supplier invoices (Belege) in Lexware Office (lexoffice).',
 	argsSchema: z.object({
 		files: z.string().optional().describe('Absolute paths of the receipts on the server machine, comma- or newline-separated. Omitted: ask the user.'),
 		mode: modeArg,
@@ -129,6 +132,7 @@ const revenueReport = definePrompt({
 	name: 'revenue-report',
 	title: 'Revenue report (Umsatz)',
 	description: 'Report revenue (Umsatz) for a period: invoiced or paid, gross or net, with the assumptions stated.',
+	useWhen: 'the user asks for revenue, Umsatz, sales or turnover of a period from Lexware Office (lexoffice).',
 	argsSchema: z.object({
 		dateFrom: dateArg('Start'),
 		dateTo: dateArg('End'),
@@ -142,7 +146,7 @@ const revenueReport = definePrompt({
 			`Task: report revenue (Umsatz). ${periodLine(args.dateFrom, args.dateTo)}`,
 			basis !== undefined
 				? `Basis: ${basis} (${semantics.metrics[metricKey].summary})`
-				: `The user did not choose a basis: use the default (${semantics.defaultPolicy.metric}) and state the assumption, or ask whether they mean paid or net revenue.`,
+				: `If the user did not say which basis, use the default (${semantics.defaultPolicy.metric}) and state the assumption, or ask whether they mean paid or net revenue.`,
 			toolsIntro,
 			renderReportingSemantics(['revenue', 'Umsatz', 'earnings'], [metricKey]),
 			renderWorkflow(semantics.metrics[metricKey].workflow),
@@ -155,6 +159,7 @@ const profitReport = definePrompt({
 	name: 'profit-report',
 	title: 'Profit report',
 	description: 'Report a profit-like result for a period: invoiced revenue minus bookkeeping expenses, with the assumptions stated.',
+	useWhen: 'the user asks for profit, Gewinn, earnings or revenue minus expenses of a period from Lexware Office (lexoffice).',
 	argsSchema: z.object({
 		dateFrom: dateArg('Start'),
 		dateTo: dateArg('End'),
@@ -176,6 +181,7 @@ const createInvoice = definePrompt({
 	name: 'create-invoice',
 	title: 'Create an invoice',
 	description: 'Create an invoice: find the contact, build and review a draft, and finalize it only when the user asks.',
+	useWhen: 'the user wants to create, draft or finalize an invoice (Rechnung) in Lexware Office (lexoffice).',
 	argsSchema: z.object({
 		customer: z.string().optional().describe('Customer name, email or customer number. Omitted: ask the user.'),
 		details: z.string().optional().describe('What to invoice: line items, quantities, prices, dates, preceding quotation or order.'),

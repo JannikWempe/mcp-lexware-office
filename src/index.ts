@@ -12,6 +12,7 @@ import { lexwareSdkDeclaration, stateDeclaration } from './lexware-sandbox-sdk.j
 import { lexwareSpec } from './lexware-spec.js';
 import { renderPrompt, workflowPrompts } from './prompts.js';
 import { ResponseCache } from './response-cache.js';
+import { loadWorkflowSkills } from './skills.js';
 import { VERSION } from './version.js';
 
 let config: ServerConfig;
@@ -32,13 +33,16 @@ const client = new LexwareApiClient({
 	responseCache: config.cacheEnabled ? new ResponseCache() : undefined,
 });
 const codeMode = new CodeMode({ client, account: new AccountProfile(client, { label: config.accountLabel }) });
+const promptContext = { writesEnabled: config.writesEnabled, writeAllow: config.writeAllow };
+// Rendered once: the write mode is fixed at startup.
+const skillCatalog = await loadWorkflowSkills(promptContext);
 const cachedPaths = Object.entries(lexwareSpec.paths).filter(([, methods]) => methods.get?.cacheTtlSeconds !== undefined).map(([path]) => path);
 // Only described when on, so a server started with LEXWARE_OFFICE_CACHE=off doesn't promise cache hits.
 const cacheNote = config.cacheEnabled ? `\n\nReference data (GET ${cachedPaths.join(', ')}; cacheTtlSeconds in spec.paths) is cached across execute calls. A cache hit returns response.cached: true, appears in requests with cached: true and sent: false, and costs no maxRequests and no rate-limit wait. Every write sent clears the cache; pass cache: false to lexware.request to force a fresh read.` : '';
 
 /**
  * One McpServer per connection; serveStdio picks the protocol era (2025-era initialize or 2026-07-28 server/discover).
- * Instructions, tool descriptions, schemas and the prompt list are model-facing: server-stdio.test.ts pins them in
+ * Instructions, tool descriptions, schemas and the prompt and skill lists are model-facing: server-stdio.test.ts pins them in
  * tools-list.snapshot.json; preview with `pnpm -s run smoke [--writes]`.
  */
 function createServer(): McpServer {
@@ -193,10 +197,11 @@ async () => {
 			prompt.name,
 			{ title: prompt.title, description: prompt.description, argsSchema: prompt.argsSchema },
 			(args) => ({
-				messages: [{ role: 'user', content: { type: 'text', text: renderPrompt(prompt, args, { writesEnabled: writes, writeAllow: config.writeAllow }) } }],
+				messages: [{ role: 'user', content: { type: 'text', text: renderPrompt(prompt, args, promptContext) } }],
 			}),
 		);
 	}
+	skillCatalog.attach(server);
 
 	return server;
 }
