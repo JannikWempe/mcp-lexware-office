@@ -91,7 +91,7 @@ export class CodeMode {
 				memoryLimitBytes: MEMORY_LIMIT_BYTES,
 				filename: 'lexware-execute.js',
 				signal: options.signal,
-				hostFunctions: sandbox.hostFunctions,
+				...sandbox,
 				prelude: `${catalogLookupPrelude}\n${sandbox.prelude}`,
 			},
 		);

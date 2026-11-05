@@ -107,8 +107,7 @@ Use search first when you need endpoint/domain guidance; do not guess Lexware pa
 Available globals:
 
 declare const spec: LexwareApiCatalog;
-declare function find(query: string, options?: { limit?: number; kinds?: Array<'operation' | 'workflow' | 'semantics'> }): Array<{ kind: string; id: string; method?: string; path?: string; summary: string; score: number; hint: string }>; // as in search
-declare function describe(method: string, path: string): object; // as in search
+${catalogLookupDeclaration}
 ${lexwareSdkDeclaration}
 
 lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. A GET answered with 429 is retried once automatically after Retry-After (if <= 5s) or, without that header, a 1-2s backoff; writes are never retried.

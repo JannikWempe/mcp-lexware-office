@@ -28,9 +28,13 @@ test('find ranks specific operations for English and German queries', () => {
 	assert.equal(ids('payment terms', 1)[0], 'listPaymentConditions');
 	assert.equal(ids('webhooks', 1)[0], 'listEventSubscriptions');
 	assert.equal(ids('GET /v1/vouchers/{id}', 1)[0], 'getVoucher');
-	// German synonyms from spec.info.domainIndex tags.
+	// German synonyms from spec.info.domainIndex tags, and German verbs the catalog only has in English.
 	assert.ok(ids('mahnung', 3).includes('createDunning'));
 	assert.ok(ids('angebote', 3).includes('createQuotation'));
+	assert.deepEqual(new Set(ids('beleg hochladen', 2)), new Set(['uploadFile', 'fileHandling']));
+	assert.equal(ids('kunde anlegen', 1)[0], 'createContact');
+	assert.equal(ids('Rechnung erstellen', 1)[0], 'createInvoice');
+	assert.equal(ids('ausgaben 2025', 1)[0], 'listBookkeepingExpenses');
 });
 
 test('find returns semantics entries with a readable hint', () => {
@@ -52,6 +56,9 @@ test('find results stay small, honour limit and kinds, and are sorted by score',
 	assert.deepEqual(find('xyzzy'), []);
 	assert.deepEqual(find('   '), []);
 	assert.throws(() => find('invoice', { kinds: ['endpoint' as never] }), /unknown kinds/);
+	assert.throws(() => find('invoice', { kinds: 'operation' as never }), /kinds must be an array/);
+	assert.throws(() => find('invoice', { limit: Number.NaN }), /limit must be a finite number/);
+	assert.throws(() => find('invoice', null as never), /options to be an object/);
 	assert.throws(() => find(undefined as never), /expects a string/);
 });
 
@@ -67,8 +74,16 @@ test('describe returns a compact operation view and resolves concrete paths', ()
 	assert.equal(upload.requestBody.contentType, 'multipart/form-data');
 	assert.equal('shape' in upload.requestBody, false);
 
+	assert.equal((describe('GET', '/v1/vouchers/') as Record<string, unknown>).operationId, 'filterVouchers');
+	assert.equal((describe('GET', '/v1/voucherlist?voucherType=invoice') as Record<string, unknown>).operationId, 'listVoucherSummaries');
+
 	assert.throws(() => describe('DELETE', '/v1/vouchers/{id}'), /Methods on \/v1\/vouchers\/\{id\}: GET, PUT/);
 	assert.throws(() => describe('GET', '/v1/nope'), /Use find/);
+	// Inherited properties are not catalog entries.
+	assert.throws(() => describe('constructor', '/v1/vouchers'), /no catalog operation/);
+	assert.throws(() => describe('GET', 'constructor'), /no catalog operation/);
+	assert.throws(() => describe('GET', '__proto__'), /no catalog operation/);
+	assert.throws(() => describe('GET', '/v1/invoices//file'), /no catalog operation/);
 });
 
 test('the prelude runs self-contained in QuickJS and matches the host implementation', async () => {
