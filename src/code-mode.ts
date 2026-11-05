@@ -76,7 +76,7 @@ export class CodeMode {
 			},
 		);
 
-		if (execution.error) {
+		if (execution.error !== undefined) {
 			return toolResult({ ok: false, error: execution.error, logs: execution.logs ?? [] }, true);
 		}
 
@@ -124,7 +124,7 @@ export class CodeMode {
 		);
 
 		const audit = { requestCount, ...summarizeRequests(requests), ...(dryRun && { dryRun, plannedWrites: plannedWrites.filter((write) => write !== undefined) }) };
-		if (execution.error) {
+		if (execution.error !== undefined) {
 			return toolResult({ ok: false, error: execution.error, logs: execution.logs ?? [], ...audit }, true);
 		}
 

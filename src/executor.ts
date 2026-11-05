@@ -41,6 +41,7 @@ export interface CodeExecutorOptions {
 
 export interface CodeExecutionResult {
 	result?: unknown;
+	// Set, and non-empty, whenever execution failed.
 	error?: string;
 	logs?: string[];
 }
@@ -436,7 +437,8 @@ function isHostStackOverflow(error: unknown): boolean {
 function stringifyLogValue(value: unknown): string {
 	if (typeof value === 'string') return value;
 	try {
-		return JSON.stringify(value);
+		// JSON.stringify returns undefined for undefined, functions and symbols.
+		return JSON.stringify(value) ?? String(value);
 	} catch {
 		return String(value);
 	}
@@ -455,5 +457,8 @@ function stringifyQuickJsError(value: unknown): string {
 		const stack = typeof maybeError.stack === 'string' ? `\n${maybeError.stack}` : '';
 		return `${name}: ${message}${stack}`;
 	}
+	// Never empty: callers treat a missing or empty error as success.
+	if (value === undefined) return 'Error: the script threw undefined (or rejected without a reason) instead of an Error';
+	if (value === '') return 'Error: the script threw an empty string instead of an Error';
 	return stringifyLogValue(value);
 }
