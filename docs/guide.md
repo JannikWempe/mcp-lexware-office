@@ -234,6 +234,8 @@ async () => {
 }
 ```
 
+The SDK helpers handle dry runs themselves: `lexware.updateVoucher` reads the voucher, plans the `PUT` and returns `{ before, dryRun: true, planned, changed }` without the verification read; `lexware.uploadVoucherFile` returns `{ dryRun: true, planned, extraction: 'skipped' }` without polling, and `lexware.attachFileToVoucher` returns `{ dryRun: true, planned }`.
+
 Dry runs also work while writes are disabled or not allowlisted: nothing is sent, so they are a safe way to preview with a read-only server. A write the [permissions](#permissions) would reject is still planned, and its `blocked` field says why a real run would reject it.
 
 Cancellation: when the client cancels a `search`/`execute` call, the execution ends with `Execution cancelled by client` and in-flight Lexware requests are aborted (they appear in `requests` with a cancelled `error`). The same happens when `execute` hits its 30 s timeout (`Execution timed out after 30000ms`). A single Lexware request times out after 25 s.

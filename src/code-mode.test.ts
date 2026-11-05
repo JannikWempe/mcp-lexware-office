@@ -571,6 +571,28 @@ test('a dry run shrinks large planned bodies in plannedWrites but passes them wh
 	assert.ok(body.truncated, 'expected a truncation hint');
 });
 
+test('lexware.uploadVoucherFile in a dry run plans the upload without fetching or waiting', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'lexware-dry-run-'));
+	try {
+		const bytes = Buffer.from('%PDF-helper');
+		const receipt = join(dir, 'receipt.pdf');
+		await writeFile(receipt, bytes);
+		const { codeMode, fetched } = codeModeWith(undefined, { uploadDirs: [dir] });
+
+		const startedAt = Date.now();
+		const payload = payloadOf(await codeMode.execute(`async () => lexware.uploadVoucherFile({ contentPath: ${JSON.stringify(receipt)} })`, { maxRequests: 1, dryRun: true }));
+
+		assert.ok(Date.now() - startedAt < 1_500, 'a dry-run upload must not wait for text recognition');
+		assert.equal(payload.result.dryRun, true);
+		assert.equal(payload.result.extraction, 'skipped');
+		assert.equal(payload.result.planned.multipart[0].sha256, createHash('sha256').update(bytes).digest('hex'));
+		assert.deepEqual(payload.plannedWrites, [payload.result.planned]);
+		assert.deepEqual(fetched, []);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
 test('a dry run shows how bodies would be encoded', async () => {
 	const { codeMode } = codeModeWith(undefined, { writesEnabled: true });
 	const bytes = Buffer.from('<xml/>');

@@ -238,11 +238,12 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 	};
 	// GET, merge, PUT with the current version, GET again: 3 requests. Throws instead of writing when the
 	// merged body would drop a current file id, because Lexware deletes omitted files permanently.
+	// In a dry run the PUT is only planned, so it skips the re-read and returns the plan instead of `after`.
 	const updateVoucher = async (
 		id: string,
 		patch: Record<string, unknown>,
 		options: { expectedVersion?: number; allowFileRemoval?: boolean } = {},
-	): Promise<{ before: unknown; after: unknown; changed: string[] }> => {
+	): Promise<{ before: unknown; after: unknown; changed: string[] } | { before: unknown; dryRun: true; planned: unknown; changed: string[] }> => {
 		if (typeof id !== 'string' || id.length === 0) {
 			throw new Error('lexware.updateVoucher expects a non-empty voucher id string');
 		}
@@ -292,6 +293,14 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 			// Throws with status, category and the normalized Lexware issues.
 			assertOkJsonResponse(putResponse, 'lexware.updateVoucher');
 		}
+		if (putResponse.dryRun === true) {
+			const changed = Object.keys(body)
+				.filter((key) => key !== 'version' && JSON.stringify(before[key]) !== JSON.stringify(body[key]) && !(key === 'files' && before.files === undefined));
+			for (const key of ['contactId', 'useCollectiveContact']) {
+				if (before[key] !== undefined && !Object.prototype.hasOwnProperty.call(body, key)) changed.push(key);
+			}
+			return { before, dryRun: true, planned: putResponse.planned, changed };
+		}
 		let after: unknown;
 		try {
 			after = assertOkJsonResponse(await request({ path }), 'lexware.updateVoucher');
@@ -337,13 +346,14 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 	};
 	// POST /v1/files, then poll the created voucher after 2, 4 and 8 s (capped by timeoutMs) until text recognition has
 	// replaced status blank: 1 + up to 4 requests. Never re-uploads; a timeout returns extraction 'pending'.
+	// In a dry run nothing is uploaded, so it returns the plan without polling.
 	const uploadVoucherFile = async (input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{
 		fileId: string;
 		voucherId: string;
 		sent: unknown;
 		voucher?: unknown;
 		extraction: 'done' | 'pending' | 'skipped';
-	}> => {
+	} | { dryRun: true; planned: unknown; extraction: 'skipped' }> => {
 		const part = filePart(input, 'lexware.uploadVoucherFile');
 		const waitForExtraction = input.waitForExtraction !== undefined ? input.waitForExtraction : true;
 		if (typeof waitForExtraction !== 'boolean' && !(isObjectLike(waitForExtraction) && !Array.isArray(waitForExtraction))) {
@@ -356,6 +366,9 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		}
 		const response = await request({ method: 'POST', path: '/v1/files', multipart: [part, { name: 'type', value: 'voucher' }] });
 		const data = assertOkJsonResponse(response, 'lexware.uploadVoucherFile');
+		if (response.dryRun === true) {
+			return { dryRun: true, planned: response.planned, extraction: 'skipped' };
+		}
 		if (!isObjectLike(data) || typeof data.id !== 'string' || typeof data.voucherId !== 'string') {
 			throw new Error('lexware.uploadVoucherFile expected POST /v1/files to return { id, voucherId }, got status ' + response.status + ': ' + JSON.stringify(data));
 		}
@@ -382,13 +395,16 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		return { ...uploaded, ...(voucher !== undefined && { voucher }), extraction: 'pending' };
 	};
 	// POST /v1/vouchers/{id}/files: 1 request. Later voucher PUTs must keep the returned fileId.
-	const attachFileToVoucher = async (voucherId: string, input: FileInput): Promise<{ fileId: string; sent: unknown }> => {
+	const attachFileToVoucher = async (voucherId: string, input: FileInput): Promise<{ fileId: string; sent: unknown } | { dryRun: true; planned: unknown }> => {
 		if (typeof voucherId !== 'string' || voucherId.length === 0) {
 			throw new Error('lexware.attachFileToVoucher expects a non-empty voucher id string');
 		}
 		const part = filePart(input, 'lexware.attachFileToVoucher');
 		const response = await request({ method: 'POST', path: '/v1/vouchers/' + encodeURIComponent(voucherId) + '/files', multipart: [part] });
 		const data = assertOkJsonResponse(response, 'lexware.attachFileToVoucher');
+		if (response.dryRun === true) {
+			return { dryRun: true, planned: response.planned };
+		}
 		if (!isObjectLike(data) || typeof data.id !== 'string') {
 			throw new Error('lexware.attachFileToVoucher expected POST /v1/vouchers/{id}/files to return { id }, got status ' + response.status + ': ' + JSON.stringify(data));
 		}
@@ -539,12 +555,13 @@ export const lexwareSdkDeclaration = `declare const lexware: {
   formatMoney(cents: number, currency?: string): string;
   // GET, shallow-merge patch (read-only fields dropped, files and version kept), PUT, GET to verify: 3 requests. Throws
   // without writing on an expectedVersion mismatch or if files would lose an id (unless allowFileRemoval). Details: spec PUT /v1/vouchers/{id} notes.
-  updateVoucher(id: string, patch: Record<string, unknown>, options?: { expectedVersion?: number; allowFileRemoval?: boolean }): Promise<{ before: unknown; after: unknown; changed: string[] }>;
+  // Dry run: 1 request (the GET); returns the planned PUT and the fields it would change instead of after.
+  updateVoucher(id: string, patch: Record<string, unknown>, options?: { expectedVersion?: number; allowFileRemoval?: boolean }): Promise<{ before: unknown; after: unknown; changed: string[] } | { before: unknown; dryRun: true; planned: PlannedWrite; changed: string[] }>;
   // POST /v1/files (type=voucher), then polls the voucher after 2, 4, 8 s until it is no longer blank (timeoutMs default and max 15000):
   // up to 5 requests. One waiting upload per execute call (30 s timeout); for batches pass waitForExtraction: false. Never re-uploads;
-  // extraction 'pending' on timeout means GET /v1/vouchers/{voucherId} later.
-  uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped' }>;
-  attachFileToVoucher(voucherId: string, input: FileInput): Promise<{ fileId: string; sent: UploadSent }>; // POST /v1/vouchers/{id}/files, 1 request
+  // extraction 'pending' on timeout means GET /v1/vouchers/{voucherId} later. Dry run: no upload, no polling; returns the plan.
+  uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped' } | { dryRun: true; planned: PlannedWrite; extraction: 'skipped' }>;
+  attachFileToVoucher(voucherId: string, input: FileInput): Promise<{ fileId: string; sent: UploadSent } | { dryRun: true; planned: PlannedWrite }>; // POST /v1/vouchers/{id}/files, 1 request
   sleep(ms: number): Promise<void>; // 0-${MAX_SLEEP_MS} ms per call; the 30 s execute timeout bounds the total
   // Duplicate check before uploads. Exact voucherNumber query (1 request); if no candidate, pages /v1/voucherlist in dateFrom..dateTo (required,
   // else throws): 1 + pages requests; throws if the window has more than maxPages (default 4) pages. Ranks rows by voucherNumber ignoring
