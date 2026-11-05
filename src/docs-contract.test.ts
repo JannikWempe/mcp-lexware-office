@@ -90,3 +90,8 @@ test('install docs pin the package.json major only on release-please-marked line
 	}
 	assert.equal(markedPins, 4, 'expected the README (3) and guide (1) install pins to be marked');
 });
+
+test('README links the current API key page', () => {
+	assert.doesNotMatch(readme, /app\.lexoffice\.de/);
+	assert.match(readme, /https:\/\/app\.lexware\.de\/addons\/public-api/);
+});
