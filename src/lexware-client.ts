@@ -66,6 +66,25 @@ export interface LexwareRequestOptions {
 	// Called right before each attempt is handed to fetch, including 429 retries. Throwing
 	// fails that attempt unsent (logged with `error`, `sent: false`), e.g. to enforce a budget.
 	beforeSend?: () => void;
+	// Writes are not sent: each returns a synthetic `dryRun` response and is reported to onPlanned,
+	// also when the write policy would block it. Reads run normally.
+	dryRun?: boolean;
+	onPlanned?: (write: PlannedWrite) => void;
+}
+
+// A write a dry run did not send: what would have gone out, with the hashes of binary payloads.
+// `blocked` is why the write policy would reject it in a real run.
+export interface PlannedWrite {
+	method: LexwareExecuteMethod;
+	path: string;
+	query: Record<string, string[]>;
+	operationId?: string;
+	body?: unknown;
+	// bodyBase64 requests: the decoded bytes.
+	bytes?: number;
+	sha256?: string;
+	multipart?: Array<{ name: string; value?: string; filename?: string; bytes?: number; sha256?: string }>;
+	blocked?: string;
 }
 
 // Audit record for one request attempt. Never contains headers, bodies, query values, or the API key.
@@ -81,6 +100,8 @@ export interface RequestLogEntry {
 	write: boolean;
 	sent: boolean;
 	outcome?: 'unknown';
+	// A write a dry run planned instead of sending.
+	dryRun?: true;
 	durationMs: number;
 }
 
@@ -109,6 +130,9 @@ export interface LexwareResponse {
 	text?: string;
 	truncated?: boolean;
 	sent?: UploadEcho;
+	// Synthetic response of a write a dry run did not send (status 0, no data).
+	dryRun?: true;
+	planned?: PlannedWrite;
 }
 
 export interface UploadEcho {
@@ -217,7 +241,7 @@ export class LexwareApiClient {
 		const startedAt = Date.now();
 		const write = WRITE_METHODS.has(normalized.method);
 		const progress = { sent: false };
-		const log = (result: Pick<RequestLogEntry, 'status' | 'ok' | 'error'>) => options.onSettled?.({
+		const log = (result: Pick<RequestLogEntry, 'status' | 'ok' | 'error' | 'dryRun'>) => options.onSettled?.({
 			method: normalized.method,
 			path: normalized.path,
 			...result,
@@ -234,24 +258,25 @@ export class LexwareApiClient {
 			log({ error: sanitizeFetchErrorMessage(error, apiKey) });
 			throw error;
 		}
-		log({ status: response.status, ok: response.ok });
+		log({ status: response.status, ok: response.ok, ...(response.dryRun && { dryRun: true as const }) });
 		return response;
 	}
 
 	private async send(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number, progress: { sent: boolean }): Promise<LexwareResponse> {
-		if (WRITE_METHODS.has(normalized.method)) {
-			if (!this.writesEnabled) {
-				throw new Error(`${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`);
-			}
-			const violation = this.writeAllow !== undefined
-				? writeAllowViolation(this.writeAllow, { ...normalized, operationId: normalized.matched?.operation.operationId })
-				: undefined;
-			if (violation !== undefined) throw new Error(violation);
-		}
+		const write = WRITE_METHODS.has(normalized.method);
+		const blocked = write ? this.writeBlockedReason(normalized) : undefined;
+		if (blocked !== undefined && !options.dryRun) throw new Error(blocked);
 
 		const signal = options.signal;
 		const cancelledError = () => new Error(`Lexware API request cancelled for ${normalized.method} ${normalized.path}`);
 		if (signal?.aborted) throw cancelledError();
+
+		if (write && options.dryRun) {
+			const planned = await planWrite(normalized, this.uploadDirs, blocked);
+			if (signal?.aborted) throw cancelledError();
+			options.onPlanned?.(planned);
+			return dryRunResponse(normalized, planned);
+		}
 
 		try {
 			if (delayMs > 0) await sleep(delayMs, undefined, signal !== undefined ? { signal } : undefined);
@@ -308,6 +333,15 @@ export class LexwareApiClient {
 		} finally {
 			clearTimeout(timeout);
 		}
+	}
+
+	private writeBlockedReason(normalized: NormalizedRequest): string | undefined {
+		if (!this.writesEnabled) {
+			return `${normalized.method} ${normalized.path} is blocked: writes are disabled by default. Set LEXWARE_OFFICE_ALLOW_WRITES=true to enable writes (LEXWARE_OFFICE_READ_ONLY=true overrides this).`;
+		}
+		return this.writeAllow !== undefined
+			? writeAllowViolation(this.writeAllow, { ...normalized, operationId: normalized.matched?.operation.operationId })
+			: undefined;
 	}
 
 	// Serializes requests through a promise chain. A waiter cancelled mid-wait rejects
@@ -617,6 +651,39 @@ async function serializeRequestBody(request: NormalizedRequest, headers: Record<
 	throw new Error('Non-JSON request bodies must be strings or use rawBody=true with an explicit contentType.');
 }
 
+// Serializes the body like a real send, so a dry run applies the same validation and upload-dir
+// checks and reports the exact bytes and SHA-256 that would be uploaded.
+async function planWrite(request: NormalizedRequest, uploadDirs: string[], blocked: string | undefined): Promise<PlannedWrite> {
+	const { sent } = await serializeRequestBody(request, {}, uploadDirs);
+	const binaryParts = [...(sent?.parts ?? [])];
+	return {
+		method: request.method,
+		path: request.path,
+		query: queryToObject(request.query),
+		...(request.matched !== undefined && { operationId: request.matched.operation.operationId }),
+		...(request.body !== undefined && { body: request.body }),
+		...(request.bodyBase64 !== undefined && sent !== undefined && { bytes: sent.bytes, sha256: sent.sha256 }),
+		...(request.multipart !== undefined && {
+			multipart: request.multipart.map((part) => part.value !== undefined ? { name: part.name, value: part.value } : binaryParts.shift()!),
+		}),
+		...(blocked !== undefined && { blocked }),
+	};
+}
+
+function dryRunResponse(request: NormalizedRequest, planned: PlannedWrite): LexwareResponse {
+	return {
+		ok: true,
+		status: 0,
+		statusText: 'DRY RUN – not sent',
+		dryRun: true,
+		...operationOf(request),
+		request: { method: request.method, path: request.path, query: planned.query },
+		contentType: '',
+		headers: {},
+		planned,
+	};
+}
+
 export interface UploadReadHooks {
 	// Test seams around the open, to simulate paths being swapped (TOCTOU).
 	beforeOpen?: () => Promise<void>;
@@ -718,14 +785,7 @@ async function parseResponse(response: Response, request: NormalizedRequest, max
 		ok: response.ok,
 		status: response.status,
 		statusText: response.statusText,
-		...(request.matched ? {
-			operation: {
-				operationId: request.matched.operation.operationId,
-				method: request.method,
-				pathTemplate: request.matched.pathTemplate,
-				summary: request.matched.operation.summary,
-			},
-		} : {}),
+		...operationOf(request),
 		request: {
 			method: request.method,
 			path: request.path,
@@ -780,6 +840,12 @@ async function parseResponse(response: Response, request: NormalizedRequest, max
 	const truncated = text.length > maxResponseChars;
 	const safeText = truncated ? truncateText(text, { maxChars: maxResponseChars }) : text;
 	return { ...withIssues(undefined), text: safeText, truncated };
+}
+
+function operationOf(request: NormalizedRequest): Pick<LexwareResponse, 'operation'> {
+	if (request.matched === undefined) return {};
+	const { operation, pathTemplate } = request.matched;
+	return { operation: { operationId: operation.operationId, method: request.method, pathTemplate, summary: operation.summary } };
 }
 
 function isTextualResponse(contentType: string, accept: string): boolean {

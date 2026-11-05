@@ -59,6 +59,10 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 			const metadataText = metadata.length > 0 ? ' ' + metadata.join(' ') : '';
 			throw new Error('Lexware API request failed: ' + response.status + ' ' + (response.statusText || '') + ' for ' + operation + '.' + metadataText + ' Error body: ' + JSON.stringify(details));
 		}
+		// A write a dry run did not send has no data; scripts check response.dryRun to branch.
+		if (response.dryRun === true) {
+			return undefined;
+		}
 		if (!Object.prototype.hasOwnProperty.call(response, 'data')) {
 			throw new Error(helperName + ' expected parsed JSON at response.data, but this response has no data property. Use lexware.request for status/header-aware, empty, text, XML, PDF, or binary responses. contentType=' + (response.contentType || 'unknown'));
 		}
@@ -258,4 +262,18 @@ type LexwareResponse<T = unknown> = {
   operation?: { operationId: string; method: string; pathTemplate: string; summary: string };
   request: { method: string; path: string; query: Record<string, string[]> };
   sent?: { bytes: number; sha256?: string; parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }> }; // echo of uploaded binary payloads for integrity checks
+  dryRun?: true; // execute ran with dryRun: this write was NOT sent (ok: true, status: 0, no data; lexware.json returns undefined)
+  planned?: PlannedWrite; // dry runs: what would have been sent
+};
+
+type PlannedWrite = {
+  method: string;
+  path: string;
+  query: Record<string, string[]>;
+  operationId?: string;
+  body?: unknown;
+  bytes?: number; // bodyBase64: decoded size
+  sha256?: string;
+  multipart?: Array<{ name: string; value?: string; filename?: string; bytes?: number; sha256?: string }>; // file parts with the bytes and SHA-256 that would be uploaded
+  blocked?: string; // why the write policy would reject this write in a real run
 };`;

@@ -248,7 +248,7 @@ const declaredFields = (typeName: string) => {
 const requestFields: Record<keyof LexwareRequestInput, true> = { method: true, path: true, query: true, body: true, bodyBase64: true, multipart: true, contentType: true, rawBody: true, accept: true, includeAllHeaders: true };
 const multipartFields: Record<keyof MultipartPart, true> = { name: true, value: true, filename: true, contentType: true, contentBase64: true, contentPath: true };
 const issueFields: Record<keyof LexwareIssue, true> = { field: true, code: true, message: true, hint: true };
-const responseFields: Record<keyof LexwareResponse, true> = { ok: true, status: true, statusText: true, operation: true, request: true, contentType: true, headers: true, errorCategory: true, retryAfterSeconds: true, issues: true, data: true, text: true, truncated: true, sent: true };
+const responseFields: Record<keyof LexwareResponse, true> = { ok: true, status: true, statusText: true, operation: true, request: true, contentType: true, headers: true, errorCategory: true, retryAfterSeconds: true, issues: true, data: true, text: true, truncated: true, sent: true, dryRun: true, planned: true };
 
 test('declared request, multipart, and response types list the client fields', () => {
 	assert.deepEqual(declaredFields('LexwareRequest'), Object.keys(requestFields).sort());
