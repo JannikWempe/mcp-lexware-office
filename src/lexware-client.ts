@@ -6,6 +6,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import { type LexwareIssue, normalizeIssues } from './lexware-issues.js';
 import { lexwareSpec, type HttpMethod, type LexwareOperation } from './lexware-spec.js';
+import type { ResponseCache } from './response-cache.js';
 import { truncateText } from './truncate.js';
 import { VERSION } from './version.js';
 import { describeWritePolicy, WRITE_METHODS, type WriteAllowRule, type WritePolicy, writeAllowViolation } from './write-policy.js';
@@ -36,6 +37,8 @@ export interface LexwareRequestInput {
 	accept?: string;
 	// Return every upstream response header instead of the allowlisted ones.
 	includeAllHeaders?: boolean;
+	// false skips the response cache for this GET (a fresh response still refreshes it).
+	cache?: boolean;
 }
 
 export interface LexwareClientOptions {
@@ -55,6 +58,8 @@ export interface LexwareClientOptions {
 	writesEnabled?: boolean;
 	// When writes are enabled, only these writes are allowed. Omitted allows every write.
 	writeAllow?: WriteAllowRule[];
+	// Serves GETs of operations with cacheTtlSeconds; cleared by every write sent. Omitted disables caching.
+	responseCache?: ResponseCache;
 }
 
 export interface LexwareRequestOptions {
@@ -106,6 +111,8 @@ export interface RequestLogEntry {
 	error?: string;
 	write: boolean;
 	sent: boolean;
+	// Answered from the response cache: not sent, no budget used.
+	cached?: true;
 	outcome?: 'unknown';
 	// A write a dry run planned instead of sending.
 	dryRun?: true;
@@ -140,12 +147,28 @@ export interface LexwareResponse {
 	// Synthetic response of a write a dry run did not send (status 0, no data).
 	dryRun?: true;
 	planned?: PlannedWrite;
+	// Served from the response cache instead of Lexware.
+	cached?: true;
 }
 
 export interface UploadEcho {
 	bytes: number;
 	sha256?: string;
 	parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }>;
+}
+
+interface SendProgress {
+	// The attempt was handed to fetch.
+	sent: boolean;
+	// Set for a sent write; tells the response cache the write settled.
+	writeSettled?: () => void;
+}
+
+interface CacheSlot {
+	cache: ResponseCache;
+	key: string;
+	ttlMs: number;
+	generation: number;
 }
 
 interface MatchedOperation {
@@ -164,6 +187,7 @@ interface NormalizedRequest {
 	rawBody: boolean;
 	accept: string;
 	includeAllHeaders: boolean;
+	cache: boolean;
 	matched?: MatchedOperation;
 }
 
@@ -198,6 +222,7 @@ export class LexwareApiClient {
 	private readonly rateLimitIntervalMs: number;
 	private readonly maxRetryAfterMs: number;
 	private readonly uploadDirs: string[];
+	private readonly responseCache?: ResponseCache;
 	private nextRequestAtMs = 0;
 	private rateLimitQueue: Promise<void> = Promise.resolve();
 
@@ -214,6 +239,7 @@ export class LexwareApiClient {
 		this.rateLimitIntervalMs = options.rateLimitIntervalMs ?? DEFAULT_RATE_LIMIT_INTERVAL_MS;
 		this.maxRetryAfterMs = options.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
 		this.uploadDirs = options.uploadDirs ?? [];
+		this.responseCache = options.responseCache;
 	}
 
 	get hasApiKey(): boolean {
@@ -227,6 +253,38 @@ export class LexwareApiClient {
 		}
 
 		const normalized = normalizeRequest(input);
+		const slot = this.cacheSlot(normalized);
+		if (slot !== undefined && normalized.cache && !options.signal?.aborted) {
+			const hit = this.cachedResponse(normalized, slot, options);
+			if (hit !== undefined) return hit;
+		}
+		const response = await this.retryingRequest(normalized, apiKey, options);
+		if (slot !== undefined && isCacheableResponse(response)) {
+			slot.cache.set(slot.key, JSON.stringify(withoutPerRequestHeaders(response)), slot.ttlMs, slot.generation);
+		}
+		return response;
+	}
+
+	// Where a GET of an operation with cacheTtlSeconds is cached. The generation is taken before the
+	// request, so a write sent while it is in flight keeps its possibly stale response out of the cache.
+	private cacheSlot(normalized: NormalizedRequest): CacheSlot | undefined {
+		const cache = this.responseCache;
+		const ttlSeconds = normalized.matched?.operation.cacheTtlSeconds;
+		if (cache === undefined || normalized.method !== 'GET' || ttlSeconds === undefined) return undefined;
+		const query = [...normalized.query].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+		const key = JSON.stringify([normalized.path, query, normalized.accept, normalized.includeAllHeaders]);
+		return { cache, key, ttlMs: ttlSeconds * 1000, generation: cache.generation };
+	}
+
+	private cachedResponse(normalized: NormalizedRequest, slot: CacheSlot, options: LexwareRequestOptions): LexwareResponse | undefined {
+		const json = slot.cache.get(slot.key);
+		if (json === undefined) return undefined;
+		const response = { ...(JSON.parse(json) as LexwareResponse), cached: true as const };
+		options.onSettled?.({ method: normalized.method, path: normalized.path, status: response.status, ok: response.ok, write: false, sent: false, cached: true, durationMs: 0 });
+		return response;
+	}
+
+	private async retryingRequest(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions): Promise<LexwareResponse> {
 		const response = await this.attempt(normalized, apiKey, options, 0);
 		if (response.status !== 429) return response;
 		// Lexware's docs don't promise a Retry-After header on 429 (unverified against the live
@@ -247,7 +305,7 @@ export class LexwareApiClient {
 	private async attempt(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number): Promise<LexwareResponse> {
 		const startedAt = Date.now();
 		const write = WRITE_METHODS.has(normalized.method);
-		const progress = { sent: false };
+		const progress: SendProgress = { sent: false };
 		const log = (result: Pick<RequestLogEntry, 'status' | 'ok' | 'error' | 'dryRun'>) => options.onSettled?.({
 			method: normalized.method,
 			path: normalized.path,
@@ -264,12 +322,15 @@ export class LexwareApiClient {
 			// send() throws controlled messages; sanitize anyway so the log can never leak secrets.
 			log({ error: sanitizeFetchErrorMessage(error, apiKey) });
 			throw error;
+		} finally {
+			// Any write that reached fetch may have changed data, whatever its outcome.
+			progress.writeSettled?.();
 		}
 		log({ status: response.status, ok: response.ok, ...(response.dryRun && { dryRun: true as const }) });
 		return response;
 	}
 
-	private async send(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number, progress: { sent: boolean }): Promise<LexwareResponse> {
+	private async send(normalized: NormalizedRequest, apiKey: string, options: LexwareRequestOptions, delayMs: number, progress: SendProgress): Promise<LexwareResponse> {
 		const write = WRITE_METHODS.has(normalized.method);
 		const blocked = write ? this.writeBlockedReason(normalized) : undefined;
 		if (blocked !== undefined && !options.dryRun) throw new Error(blocked);
@@ -330,6 +391,9 @@ export class LexwareApiClient {
 			let response: Response;
 			try {
 				progress.sent = true;
+				// Lexware may apply a write before its response arrives: stop serving cached data now.
+				// Clearing everything is coarse but never serves stale reference data after a write.
+				if (write) progress.writeSettled = this.responseCache?.writeSent();
 				response = await this.fetchImpl(url, {
 					method: normalized.method,
 					headers,
@@ -405,7 +469,7 @@ export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undef
 
 function normalizeRequest(input: unknown): NormalizedRequest {
 	if (!input || typeof input !== 'object' || Array.isArray(input)) {
-		throw new Error('lexware.request expects an object: { method?, path, query?, body?, contentType?, rawBody?, accept?, includeAllHeaders? }');
+		throw new Error('lexware.request expects an object: { method?, path, query?, body?, contentType?, rawBody?, accept?, includeAllHeaders?, cache? }');
 	}
 
 	const request = input as LexwareRequestInput;
@@ -414,6 +478,7 @@ function normalizeRequest(input: unknown): NormalizedRequest {
 	const contentType = request.contentType === undefined ? undefined : normalizeHeaderValue(request.contentType, 'contentType');
 	const rawBody = normalizeBoolean(request.rawBody ?? false, 'rawBody');
 	const includeAllHeaders = normalizeBoolean(request.includeAllHeaders ?? false, 'includeAllHeaders');
+	const cache = normalizeBoolean(request.cache ?? true, 'cache');
 	const url = new URL(rawPath, DEFAULT_BASE_URL);
 	if (!url.pathname.startsWith('/v1/')) {
 		throw new Error('path must resolve to /v1/ and must not escape that prefix');
@@ -476,6 +541,7 @@ function normalizeRequest(input: unknown): NormalizedRequest {
 		rawBody,
 		accept,
 		includeAllHeaders,
+		cache,
 		matched,
 	};
 }
@@ -863,6 +929,21 @@ async function parseResponse(response: Response, request: NormalizedRequest, max
 	const truncated = text.length > maxResponseChars;
 	const safeText = truncated ? truncateText(text, { maxChars: maxResponseChars }) : text;
 	return { ...withIssues(undefined), text: safeText, truncated };
+}
+
+// Only parsed JSON of a 2xx: binary metadata, text and error responses are always fetched fresh.
+function isCacheableResponse(response: LexwareResponse): boolean {
+	return response.ok && response.status >= 200 && response.status < 300 && response.text === undefined && response.data !== undefined && !isBinaryMetadata(response.data);
+}
+
+function isBinaryMetadata(data: unknown): boolean {
+	return data !== null && typeof data === 'object' && (data as { binary?: unknown }).binary === true;
+}
+
+// Rate-limit and request-id headers describe the original request; a cache hit must not repeat them.
+function withoutPerRequestHeaders(response: LexwareResponse): LexwareResponse {
+	const headers = Object.fromEntries(Object.entries(response.headers).filter(([name]) => name !== 'x-request-id' && name !== 'retry-after' && !name.startsWith('x-ratelimit-')));
+	return { ...response, headers };
 }
 
 function operationOf(request: NormalizedRequest): Pick<LexwareResponse, 'operation'> {

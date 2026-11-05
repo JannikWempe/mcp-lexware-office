@@ -44,11 +44,13 @@ async () => {
 
 The sandbox does **not** receive the Lexware API key, Node globals, filesystem access, imports, `fetch`, or arbitrary network access. `lexware.request` only accepts relative `/v1/...` paths and sends the API key from the host process.
 
-`execute` results include `requests`, an audit log with one `{ method, path, status, ok, error, write, sent, outcome, durationMs }` entry per HTTP attempt — also when the execution failed, so you can see which writes already went through. A write with `outcome: "unknown"` was sent but its result is unknown (aborted, timed out, network error, or answered with `504`) — Lexware may have applied it, so check with a `GET` before retrying. A `GET` answered with `429` is retried once automatically (after `Retry-After` if ≤ 5 s, otherwise after a 1–2 s backoff) if the 30 s execution budget allows. Cancelling the tool call (or the 30 s execution timeout) aborts in-flight Lexware requests.
+`execute` results include `requests`, an audit log with one `{ method, path, status, ok, error, write, sent, cached, outcome, durationMs }` entry per HTTP attempt — also when the execution failed, so you can see which writes already went through. A write with `outcome: "unknown"` was sent but its result is unknown (aborted, timed out, network error, or answered with `504`) — Lexware may have applied it, so check with a `GET` before retrying. A `GET` answered with `429` is retried once automatically (after `Retry-After` if ≤ 5 s, otherwise after a 1–2 s backoff) if the 30 s execution budget allows. Cancelling the tool call (or the 30 s execution timeout) aborts in-flight Lexware requests.
 
 Pass `dryRun: true` to `execute` to preview writes before they happen: reads run normally, while every `POST`/`PUT`/`PATCH`/`DELETE` returns a synthetic `{ dryRun: true, status: 0, planned }` response instead of being sent, and the result lists them in `plannedWrites`, including the SHA-256 of every file that would be uploaded. Dry runs also work on a read-only server; writes the policy would reject are flagged with `blocked`. See [docs/guide.md#dry-runs](docs/guide.md#dry-runs).
 
 Work too large for one `execute` call (2 requests/s, 30 s, at most 50 requests) can be split into batches: `state.get`/`state.set` keep JSON values such as an id list, a cursor and partial totals in server memory between calls. See [docs/guide.md#state-between-execute-calls](docs/guide.md#state-between-execute-calls).
+
+Reference data (posting categories, profile, countries, payment conditions, print layouts) is cached in server memory for an hour, so later `execute` calls get it without a request. Every write the server sends clears the cache. See [docs/guide.md#response-cache](docs/guide.md#response-cache).
 
 ### Binary-safe file uploads
 
@@ -210,6 +212,16 @@ Run one server instance per Lexware organization, each with its own API key. The
 ```
 
 See [docs/guide.md#connected-account-specinfoaccount](docs/guide.md#connected-account-specinfoaccount) for details.
+
+### Response cache
+
+Reference data `GET`s are cached in server memory (see [docs/guide.md#response-cache](docs/guide.md#response-cache)). Changes made outside this server, e.g. a new posting category in the Lexware web app, show up after at most an hour. To turn the cache off:
+
+```json
+{
+  "LEXWARE_OFFICE_CACHE": "off"
+}
+```
 
 ## Docker
 

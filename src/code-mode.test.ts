@@ -9,6 +9,7 @@ import type { CallToolResult } from '@modelcontextprotocol/server';
 import { AccountProfile, type AccountInfo } from './account.js';
 import { CodeMode } from './code-mode.js';
 import { LexwareApiClient, type LexwareClientOptions } from './lexware-client.js';
+import { ResponseCache } from './response-cache.js';
 import { SandboxState } from './sandbox-state.js';
 import { parseWriteAllow } from './write-policy.js';
 
@@ -374,6 +375,26 @@ test('up to 5 successful reads are listed without a readsSummary', async () => {
 	const payload = payloadOf(result);
 	assert.equal(payload.requests.length, 5);
 	assert.equal(payload.readsSummary, undefined);
+});
+
+test('cached reference data carries over to the next execute call without using its budget', async () => {
+	const { codeMode, fetched } = codeModeWith(() => jsonResponse(200, [{ id: 'cat-1' }]), { responseCache: new ResponseCache() });
+	await codeMode.execute(`async () => lexware.json({ path: '/v1/posting-categories' })`, { maxRequests: 1 });
+
+	const payload = payloadOf(await codeMode.execute(`async () => {
+		const response = await lexware.request({ path: '/v1/posting-categories' });
+		return { cached: response.cached, data: response.data };
+	}`, { maxRequests: 1 }));
+	assert.deepEqual(payload.result, { cached: true, data: [{ id: 'cat-1' }] });
+	assert.equal(payload.requestCount, 0);
+	assert.deepEqual(payload.requests, [{ method: 'GET', path: '/v1/posting-categories', status: 200, ok: true, write: false, sent: false, cached: true, durationMs: 0 }]);
+	assert.deepEqual(fetched, ['GET /v1/posting-categories']);
+
+	const many = payloadOf(await codeMode.execute(`async () => {
+		for (let i = 0; i < 6; i++) await lexware.request({ path: '/v1/posting-categories' });
+	}`, { maxRequests: 1 }));
+	assert.equal(many.requestCount, 0);
+	assert.deepEqual({ ...many.readsSummary, totalDurationMs: 0 }, { count: 6, byStatus: { 200: 6 }, totalDurationMs: 0, cached: 6 });
 });
 
 test('execute sandbox sees neither the API key nor Node globals', async () => {

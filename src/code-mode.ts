@@ -141,9 +141,11 @@ interface ReadsSummary {
 	count: number;
 	byStatus: Record<string, number>;
 	totalDurationMs: number;
+	// Reads answered from the response cache, included in count.
+	cached?: number;
 }
 
-// Writes, non-OK responses, and errored or unsent attempts are always listed in full, since
+// Writes, non-OK responses, and errored or unsent attempts (but not cache hits) are always listed in full, since
 // callers rely on `requests` to see which writes happened. Successful reads only add noise in
 // read-heavy fan-outs, so beyond MAX_LISTED_READS they are collapsed into `readsSummary`.
 function summarizeRequests(requests: RequestLogEntry[]): { requests: RequestLogEntry[]; readsSummary?: ReadsSummary } {
@@ -152,9 +154,10 @@ function summarizeRequests(requests: RequestLogEntry[]): { requests: RequestLogE
 	if (reads.length <= MAX_LISTED_READS) return { requests };
 	const byStatus: Record<string, number> = {};
 	for (const { status } of reads) byStatus[String(status)] = (byStatus[String(status)] ?? 0) + 1;
+	const cached = reads.filter((entry) => entry.cached === true).length;
 	return {
 		requests: requests.filter((entry) => !isSuccessfulRead(entry)),
-		readsSummary: { count: reads.length, byStatus, totalDurationMs: reads.reduce((sum, entry) => sum + entry.durationMs, 0) },
+		readsSummary: { count: reads.length, byStatus, totalDurationMs: reads.reduce((sum, entry) => sum + entry.durationMs, 0), ...(cached > 0 && { cached }) },
 	};
 }
 

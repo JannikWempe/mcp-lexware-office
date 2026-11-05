@@ -9,6 +9,8 @@ import { CodeMode, LEXWARE_REQUEST_TIMEOUT_MS } from './code-mode.js';
 import { loadConfig, type ServerConfig } from './config.js';
 import { LexwareApiClient } from './lexware-client.js';
 import { lexwareSdkDeclaration, stateDeclaration } from './lexware-sandbox-sdk.js';
+import { lexwareSpec } from './lexware-spec.js';
+import { ResponseCache } from './response-cache.js';
 import { VERSION } from './version.js';
 
 let config: ServerConfig;
@@ -26,8 +28,12 @@ const client = new LexwareApiClient({
 	writesEnabled: config.writesEnabled,
 	writeAllow: config.writeAllow,
 	requestTimeoutMs: LEXWARE_REQUEST_TIMEOUT_MS,
+	responseCache: config.cacheEnabled ? new ResponseCache() : undefined,
 });
 const codeMode = new CodeMode({ client, account: new AccountProfile(client, { label: config.accountLabel }) });
+const cachedPaths = Object.entries(lexwareSpec.paths).filter(([, methods]) => methods.get?.cacheTtlSeconds !== undefined).map(([path]) => path);
+// Only described when on, so a server started with LEXWARE_OFFICE_CACHE=off doesn't promise cache hits.
+const cacheNote = config.cacheEnabled ? `\n\nReference data (GET ${cachedPaths.join(', ')}; cacheTtlSeconds in spec.paths) is cached across execute calls. A cache hit returns response.cached: true, appears in requests with cached: true and sent: false, and costs no maxRequests and no rate-limit wait. Every write sent clears the cache; pass cache: false to lexware.request to force a fresh read.` : '';
 
 /**
  * One McpServer per connection; serveStdio picks the protocol era (2025-era initialize or 2026-07-28 server/discover).
@@ -113,9 +119,9 @@ ${stateDeclaration}
 
 lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. To update a bookkeeping voucher, use lexware.updateVoucher instead of a hand-built PUT: a PUT without the current files array deletes them permanently. Before uploading a document, check for an existing voucher with lexware.findVouchers; unlike the exact voucherlist voucherNumber filter, it also matches differently formatted numbers. A GET answered with 429 is retried once automatically after Retry-After (if <= 5s) or, without that header, a 1-2s backoff; writes are never retried.
 
-The tool result includes requests: one { method, path, status?, ok?, error?, write, sent, outcome?, durationMs } entry per HTTP attempt, also when execution failed — check it to see which writes already succeeded before retrying. Every write and every non-OK, errored, or unsent attempt is always listed; when there are more than 5 successful reads, those reads are replaced by readsSummary: { count, byStatus, totalDurationMs }. A write with outcome: 'unknown' (sent=true, with error or status 504) may have been applied by Lexware; reconcile via a GET before retrying it.
+The tool result includes requests: one { method, path, status?, ok?, error?, write, sent, cached?, outcome?, durationMs } entry per HTTP attempt, also when execution failed — check it to see which writes already succeeded before retrying. Every write and every non-OK, errored, or unsent attempt is always listed; when there are more than 5 successful reads (cache hits included), those reads are replaced by readsSummary: { count, byStatus, totalDurationMs, cached? }. A write with outcome: 'unknown' (sent=true, with error or status 504) may have been applied by Lexware; reconcile via a GET before retrying it.
 
-maxRequests bounds the HTTP attempts actually sent to Lexware, including automatic 429 retries; requestCount counts every sent attempt, including reads collapsed into readsSummary. Requests rejected before sending (invalid input, blocked writes) do not count. An attempt beyond the budget is not sent and fails with "Execution exceeded maxRequests=N".
+maxRequests bounds the HTTP attempts actually sent to Lexware, including automatic 429 retries; requestCount counts every sent attempt, including reads collapsed into readsSummary (but not its cached ones). Requests rejected before sending (invalid input, blocked writes) do not count. An attempt beyond the budget is not sent and fails with "Execution exceeded maxRequests=N".${cacheNote}
 
 dryRun: true previews writes without sending them. Reads run normally, so the script can still make data-dependent decisions. Each POST, PUT, PATCH, or DELETE is not sent and returns a synthetic { ok: true, status: 0, dryRun: true, planned } response without data (lexware.json returns undefined). This also happens when writes are disabled or not allowlisted; planned.blocked then says why a real run would reject it. contentPath files are still read and hashed, so planned.multipart shows the exact bytes and sha256. The tool result adds dryRun: true and plannedWrites: every planned write in order, with method, path, query, and body (large bodies are shrunk). A script that needs a write's response, e.g. a new id, should branch with if (response.dryRun) …. Planned writes don't count against maxRequests; a dry run plans at most 100.
 

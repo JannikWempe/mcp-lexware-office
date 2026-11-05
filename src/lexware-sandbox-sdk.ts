@@ -633,6 +633,7 @@ type LexwareRequest = {
   rawBody?: boolean;
   accept?: string;
   includeAllHeaders?: boolean; // return every response header instead of the default subset
+  cache?: boolean; // false: skip the response cache for this GET (operations with cacheTtlSeconds, e.g. reference data)
 };
 // At most one of body, bodyBase64, or multipart per request.
 
@@ -673,6 +674,7 @@ type LexwareResponse<T = unknown> = {
   sent?: { bytes: number; sha256?: string; parts?: Array<{ name: string; filename?: string; bytes: number; sha256: string }> }; // echo of uploaded binary payloads for integrity checks
   dryRun?: true; // execute ran with dryRun: this write was NOT sent (ok: true, status: 0, no data; lexware.json returns undefined)
   planned?: PlannedWrite; // dry runs: what would have been sent
+  cached?: true; // served from the server's response cache: not sent, no maxRequests used
 };
 
 type PlannedWrite = {
