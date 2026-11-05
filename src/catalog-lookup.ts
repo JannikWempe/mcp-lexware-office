@@ -43,35 +43,37 @@ export function createCatalogLookup(catalog: LexwareApiCatalog) {
 	// Field weights: curated tags and keywords say most about intent, free text least.
 	const WEIGHT = { tag: 3, path: 2, id: 2, summary: 2, param: 1, text: 1 };
 	// Too common in the catalog to tell entries apart.
-	const STOPWORDS = new Set(['a', 'an', 'and', 'or', 'the', 'of', 'to', 'for', 'in', 'on', 'by', 'with', 'from', 'is', 'are', 'be', 'v1', 'id', 'der', 'die', 'das', 'und', 'ein', 'eine', 'mit', 'von', 'für']);
+	const STOPWORDS = new Set(['a', 'an', 'and', 'or', 'the', 'of', 'to', 'for', 'in', 'on', 'by', 'with', 'from', 'is', 'are', 'be', 'v1', 'id', 'der', 'die', 'das', 'und', 'ein', 'eine', 'mit', 'von', 'fuer']);
 	// German query words mapped to the English words the catalog uses: mostly verbs and nouns the
 	// catalog has no German tag for (beleg, umsatz, mahnungen, angebote, … are tagged already).
+	// Keys are spelled with umlauts folded, like the tokens they are looked up by.
 	const SYNONYMS: Record<string, string[]> = {
-		hochladen: ['upload'], herunterladen: ['download'], anlegen: ['create'], erstellen: ['create'], ändern: ['update'], aktualisieren: ['update'],
-		bearbeiten: ['update'], löschen: ['delete'], suchen: ['find', 'list'], finden: ['find', 'list'], auflisten: ['list'], abrufen: ['get'],
+		hochladen: ['upload'], herunterladen: ['download'], anlegen: ['create'], erstellen: ['create'], aendern: ['update'], aktualisieren: ['update'],
+		bearbeiten: ['update'], loeschen: ['delete'], suchen: ['find', 'list'], finden: ['find', 'list'], auflisten: ['list'], abrufen: ['get'],
 		kunde: ['contact', 'customer'], kunden: ['contact', 'customer'], kontakt: ['contact'], kontakte: ['contact'], lieferant: ['contact', 'vendor'],
 		lieferanten: ['contact', 'vendor'], rechnung: ['invoice'], rechnungen: ['invoice'], artikel: ['article'], ausgaben: ['expense'], kosten: ['cost', 'expense'],
 		einnahmen: ['revenue', 'income'], gewinn: ['profit'], steuer: ['tax'], zahlung: ['payment'], zahlungen: ['payment'], datei: ['file'],
-		dateien: ['file'], buchungskategorie: ['posting', 'category'], kategorie: ['category'], offen: ['open'], offene: ['open'], bezahlt: ['paid'],
-		storniert: ['voided'], entwurf: ['draft'],
+		dateien: ['file'], buchungskategorie: ['posting', 'category'], buchungskategorien: ['posting', 'category'], kategorie: ['category'],
+		offen: ['open'], offene: ['open'], bezahlt: ['paid'], storniert: ['voided'], entwurf: ['draft'],
 	};
 
 	// Folds the English plural, so 'webhook' matches 'webhooks' exactly.
 	const stem = (token: string): string => (token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token);
+	// Lowercases and folds umlauts the way the catalog spells German tags: 'Bestätigung' → bestaetigung.
+	const UMLAUTS: Record<string, string> = { ä: 'ae', ö: 'oe', ü: 'ue', ß: 'ss' };
+	const fold = (value: string): string => value.toLowerCase().replace(/[äöüß]/g, (letter) => UMLAUTS[letter]);
 	// Lowercased words of identifiers, paths and prose: 'listVoucherSummaries' → list, voucher, summary.
 	const tokenize = (value: unknown): string[] => {
 		if (typeof value !== 'string') return [];
-		return value
-			.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-			.toLowerCase()
-			.split(/[^a-z0-9äöüß]+/)
+		return fold(value.replace(/([a-z0-9])([A-Z])/g, '$1 $2'))
+			.split(/[^a-z0-9]+/)
 			.filter((token) => token.length > 1 && !STOPWORDS.has(token))
 			.map(stem);
 	};
 	// Compound forms are kept next to their parts, so 'voucherlist' and 'order-confirmations' match whole.
 	const compoundTokens = (value: unknown): string[] => {
 		if (typeof value !== 'string') return [];
-		const whole = value.toLowerCase().replace(/[^a-z0-9äöüß]+/g, '');
+		const whole = fold(value).replace(/[^a-z0-9]+/g, '');
 		return whole.length > 1 ? [stem(whole), ...tokenize(value)] : tokenize(value);
 	};
 	const field = (weight: number, values: unknown[], tokenizer = tokenize): Field => ({ weight, tokens: values.flatMap((value) => tokenizer(value)) });

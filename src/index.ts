@@ -81,7 +81,7 @@ Useful starting points:
 - spec.info.writesEnabled: whether this server currently allows POST/PUT/PATCH/DELETE — check before planning writes
 - spec.info.writePolicy: { enabled, allow } — allow is 'all' or the only permitted writes, e.g. ['POST /v1/files', 'PUT /v1/vouchers/{id}']
 - spec.paths: path -> method -> operation catalog with params, requestBody, responses, examples, capabilities, docsUrl
-- spec.workflows: curated recipes for reporting, sales documents, files/uploads, webhooks, and API quirks
+- spec.workflows: curated recipes for reporting, sales documents, files/uploads, and API quirks
 - spec.info.voucherStatusSemantics and financeReportingSemantics: finance/status guidance for revenue/Umsatz/profit questions
 
 Sandbox: no network, filesystem, process, fetch, imports, or API key. Return JSON-serializable data; console logs are captured.

@@ -32,8 +32,8 @@ export interface CodeExecutorOptions {
 	filename?: string;
 	// Installed as globals; guest calls return promises settled by the host.
 	hostFunctions?: Record<string, SandboxHostFunction>;
-	// Guest source evaluated inside the wrapper scope before the user function; its top-level
-	// declarations are visible to user code but not added to globalThis.
+	// Guest script evaluated before the user function (strict, no top-level await); its top-level
+	// const/let/class declarations are visible to user code but not added to globalThis.
 	prelude?: string;
 	// External cancellation (e.g. the MCP request signal). Aborting ends execution with a cancelled error.
 	signal?: AbortSignal;
@@ -61,6 +61,7 @@ const WASM_MAX_PAGES = 32 * 1024;
 const MAX_STACK_SIZE_BYTES = 256 * 1024;
 const DEFAULT_MAX_LOG_ENTRIES = 25;
 const DEFAULT_MAX_LOG_CHARS = 8_000;
+const PRELUDE_FILENAME = 'prelude.js';
 const CANCELLED_MESSAGE = 'Execution cancelled by client';
 // A host result copied into a full WASM heap fails as an out-of-bounds write rather than a QuickJS out of memory.
 const HOST_OUT_OF_MEMORY_MESSAGE =
@@ -149,7 +150,7 @@ export class QuickJsExecutor implements CodeExecutor {
 		// VM handles after this is set to true.
 		let vmDisposed = false;
 
-		// The native-side promise that mirrors the top-level QuickJS async IIFE.
+		// The native-side promise that mirrors the user function's QuickJS promise.
 		// We track it here so the finally block can await its settlement after
 		// forcing all pending deferreds to settle, which allows QuickJS to drain
 		// its own continuation queue before we dispose.
@@ -250,31 +251,34 @@ export class QuickJsExecutor implements CodeExecutor {
 				vm.setProp(vm.global, '__capabilitiesJson', capabilitiesHandle);
 			});
 
-			const wrappedCode = `
-"use strict";
-(async () => {
-  const __capabilities = JSON.parse(globalThis.__capabilitiesJson);
-  const { ${capabilityNames.join(', ')} } = __capabilities;
-${options.prelude ?? ''}
-  // No parentheses around the code and a line of its own for the closing semicolon, so a trailing
-  // semicolon or comment (async () => 1; // main) still parses.
-  const __userFunction =
-${code}
-  ;
-  if (typeof __userFunction !== "function") {
-    throw new Error("Code must evaluate to a function, for example: async () => ({ ok: true })");
-  }
-  return await __userFunction();
-})()
-`;
-
-			const evaluation = vm.evalCode(wrappedCode, filename, { type: 'global' });
+			// Capabilities and prelude run as their own global script, so the user function below compiles
+			// in a file of its own and error positions are relative to the submitted code. Their top-level
+			// const/let declarations become global lexical bindings: visible to the user script, not on globalThis.
+			const preludeCode = `const { ${capabilityNames.join(', ')} } = JSON.parse(globalThis.__capabilitiesJson);\n${options.prelude ?? ''}`;
+			const preludeEvaluation = vm.evalCode(preludeCode, PRELUDE_FILENAME, { type: 'global', strict: true });
 			if (engineFailure !== undefined) return engineFailureResult();
-			if (evaluation.error) {
-				const error = stringifyQuickJsError(dumpAndDispose(vm, evaluation.error));
-				return { error, logs };
-			}
+			if (preludeEvaluation.error) return { error: stringifyQuickJsError(dumpAndDispose(vm, preludeEvaluation.error)), logs };
+			preludeEvaluation.value.dispose();
 
+			// The script's completion value is the function. `0, ` keeps the code an expression (also
+			// `async function () {}`) without adding a line, so only columns on line 1 shift (by 3). A trailing
+			// semicolon or comment (async () => 1; // main) still parses; a statement after the function
+			// becomes the completion value and is rejected below.
+			const userEvaluation = vm.evalCode(`0, ${code}`, filename, { type: 'global', strict: true });
+			if (engineFailure !== undefined) return engineFailureResult();
+			if (userEvaluation.error) return { error: stringifyQuickJsError(dumpAndDispose(vm, userEvaluation.error)), logs };
+			const userFunction = userEvaluation.value;
+			if (vm.typeof(userFunction) !== 'function') {
+				userFunction.dispose();
+				return { error: 'Error: Code must evaluate to a function, for example: async () => ({ ok: true })', logs };
+			}
+			const evaluation = vm.callFunction(userFunction, vm.undefined);
+			// Disposed only on success: the call may have broken the runtime (see `markEngineFailed`).
+			if (engineFailure !== undefined) return engineFailureResult();
+			userFunction.dispose();
+			if (evaluation.error) return { error: stringifyQuickJsError(dumpAndDispose(vm, evaluation.error)), logs };
+
+			// Promise.resolve also settles a plain (non-async) function's return value.
 			const promiseHandle = evaluation.value;
 			const nativePromise = vm.resolvePromise(promiseHandle);
 			sandboxNativePromise = nativePromise;
