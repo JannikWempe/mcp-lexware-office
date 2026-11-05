@@ -199,9 +199,9 @@ async () => {
 
 ### Tool results and metadata
 
-Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount`, `requests` and possibly `readsSummary` for `execute`; `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent`. No `outputSchema` is declared because `result` is arbitrary.
+Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount`, `requests` and possibly `readsSummary` for `execute`, and `dryRun`/`plannedWrites` for a [dry run](#dry-runs); `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent`. No `outputSchema` is declared because `result` is arbitrary.
 
-Results whose JSON exceeds 24,000 characters are shrunk structurally, so the text block stays valid JSON: arrays keep their leading items followed by a `"[truncated: N more items]"` element, the largest object values are shrunk first (down to a `"[truncated: N chars]"` marker), objects with too many keys keep their leading keys plus a `"[truncated]"` entry naming the dropped ones, and long strings are clipped. `ok`, `requestCount`, `requests` and `readsSummary` are kept whole unless they alone come close to the limit. A top-level `truncated: { originalChars, note }` field then signals that the result is incomplete. Summarize or filter inside `execute` to avoid it.
+Results whose JSON exceeds 24,000 characters are shrunk structurally, so the text block stays valid JSON: arrays keep their leading items followed by a `"[truncated: N more items]"` element, the largest object values are shrunk first (down to a `"[truncated: N chars]"` marker), objects with too many keys keep their leading keys plus a `"[truncated]"` entry naming the dropped ones, and long strings are clipped. `ok`, `requestCount`, `requests`, `readsSummary` and `dryRun` are kept whole unless they alone come close to the limit. A top-level `truncated: { originalChars, note }` field then signals that the result is incomplete. Summarize or filter inside `execute` to avoid it.
 
 `lexware.request` responses include only the headers useful for follow-up logic: `content-type`, `content-length`, `content-disposition`, `location`, `retry-after`, `x-request-id` and `x-ratelimit-*`. Pass `includeAllHeaders: true` to get every upstream header.
 
@@ -212,6 +212,31 @@ Results whose JSON exceeds 24,000 characters are shrunk structurally, so the tex
 ```
 
 Failed attempts (blocked writes, network errors, timeouts, cancellations) carry `error` instead of `status`/`ok`; a retried `429` shows up as two entries. `sent` tells whether the request reached `fetch`: `false` means Lexware never saw it (blocked, or cancelled while queued). A write with `error` and `sent: true`, or answered with `504`, also carries `"outcome": "unknown"` — it may have been applied by Lexware (e.g. aborted after sending, or the gateway timed out while Lexware kept processing), so reconcile with a `GET` before retrying it. Entries never contain headers, query values, bodies, or the API key. Use it after a failed execution to see which writes already succeeded before retrying. `requestCount` is the number of HTTP attempts actually sent to Lexware — the `requests` entries with `sent: true` plus the reads counted in `readsSummary`, so a retried `429` counts twice. `maxRequests` (default 10, max 50) bounds exactly that: requests rejected before sending (invalid input, blocked writes, cancelled while queued) don't count, and an attempt beyond the budget is not sent and fails with `Execution exceeded maxRequests=N` (it appears in `requests` with that `error` and `sent: false`).
+
+### Dry runs
+
+Call `execute` with `dryRun: true` to preview what a script would write before it touches real bookkeeping data:
+
+- Reads (`GET`) run normally, so the script can still make data-dependent decisions. They count against `maxRequests` as usual.
+- Writes (`POST`, `PUT`, `PATCH`, `DELETE`) are not sent and don't count against `maxRequests`. `lexware.request` returns a synthetic response instead: `{ ok: true, status: 0, statusText: 'DRY RUN – not sent', dryRun: true, request, planned }`, without `data`. `lexware.json` returns `undefined` for it.
+- `planned` is what would have been sent: `{ method, path, query, operationId?, contentType?, body?, rawBody?, bytes?, sha256?, multipart?, blocked? }`. For `contentPath` parts the host still reads and hashes the file, with the usual `LEXWARE_OFFICE_UPLOAD_DIRS` checks, so `planned.multipart` lists the exact `bytes` and `sha256` per file part. `bodyBase64` bodies show `bytes` and `sha256`.
+- The tool result adds `dryRun: true` and `plannedWrites`, which lists every planned write in order. Bodies larger than 4,000 characters are shrunk structurally there; the script itself sees them whole in `response.planned`. If the whole result is too large, `plannedWrites` is shrunk like `result`, while `requests` still lists every planned write.
+- In `requests`, planned writes appear with `status: 0`, `sent: false` and `dryRun: true`.
+- A dry run plans at most 100 writes; the next write fails with `Dry run exceeded 100 planned writes`.
+
+A script that needs a write's response, e.g. the `id` of a created contact or the `voucherId` of an upload, gets no data in a dry run. Branch on it:
+
+```js
+async () => {
+  const created = await lexware.request({ method: 'POST', path: '/v1/contacts', body: contact });
+  if (created.dryRun) return { planned: created.planned };
+  return lexware.json({ path: `/v1/contacts/${created.data.id}` });
+}
+```
+
+The SDK helpers handle dry runs themselves: `lexware.updateVoucher` reads the voucher, plans the `PUT` and returns `{ before, dryRun: true, planned, changed }` without the verification read; `lexware.uploadVoucherFile` returns `{ dryRun: true, planned, extraction: 'skipped' }` without polling, and `lexware.attachFileToVoucher` returns `{ dryRun: true, planned }`.
+
+Dry runs also work while writes are disabled or not allowlisted: nothing is sent, so they are a safe way to preview with a read-only server. A write the [permissions](#permissions) would reject is still planned, and its `blocked` field says why a real run would reject it.
 
 Cancellation: when the client cancels a `search`/`execute` call, the execution ends with `Execution cancelled by client` and in-flight Lexware requests are aborted (they appear in `requests` with a cancelled `error`). The same happens when `execute` hits its 30 s timeout (`Execution timed out after 30000ms`). A single Lexware request times out after 25 s.
 
@@ -308,7 +333,7 @@ Key constraints:
 - Unset or empty → `contentPath` is disabled; `contentBase64` and `bodyBase64` still work.
 - Both the directories and the file are resolved with `realpath`, so symlinks cannot escape the allowlist. Subdirectories are allowed.
 - Paths outside the allowlist get one uniform error, whether or not the file exists.
-- The write gate runs first: with writes disabled, uploads are blocked before any file is touched.
+- The write gate runs first: with writes disabled, uploads are blocked before any file is touched. A [dry run](#dry-runs) is the exception: it reads and hashes the file to plan the upload, with the same directory checks, but never sends it.
 
 ### Legacy `rawBody=true`
 
@@ -340,7 +365,7 @@ Priority order (highest wins):
 2. `LEXWARE_OFFICE_ALLOW_WRITES=true` → writes allowed
 3. Default (neither set) → writes blocked
 
-When writes are blocked, `POST`, `PUT`, `PATCH`, and `DELETE` requests are rejected with a clear error message.
+When writes are blocked, `POST`, `PUT`, `PATCH`, and `DELETE` requests are rejected with a clear error message. An `execute` call with `dryRun: true` never sends writes, so it runs regardless of the write mode and flags blocked writes in `plannedWrites` instead (see [Dry runs](#dry-runs)).
 
 Important behavior:
 

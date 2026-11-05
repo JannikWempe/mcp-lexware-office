@@ -199,6 +199,7 @@ test('lexware.updateVoucher PUTs the merged voucher with files and version, with
 	assert.deepEqual(inputs.map((input) => [input.method ?? 'GET', input.path]), [['GET', '/v1/vouchers/v-1'], ['PUT', '/v1/vouchers/v-1'], ['GET', '/v1/vouchers/v-1']]);
 	assert.deepEqual(inputs[1].body, { type: 'purchaseinvoice', voucherNumber: 'RE-2', voucherStatus: 'open', contactId: 'c-1', version: 3, files: ['f-1', 'f-2'] });
 	assert.deepEqual(result.before, storedVoucher);
+	assert.ok('after' in result);
 	assert.equal((result.after as Record<string, unknown>).version, 4);
 	assert.deepEqual(result.changed, ['voucherStatus', 'voucherNumber']);
 });
@@ -404,6 +405,49 @@ test('lexware.attachFileToVoucher posts the file part to the voucher', async () 
 
 	assert.deepEqual(inputs, [{ method: 'POST', path: '/v1/vouchers/v-1/files', multipart: [{ name: 'file', contentType: 'application/pdf', contentPath: '/data/b.pdf', filename: 'invoice.pdf' }] }]);
 	assert.deepEqual(result, { fileId: 'file-2', sent: uploadAccepted.sent });
+});
+
+// What the host returns for a write in an execute dry run: not sent, no data.
+const dryRunResponse = (input: Record<string, any>) => okResponse(undefined, {
+	status: 0,
+	statusText: 'DRY RUN – not sent',
+	dryRun: true,
+	request: { method: input.method, path: input.path, query: {} },
+	planned: { method: input.method, path: input.path, query: {} },
+});
+
+test('lexware.updateVoucher in a dry run returns the planned PUT and the changed fields without re-reading', async () => {
+	const { sdk, inputs } = sdkWith((input) => (input.method === 'PUT' ? dryRunResponse(input) : okResponse(structuredClone(storedVoucher))));
+
+	const result = await sdk.updateVoucher('v-1', { voucherNumber: 'RE-2', useCollectiveContact: true, type: storedVoucher.type });
+
+	assert.deepEqual(inputs.map((input) => [input.method ?? 'GET', input.path]), [['GET', '/v1/vouchers/v-1'], ['PUT', '/v1/vouchers/v-1']]);
+	assert.deepEqual(result, {
+		before: storedVoucher,
+		dryRun: true,
+		planned: { method: 'PUT', path: '/v1/vouchers/v-1', query: {} },
+		changed: ['voucherNumber', 'useCollectiveContact', 'contactId'],
+	});
+});
+
+test('lexware.updateVoucher in a dry run reports files added to a voucher without files', async () => {
+	const { files: _, ...withoutFiles } = storedVoucher;
+	const host = (patch: Record<string, unknown>) => sdkWith((input) => (input.method === 'PUT' ? dryRunResponse(input) : okResponse(structuredClone(withoutFiles)))).sdk.updateVoucher('v-1', patch);
+
+	assert.deepEqual((await host({ files: ['f-9'] })).changed, ['files']);
+	assert.deepEqual((await host({ voucherNumber: 'RE-1' })).changed, []);
+});
+
+test('lexware upload helpers in a dry run return the plan without polling', async () => {
+	const { sdk, inputs, sleeps } = sdkWith(dryRunResponse);
+
+	const uploaded = await sdk.uploadVoucherFile({ contentPath: '/data/receipt.pdf' });
+	const attached = await sdk.attachFileToVoucher('v-1', { contentPath: '/data/receipt.pdf' });
+
+	assert.deepEqual(uploaded, { dryRun: true, planned: { method: 'POST', path: '/v1/files', query: {} }, extraction: 'skipped' });
+	assert.deepEqual(attached, { dryRun: true, planned: { method: 'POST', path: '/v1/vouchers/v-1/files', query: {} } });
+	assert.deepEqual(inputs.map((input) => input.path), ['/v1/files', '/v1/vouchers/v-1/files']);
+	assert.deepEqual(sleeps, []);
 });
 
 test('sandbox lexware.sleep waits, rejects delays above the cap, and rejects on abort', async () => {
@@ -663,7 +707,7 @@ const declaredFields = (typeName: string) => {
 const requestFields: Record<keyof LexwareRequestInput, true> = { method: true, path: true, query: true, body: true, bodyBase64: true, multipart: true, contentType: true, rawBody: true, accept: true, includeAllHeaders: true };
 const multipartFields: Record<keyof MultipartPart, true> = { name: true, value: true, filename: true, contentType: true, contentBase64: true, contentPath: true };
 const issueFields: Record<keyof LexwareIssue, true> = { field: true, code: true, message: true, hint: true };
-const responseFields: Record<keyof LexwareResponse, true> = { ok: true, status: true, statusText: true, operation: true, request: true, contentType: true, headers: true, errorCategory: true, retryAfterSeconds: true, issues: true, data: true, text: true, truncated: true, sent: true };
+const responseFields: Record<keyof LexwareResponse, true> = { ok: true, status: true, statusText: true, operation: true, request: true, contentType: true, headers: true, errorCategory: true, retryAfterSeconds: true, issues: true, data: true, text: true, truncated: true, sent: true, dryRun: true, planned: true };
 
 test('declared request, multipart, and response types list the client fields', () => {
 	assert.deepEqual(declaredFields('LexwareRequest'), Object.keys(requestFields).sort());

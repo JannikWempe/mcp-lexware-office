@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 
@@ -464,4 +468,216 @@ test('execute still succeeds when the profile lookup fails', async () => {
 	assert.equal(result.isError, undefined);
 	assert.deepEqual(payloadOf(result).result, { account: { error: 'profile unavailable: auth (HTTP 401)' }, data: { ok: 1 } });
 	assert.deepEqual(fetched, ['GET /v1/profile', 'GET /v1/countries']);
+});
+
+test('a dry run sends reads, plans writes without fetching them, and marks the synthetic responses', async () => {
+	const { codeMode, fetched } = codeModeWith(() => jsonResponse(200, { id: 'c1', version: 3 }), { writesEnabled: true });
+
+	const result = await codeMode.execute(`async () => {
+		const contact = await lexware.json({ path: '/v1/contacts/c1' });
+		const response = await lexware.request({ method: 'PUT', path: '/v1/contacts/c1', query: { note: 'x' }, body: { version: contact.version, roles: { customer: {} } } });
+		const viaJson = await lexware.json({ method: 'POST', path: '/v1/contacts', body: { version: 0 } });
+		return { response, viaJson: viaJson === undefined };
+	}`, { maxRequests: 1, dryRun: true });
+
+	assert.equal(result.isError, undefined);
+	const payload = payloadOf(result);
+	assert.deepEqual(fetched, ['GET /v1/contacts/c1']);
+	const planned = { method: 'PUT', path: '/v1/contacts/c1', query: { note: ['x'] }, operationId: 'updateContact', contentType: 'application/json', body: { version: 3, roles: { customer: {} } } };
+	assert.deepEqual(payload.result.response, {
+		ok: true,
+		status: 0,
+		statusText: 'DRY RUN – not sent',
+		dryRun: true,
+		operation: { operationId: 'updateContact', method: 'PUT', pathTemplate: '/v1/contacts/{id}', summary: payload.result.response.operation.summary },
+		request: { method: 'PUT', path: '/v1/contacts/c1', query: { note: ['x'] } },
+		contentType: '',
+		headers: {},
+		planned,
+	});
+	assert.equal(payload.result.viaJson, true);
+	assert.equal(payload.dryRun, true);
+	assert.deepEqual(payload.plannedWrites, [planned, { method: 'POST', path: '/v1/contacts', query: {}, operationId: 'createContact', contentType: 'application/json', body: { version: 0 } }]);
+	// Only the read was sent, so a budget of 1 suffices.
+	assert.equal(payload.requestCount, 1);
+	assert.deepEqual(payload.requests.map(({ method, write, sent, status, dryRun }: Record<string, unknown>) => ({ method, write, sent, status, dryRun })), [
+		{ method: 'GET', write: false, sent: true, status: 200, dryRun: undefined },
+		{ method: 'PUT', write: true, sent: false, status: 0, dryRun: true },
+		{ method: 'POST', write: true, sent: false, status: 0, dryRun: true },
+	]);
+});
+
+test('a dry run plans writes the policy would block and flags why', async () => {
+	const script = `async () => {
+		const response = await lexware.request({ method: 'POST', path: '/v1/invoices', query: { finalize: true }, body: {} });
+		return { ok: response.ok, blocked: response.planned.blocked };
+	}`;
+
+	const disabled = codeModeWith();
+	const disabledPayload = payloadOf(await disabled.codeMode.execute(script, { maxRequests: 1, dryRun: true }));
+	assert.equal(disabledPayload.result.ok, true);
+	assert.match(disabledPayload.result.blocked, /writes are disabled by default/);
+	assert.match(disabledPayload.plannedWrites[0].blocked, /writes are disabled by default/);
+
+	const allowlisted = codeModeWith(undefined, { writesEnabled: true, writeAllow: parseWriteAllow('POST /v1/invoices') });
+	assert.match(payloadOf(await allowlisted.codeMode.execute(script, { maxRequests: 1, dryRun: true })).result.blocked, /finalize=true is blocked/);
+
+	assert.deepEqual([...disabled.fetched, ...allowlisted.fetched], []);
+	assert.equal(disabledPayload.requestCount, 0);
+});
+
+test('a dry run hashes contentPath uploads and still enforces the upload dirs', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'lexware-dry-run-'));
+	try {
+		const bytes = Buffer.from('%PDF-dry-run');
+		const receipt = join(dir, 'receipt.pdf');
+		await writeFile(receipt, bytes);
+		const upload = (contentPath: string) => `lexware.request({ method: 'POST', path: '/v1/files', multipart: [{ name: 'file', contentType: 'application/pdf', contentPath: ${JSON.stringify(contentPath)} }, { name: 'type', value: 'voucher' }] })`;
+		const { codeMode, fetched } = codeModeWith(undefined, { uploadDirs: [dir] });
+
+		const payload = payloadOf(await codeMode.execute(`async () => {
+			const response = await ${upload(receipt)};
+			const outside = await ${upload('/etc/hosts')}.catch((error) => error.message);
+			return { dryRun: response.dryRun, outside };
+		}`, { maxRequests: 1, dryRun: true }));
+
+		assert.equal(payload.result.dryRun, true);
+		assert.match(payload.result.outside, /outside the allowed upload directories/);
+		assert.deepEqual(payload.plannedWrites.map(({ contentType, multipart }: Record<string, unknown>) => ({ contentType, multipart })), [{
+			contentType: 'multipart/form-data',
+			multipart: [
+				{ name: 'file', filename: 'receipt.pdf', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), contentType: 'application/pdf' },
+				{ name: 'type', value: 'voucher' },
+			],
+		}]);
+		assert.deepEqual(fetched, []);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('a dry run shrinks large planned bodies in plannedWrites but passes them whole to the script', async () => {
+	const { codeMode } = codeModeWith(undefined, { writesEnabled: true });
+
+	const payload = payloadOf(await codeMode.execute(`async () => {
+		const items = Array.from({ length: 500 }, (_, index) => ({ name: 'Position ' + index, amount: index }));
+		const response = await lexware.request({ method: 'POST', path: '/v1/vouchers', body: { voucherItems: items } });
+		return response.planned.body.voucherItems.length;
+	}`, { maxRequests: 1, dryRun: true }));
+
+	assert.equal(payload.result, 500);
+	const body = payload.plannedWrites[0].body;
+	assert.ok(JSON.stringify(body, null, 2).length <= 4_000);
+	assert.ok(body.truncated, 'expected a truncation hint');
+});
+
+test('lexware.uploadVoucherFile in a dry run plans the upload without fetching or waiting', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'lexware-dry-run-'));
+	try {
+		const bytes = Buffer.from('%PDF-helper');
+		const receipt = join(dir, 'receipt.pdf');
+		await writeFile(receipt, bytes);
+		const { codeMode, fetched } = codeModeWith(undefined, { uploadDirs: [dir] });
+
+		const startedAt = Date.now();
+		const payload = payloadOf(await codeMode.execute(`async () => lexware.uploadVoucherFile({ contentPath: ${JSON.stringify(receipt)} })`, { maxRequests: 1, dryRun: true }));
+
+		assert.ok(Date.now() - startedAt < 1_500, 'a dry-run upload must not wait for text recognition');
+		assert.equal(payload.result.dryRun, true);
+		assert.equal(payload.result.extraction, 'skipped');
+		assert.equal(payload.result.planned.multipart[0].sha256, createHash('sha256').update(bytes).digest('hex'));
+		assert.deepEqual(payload.plannedWrites, [payload.result.planned]);
+		assert.deepEqual(fetched, []);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('a dry run shows how bodies would be encoded', async () => {
+	const { codeMode } = codeModeWith(undefined, { writesEnabled: true });
+	const bytes = Buffer.from('<xml/>');
+
+	const payload = payloadOf(await codeMode.execute(`async () => {
+		await lexware.request({ method: 'POST', path: '/v1/contacts', body: 'true' });
+		await lexware.request({ method: 'POST', path: '/v1/contacts', body: 'true', rawBody: true });
+		await lexware.request({ method: 'POST', path: '/v1/contacts', bodyBase64: '${bytes.toString('base64')}', contentType: 'application/xml' });
+	}`, { maxRequests: 1, dryRun: true }));
+
+	assert.deepEqual(payload.plannedWrites.map(({ contentType, body, rawBody, bytes, sha256 }: Record<string, unknown>) => ({ contentType, body, rawBody, bytes, sha256 })), [
+		{ contentType: 'application/json', body: 'true', rawBody: undefined, bytes: undefined, sha256: undefined },
+		{ contentType: 'application/octet-stream', body: 'true', rawBody: true, bytes: undefined, sha256: undefined },
+		{ contentType: 'application/xml', body: undefined, rawBody: undefined, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
+	]);
+});
+
+test('a dry run lists concurrent writes in request order, even when an earlier one reads a file', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'lexware-dry-run-'));
+	try {
+		const receipt = join(dir, 'receipt.pdf');
+		await writeFile(receipt, '%PDF');
+		const { codeMode } = codeModeWith(undefined, { writesEnabled: true, uploadDirs: [dir] });
+
+		const payload = payloadOf(await codeMode.execute(`async () => {
+			await Promise.all([
+				lexware.request({ method: 'POST', path: '/v1/files', multipart: [{ name: 'file', contentPath: ${JSON.stringify(receipt)} }] }),
+				lexware.request({ method: 'POST', path: '/v1/contacts', body: {} }),
+			]);
+		}`, { maxRequests: 1, dryRun: true }));
+
+		assert.deepEqual(payload.plannedWrites.map(({ path }: Record<string, unknown>) => path), ['/v1/files', '/v1/contacts']);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('a dry run caps the number of planned writes', async () => {
+	const { codeMode } = codeModeWith(undefined, { writesEnabled: true });
+
+	const result = await codeMode.execute(`async () => {
+		for (let index = 0; index < 100; index += 1) await lexware.request({ method: 'POST', path: '/v1/contacts', body: { index } });
+		await lexware.request({ method: 'POST', path: '/v1/files', multipart: [{ name: 'file', contentPath: '/tmp/receipt.pdf' }] });
+	}`, { maxRequests: 1, dryRun: true });
+
+	assert.equal(result.isError, true);
+	const payload = payloadOf(result);
+	assert.match(payload.error, /Dry run exceeded 100 planned writes/);
+	// The 101 entries exceed the result limit together with the plans; `requests` stays whole.
+	assert.ok(payload.truncated, 'expected plannedWrites to be shrunk');
+	assert.equal(payload.requests.filter((entry: Record<string, unknown>) => entry.dryRun).length, 100);
+	assert.deepEqual(payload.requests.at(-1), { ...payload.requests.at(-1), sent: false, error: 'Dry run exceeded 100 planned writes' });
+});
+
+test('a dry-run write cancelled while it is planned rejects its plan', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'lexware-dry-run-'));
+	try {
+		const receipt = join(dir, 'receipt.pdf');
+		await writeFile(receipt, '%PDF');
+		const client = new LexwareApiClient({ apiKey: 'test-key', uploadDirs: [dir], fetchImpl: async () => assert.fail('dry runs must not fetch') });
+		const controller = new AbortController();
+		let planning: Promise<unknown> | undefined;
+
+		const request = client.request({ method: 'POST', path: '/v1/files', multipart: [{ name: 'file', contentPath: receipt }] }, {
+			dryRun: true,
+			signal: controller.signal,
+			onPlanned: (write) => {
+				planning = write;
+				controller.abort();
+			},
+		});
+
+		await assert.rejects(request, /cancelled/);
+		assert.ok(planning);
+		await assert.rejects(planning, /cancelled/);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('without dryRun the result has no dryRun or plannedWrites fields', async () => {
+	const { codeMode } = codeModeWith();
+
+	const payload = payloadOf(await codeMode.execute(`async () => 1`, { maxRequests: 1 }));
+
+	assert.equal('dryRun' in payload, false);
+	assert.equal('plannedWrites' in payload, false);
 });

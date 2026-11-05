@@ -3,7 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/server';
 import type { AccountInfo, AccountProfile } from './account.js';
 import { catalogLookupPrelude } from './catalog-lookup.js';
 import { type CodeExecutor, QuickJsExecutor } from './executor.js';
-import { type LexwareApiClient, type RequestLogEntry, untilAborted } from './lexware-client.js';
+import { type LexwareApiClient, type PlannedWrite, type RequestLogEntry, untilAborted } from './lexware-client.js';
 import { lexwareSandbox } from './lexware-sandbox-sdk.js';
 import { lexwareSpec } from './lexware-spec.js';
 import { truncateJson } from './truncate.js';
@@ -20,6 +20,10 @@ const SEARCH_ACCOUNT_WAIT_MS = 1_000;
 const MEMORY_LIMIT_BYTES = 32 * 1024 * 1024;
 // Up to this many successful reads are listed in `requests`; more are collapsed into `readsSummary`.
 const MAX_LISTED_READS = 5;
+// A planned write's body in `plannedWrites` is shrunk structurally beyond this many characters.
+const MAX_PLANNED_BODY_CHARS = 4_000;
+// Planned writes cost no request budget, so this bounds what a dry run holds on the host.
+const MAX_PLANNED_WRITES = 100;
 
 export interface CodeModeOptions {
 	client: LexwareApiClient;
@@ -35,6 +39,8 @@ export interface RunOptions {
 export interface ExecuteOptions extends RunOptions {
 	// Budget of HTTP attempts sent to Lexware (fetch calls, incl. 429 retries).
 	maxRequests: number;
+	// Writes are planned instead of sent and listed in `plannedWrites`; reads run normally.
+	dryRun?: boolean;
 }
 
 // Runs one `search` or `execute` tool call to completion and returns the MCP tool result.
@@ -73,16 +79,27 @@ export class CodeMode {
 	// `sent: true`. Requests rejected before sending (validation, blocked writes, cancelled
 	// while queued) don't consume budget; an attempt over budget fails unsent.
 	async execute(code: string, options: ExecuteOptions): Promise<CallToolResult> {
-		const { maxRequests } = options;
+		const { maxRequests, dryRun = false } = options;
 		let requestCount = 0;
 		const requests: RequestLogEntry[] = [];
+		// Slots are reserved in request order; a plan whose body fails to serialize leaves its slot empty.
+		const plannedWrites: Array<PlannedWrite | undefined> = [];
+		const onPlanned = (planning: Promise<PlannedWrite>) => {
+			if (plannedWrites.length >= MAX_PLANNED_WRITES) {
+				throw new Error(`Dry run exceeded ${MAX_PLANNED_WRITES} planned writes`);
+			}
+			const slot = plannedWrites.push(undefined) - 1;
+			planning.then((write) => {
+				plannedWrites[slot] = write.body !== undefined ? { ...write, body: truncateJson(write.body, { maxChars: MAX_PLANNED_BODY_CHARS }) } : write;
+			}, () => {});
+		};
 		const beforeSend = () => {
 			if (requestCount >= maxRequests) {
 				throw new Error(`Execution exceeded maxRequests=${maxRequests}`);
 			}
 			requestCount += 1;
 		};
-		const sandbox = lexwareSandbox(this.client, { beforeSend, onSettled: (entry) => requests.push(entry) });
+		const sandbox = lexwareSandbox(this.client, { beforeSend, onSettled: (entry) => requests.push(entry), dryRun, onPlanned });
 		const execution = await this.executor.execute(
 			code,
 			{ spec: await this.sandboxSpec(options.signal) },
@@ -96,12 +113,12 @@ export class CodeMode {
 			},
 		);
 
-		const requestLog = summarizeRequests(requests);
+		const audit = { requestCount, ...summarizeRequests(requests), ...(dryRun && { dryRun, plannedWrites: plannedWrites.filter((write) => write !== undefined) }) };
 		if (execution.error) {
-			return toolResult({ ok: false, error: execution.error, logs: execution.logs ?? [], requestCount, ...requestLog }, true);
+			return toolResult({ ok: false, error: execution.error, logs: execution.logs ?? [], ...audit }, true);
 		}
 
-		return toolResult({ ok: true, result: execution.result, logs: execution.logs ?? [], requestCount, ...requestLog });
+		return toolResult({ ok: true, result: execution.result, logs: execution.logs ?? [], ...audit });
 	}
 
 	// Inject the write mode and allowlist so callers can branch before attempting a write, and
@@ -137,7 +154,8 @@ function summarizeRequests(requests: RequestLogEntry[]): { requests: RequestLogE
 // The text block and structuredContent carry the same object. An oversized result is shrunk
 // structurally (see truncateJson), so both stay valid JSON and carry a `truncated` hint. The
 // audit fields are kept whole (unless they alone come close to the limit), so callers see which writes happened.
-const AUDIT_KEYS = ['ok', 'requestCount', 'requests', 'readsSummary'];
+// `plannedWrites` is shrunk like `result`: `requests` already lists every planned write.
+const AUDIT_KEYS = ['ok', 'requestCount', 'requests', 'readsSummary', 'dryRun'];
 
 function toolResult(payload: Record<string, unknown>, isError = false): CallToolResult {
 	let normalized: Record<string, unknown>;

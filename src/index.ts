@@ -116,6 +116,8 @@ The tool result includes requests: one { method, path, status?, ok?, error?, wri
 
 maxRequests bounds the HTTP attempts actually sent to Lexware, including automatic 429 retries; requestCount counts every sent attempt, including reads collapsed into readsSummary. Requests rejected before sending (invalid input, blocked writes) do not count. An attempt beyond the budget is not sent and fails with "Execution exceeded maxRequests=N".
 
+dryRun: true previews writes without sending them. Reads run normally, so the script can still make data-dependent decisions. Each POST, PUT, PATCH, or DELETE is not sent and returns a synthetic { ok: true, status: 0, dryRun: true, planned } response without data (lexware.json returns undefined). This also happens when writes are disabled or not allowlisted; planned.blocked then says why a real run would reject it. contentPath files are still read and hashed, so planned.multipart shows the exact bytes and sha256. The tool result adds dryRun: true and plannedWrites: every planned write in order, with method, path, query, and body (large bodies are shrunk). A script that needs a write's response, e.g. a new id, should branch with if (response.dryRun) …. Planned writes don't count against maxRequests; a dry run plans at most 100.
+
 This server is read-only by default. POST, PUT, PATCH, and DELETE are blocked unless the server is started with LEXWARE_OFFICE_ALLOW_WRITES=true. Setting LEXWARE_OFFICE_READ_ONLY=true is a hard block that overrides ALLOW_WRITES. Check spec.info.writesEnabled to branch before attempting a write. LEXWARE_OFFICE_WRITE_ALLOW can further restrict writes to a list: spec.info.writePolicy.allow is then the only writes permitted ('METHOD /v1/template'; a '?finalize' suffix also allows finalize=true, otherwise sales documents can only be created as drafts). Writes outside it are rejected before sending.
 
 Example:
@@ -141,10 +143,15 @@ async () => {
 					.optional()
 					.default(10)
 					.describe('Maximum number of HTTP attempts this execution may send to Lexware, including automatic 429 retries.'),
+				dryRun: z
+					.boolean()
+					.optional()
+					.default(false)
+					.describe('Preview writes: run reads normally, but plan writes instead of sending them and list them in plannedWrites.'),
 			}),
 			annotations: { readOnlyHint: !writes, destructiveHint: writes, idempotentHint: false, openWorldHint: true },
 		},
-		async ({ code, maxRequests }, ctx) => codeMode.execute(code, { maxRequests, signal: ctx.mcpReq.signal }),
+		async ({ code, maxRequests, dryRun }, ctx) => codeMode.execute(code, { maxRequests, dryRun, signal: ctx.mcpReq.signal }),
 	);
 
 	return server;

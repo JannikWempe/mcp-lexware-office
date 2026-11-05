@@ -17,6 +17,7 @@ The server uses **Code Mode**: instead of one MCP tool per API endpoint, it expo
 - **Reference data**: profile, countries, print layouts, payment conditions, recurring templates
 - **Webhooks**: create, list, inspect, and delete event subscriptions
 - **Read-only by default**: writes require explicit opt-in via environment variable
+- **Dry runs**: preview the exact writes a workflow would send, including upload hashes, without sending them
 
 ## How it works
 
@@ -44,6 +45,8 @@ async () => {
 The sandbox does **not** receive the Lexware API key, Node globals, filesystem access, imports, `fetch`, or arbitrary network access. `lexware.request` only accepts relative `/v1/...` paths and sends the API key from the host process.
 
 `execute` results include `requests`, an audit log with one `{ method, path, status, ok, error, write, sent, outcome, durationMs }` entry per HTTP attempt — also when the execution failed, so you can see which writes already went through. A write with `outcome: "unknown"` was sent but its result is unknown (aborted, timed out, network error, or answered with `504`) — Lexware may have applied it, so check with a `GET` before retrying. A `GET` answered with `429` is retried once automatically (after `Retry-After` if ≤ 5 s, otherwise after a 1–2 s backoff) if the 30 s execution budget allows. Cancelling the tool call (or the 30 s execution timeout) aborts in-flight Lexware requests.
+
+Pass `dryRun: true` to `execute` to preview writes before they happen: reads run normally, while every `POST`/`PUT`/`PATCH`/`DELETE` returns a synthetic `{ dryRun: true, status: 0, planned }` response instead of being sent, and the result lists them in `plannedWrites`, including the SHA-256 of every file that would be uploaded. Dry runs also work on a read-only server; writes the policy would reject are flagged with `blocked`. See [docs/guide.md#dry-runs](docs/guide.md#dry-runs).
 
 ### Binary-safe file uploads
 
