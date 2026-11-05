@@ -153,7 +153,48 @@ declare const lexware: {
   requireMoney(row: unknown, fieldPath: string): number;
   sumMoney(rows: unknown[], fieldPath: string): number;
   formatMoney(cents: number, currency?: string): string;
+  updateVoucher(id: string, patch: Record<string, unknown>, options?: { expectedVersion?: number; allowFileRemoval?: boolean }): Promise<{ before: unknown; after: unknown; changed: string[] }>;
+  uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped' }>;
+  attachFileToVoucher(voucherId: string, input: FileInput): Promise<{ fileId: string; sent: UploadSent }>;
+  sleep(ms: number): Promise<void>;
+  findVouchers(criteria: { voucherNumber?: string; contactName?: string | RegExp; amount?: number; currency?: string; dateFrom?: string; dateTo?: string; voucherType?: string; voucherStatus?: string }, options?: { maxPages?: number }): Promise<Array<{ row: unknown; score: number; matched: string[] }>>;
 };
+
+type FileInput = { contentPath?: string; contentBase64?: string; filename?: string; contentType?: string }; // one of contentPath or contentBase64
+type UploadSent = { bytes: number; parts: Array<{ name: string; filename?: string; bytes: number; sha256: string }> };
+```
+
+`lexware.sleep(ms)` waits inside the sandbox, e.g. between polls. One call waits at most 10,000 ms; the 30 s `execute` timeout bounds the total, and cancelling the call ends the wait. `uploadVoucherFile` and `attachFileToVoucher` are described in [Upload helpers](#upload-helpers-uploadvoucherfile-and-attachfiletovoucher).
+
+`lexware.updateVoucher` updates a bookkeeping voucher without the usual `PUT /v1/vouchers/{id}` pitfalls, in 3 requests (`GET`, `PUT`, `GET`) against `maxRequests`:
+
+- It starts from the current voucher, drops the read-only fields (`id`, `organizationId`, `voucherStatus`, `contactName`, `createdDate`, `updatedDate`) and applies `patch` shallowly: arrays such as `voucherItems` are replaced as a whole. Set `voucherStatus: 'open'` in `patch` to finalize an `unchecked` voucher.
+- `useCollectiveContact: true` in `patch` also drops `contactId`; a `contactId` in `patch` without `useCollectiveContact` drops a current `useCollectiveContact`.
+- It sends the current `version`; `patch.version` is rejected. With `expectedVersion` set, a voucher at a different version throws without writing.
+- Lexware permanently deletes files left out of a PUT. The helper keeps `files` and throws without writing if the merged `files` would drop a current file id, unless `allowFileRemoval: true`.
+- A non-OK PUT throws with the normalized Lexware `issues`. If the re-read after a successful PUT fails (e.g. `maxRequests` is used up), the error says the PUT went through; don't repeat it. After a successful PUT it re-reads the voucher, throws if a kept file is gone, and returns `before`, `after` and the top-level keys that `changed` (ignoring `version` and `updatedDate`).
+
+```js
+async () => {
+  const { changed } = await lexware.updateVoucher('VOUCHER_ID', { remark: 'Checked' }, { expectedVersion: 3 });
+  return changed;
+}
+```
+
+`lexware.findVouchers` checks whether a document is already in Lexware before you upload it. The `voucherNumber` filter of `GET /v1/voucherlist` matches exactly, so differently formatted numbers slip through; the helper also finds those:
+
+- It first queries the exact `voucherNumber` (1 request). If that finds no candidate, it pages `/v1/voucherlist` within `dateFrom`..`dateTo` (`voucherDateFrom`/`voucherDateTo`, `yyyy-MM-dd`) and scores the rows locally: 1 + pages requests against `maxRequests`. A window with more than `maxPages` pages (default 4, i.e. 1,000 vouchers) throws after its first page instead of checking only part of it: narrow the window, or raise `maxPages` and `maxRequests`.
+- The window bounds that scan: without `dateFrom` and `dateTo`, an exact-number miss throws instead of scanning, and criteria without `voucherNumber` throw before any request.
+- `voucherNumber` is compared ignoring case, spaces, dashes, dots and the leading zeros of the first digit group (`123 456 7890` = `1234567890`, `RE-0042` = `RE-42`). `contactName` is a case-insensitive substring or `RegExp`, `amount` matches `totalAmount` within ±0.01, and rows in another `currency` are dropped.
+- Voucherlist rows of `unchecked` vouchers can lack `totalAmount`; amount matching skips those rows instead of failing.
+- `voucherType` defaults to the bookkeeping types `purchaseinvoice,purchasecreditnote,salesinvoice,salescreditnote` (pass `'any'` to include sales documents such as `invoice` and `creditnote`), `voucherStatus` to `any`.
+- It returns candidates sorted by `score` with the criteria that `matched`: `voucherNumber` 8, `amount` 4, `contactName` 2, `date` (inside the window) 1, so a number match always ranks first. Rows matching only the date are left out. It never decides whether a candidate is a duplicate; check them yourself.
+
+```js
+async () => {
+  const candidates = await lexware.findVouchers({ voucherNumber: '123 456 7890', amount: 119, contactName: 'Muster', dateFrom: '2026-02-01', dateTo: '2026-04-30' });
+  return candidates.slice(0, 5).map(({ row, score, matched }) => ({ id: row.id, voucherNumber: row.voucherNumber, score, matched }));
+}
 ```
 
 ### Tool results and metadata
@@ -182,6 +223,28 @@ Tools carry MCP annotations and titles so clients can label and gate them:
 The server also sends short `instructions` at initialization (search before execute starting with `find`, check `spec.info.account`, `spec.info.writesEnabled` and `spec.info.writePolicy`, aggregate inside `execute`). It is built on MCP TypeScript SDK v2 and negotiates both the 2025-era `initialize` handshake and protocol revision 2026-07-28.
 
 ## Binary-safe file uploads
+
+### Upload helpers: `uploadVoucherFile` and `attachFileToVoucher`
+
+Uploading a Beleg creates a bookkeeping voucher that starts in status `blank` until Lexware's text recognition fills in number, date, contact and amounts (observed: a few seconds, up to about 15 s). `lexware.uploadVoucherFile` uploads and waits for that within one `execute` call:
+
+```js
+async () => {
+  const { fileId, voucherId, extraction, voucher, sent } = await lexware.uploadVoucherFile({ contentPath: '/absolute/path/to/receipt.pdf' });
+  return { fileId, voucherId, extraction, status: voucher?.voucherStatus, sent };
+}
+```
+
+- Pass `contentPath`, or `contentBase64` with a `filename`. `contentType` defaults from the extension: `pdf`, `jpg`/`jpeg`, `png`, `xml`.
+- It `POST`s `/v1/files` with `type=voucher` and throws if the upload fails or returns no `voucherId`.
+- It then polls `GET /v1/vouchers/{voucherId}` after 2, 4 and 8 s and once more at the timeout (`waitForExtraction: { timeoutMs }`, default and at most 15,000) until the status is no longer `blank`. That's up to 5 requests and about 15 s, so one waiting upload fills most of an `execute` call (30 s timeout). For several files, upload them with `waitForExtraction: false` and read the vouchers in a later call; run a `findVouchers` duplicate check in its own call before a waiting upload.
+- `extraction` is `done` (`voucher` holds the recognized voucher), `pending` (still `blank` at the timeout: `GET` the voucher in a later call) or `skipped` (`waitForExtraction: false`). It never uploads again. If waiting fails (a poll error or `maxRequests` used up), the error names the `fileId` and `voucherId`, because the upload itself went through.
+
+`lexware.attachFileToVoucher(voucherId, { contentPath })` attaches a file to an existing voucher via `POST /v1/vouchers/{id}/files` (1 request) and returns `{ fileId, sent }`. Later voucher updates must keep that file id; `lexware.updateVoucher` does that for you.
+
+Both helpers are writes and follow the same rules as the raw request modes below.
+
+### Request modes
 
 Three binary-safe upload modes are supported in addition to the legacy `rawBody=true` string-based multipart. Prefer `multipart` with `contentPath` — the file's bytes never pass through the model or the sandbox.
 

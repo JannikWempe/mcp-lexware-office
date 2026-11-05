@@ -110,7 +110,7 @@ declare const spec: LexwareApiCatalog;
 ${catalogLookupDeclaration}
 ${lexwareSdkDeclaration}
 
-lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. A GET answered with 429 is retried once automatically after Retry-After (if <= 5s) or, without that header, a 1-2s backoff; writes are never retried.
+lexware.request returns all HTTP responses, including non-OK, as LexwareResponse. Check response.ok/status for recovery logic, or use lexware.json(...) / lexware.paginate(...) when you want non-OK or non-JSON responses to throw. To update a bookkeeping voucher, use lexware.updateVoucher instead of a hand-built PUT: a PUT without the current files array deletes them permanently. Before uploading a document, check for an existing voucher with lexware.findVouchers; unlike the exact voucherlist voucherNumber filter, it also matches differently formatted numbers. A GET answered with 429 is retried once automatically after Retry-After (if <= 5s) or, without that header, a 1-2s backoff; writes are never retried.
 
 The tool result includes requests: one { method, path, status?, ok?, error?, write, sent, outcome?, durationMs } entry per HTTP attempt, also when execution failed — check it to see which writes already succeeded before retrying. Every write and every non-OK, errored, or unsent attempt is always listed; when there are more than 5 successful reads, those reads are replaced by readsSummary: { count, byStatus, totalDurationMs }. A write with outcome: 'unknown' (sent=true, with error or status 504) may have been applied by Lexware; reconcile via a GET before retrying it.
 
@@ -125,18 +125,11 @@ async () => {
   return { status: response.status, request: response.request, data: response.data };
 }
 
-File upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath (requires LEXWARE_OFFICE_UPLOAD_DIRS, see MultipartPart) and the host reads it from disk:
+File upload example (bookkeeping Beleg). Never inline file bytes in code — pass the file's absolute path via contentPath (requires LEXWARE_OFFICE_UPLOAD_DIRS, see MultipartPart) and the host reads it from disk. uploadVoucherFile waits inside the call for Lexware's text recognition (up to 5 requests and about 15 s, so one waiting upload per call):
 
 async () => {
-  const response = await lexware.request({
-    method: 'POST',
-    path: '/v1/files',
-    multipart: [
-      { name: 'file', contentType: 'application/pdf', contentPath: '/absolute/path/to/receipt.pdf' },
-      { name: 'type', value: 'voucher' },
-    ],
-  });
-  return { status: response.status, id: response.data?.id, sent: response.sent };
+  const { fileId, voucherId, extraction, voucher, sent } = await lexware.uploadVoucherFile({ contentPath: '/absolute/path/to/receipt.pdf' });
+  return { fileId, voucherId, extraction, status: voucher?.voucherStatus, voucherNumber: voucher?.voucherNumber, sent };
 }`,
 			inputSchema: z.object({
 				code: z.string().describe('JavaScript async arrow function to execute a constrained Lexware API workflow'),
