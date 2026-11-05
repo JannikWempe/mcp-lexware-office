@@ -213,7 +213,8 @@ declare const state: {
 - Values are stored as JSON, as `JSON.stringify` would serialize them, so `get` returns a copy, or `undefined` for a missing key. `set` throws for values that are not JSON-serializable (`undefined`, functions, `BigInt`, cycles); remove a key with `delete`.
 - Limits: 1 MB per serialized value, 10 MB and 1,000 keys in total, keys of 1 to 256 characters. A `set` over a limit throws and keeps the previous value.
 - An entry expires 1 hour after it was last read or written.
-- The store lives in the server process: a restart clears it, nothing is written to disk. All `execute` calls of the server share it, dry runs included, so use a distinct key per task and delete it when done.
+- The store lives in the server process: a restart clears it, nothing is written to disk. All `execute` calls of the server share it, so use a distinct key per task, run one batch of a task at a time (there is no locking between parallel calls) and delete the key when done.
+- A [dry run](#dry-runs) reads the stored state, but its changes are discarded when the call ends, so previewing a batch doesn't advance the real job.
 - `state` calls are not Lexware requests: they don't count against `maxRequests` and don't appear in `requests`.
 
 Use it for work that doesn't fit one call (2 requests/s, 30 s timeout, `maxRequests` ≤ 50), e.g. a report that needs one detail `GET` per voucher. The first call stores the ids and a cursor:
@@ -226,17 +227,18 @@ async () => {
 }
 ```
 
-Each later call (with `maxRequests: 30`) processes the next batch and accumulates the totals; the last one returns the summary and cleans up:
+Each later call (with `maxRequests: 25`) processes the next batch and accumulates the totals, saving the cursor after each voucher so a timeout loses no progress; the last one returns the summary and cleans up:
 
 ```js
 async () => {
   const job = await state.get('q1-input-tax');
-  for (const id of job.ids.slice(job.cursor, job.cursor + 25)) {
+  if (job === undefined) return { error: 'no job stored (expired or server restarted): run the first call again' };
+  for (const id of job.ids.slice(job.cursor, job.cursor + 20)) {
     const voucher = await lexware.json({ path: `/v1/vouchers/${id}` });
     job.taxCents += lexware.requireMoney(voucher, 'totalTaxAmount');
     job.cursor += 1;
+    await state.set('q1-input-tax', job); // keeps the progress if the call times out
   }
-  await state.set('q1-input-tax', job);
   if (job.cursor < job.ids.length) return { done: job.cursor, of: job.ids.length };
   await state.delete('q1-input-tax');
   return { vouchers: job.ids.length, inputTax: lexware.formatMoney(job.taxCents) };

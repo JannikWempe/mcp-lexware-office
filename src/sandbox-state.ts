@@ -33,7 +33,7 @@ interface Entry {
 }
 
 export class SandboxState {
-	readonly limits: SandboxStateLimits;
+	private readonly limits: SandboxStateLimits;
 	private readonly now: () => number;
 	private readonly entries = new Map<string, Entry>();
 	private totalBytes = 0;
@@ -53,9 +53,10 @@ export class SandboxState {
 		return entry.json;
 	}
 
+	// Also checks the JSON on the host: guest code can call the host function without the guest SDK.
 	set(key: string, json: string): void {
 		this.validateKey(key, 'set');
-		if (typeof json !== 'string') throw new Error('state.set expects a JSON-serializable value');
+		if (typeof json !== 'string' || !isJson(json)) throw new Error('state.set expects a JSON-serializable value');
 		this.expire();
 		const valueBytes = Buffer.byteLength(json);
 		const bytes = Buffer.byteLength(key) + valueBytes;
@@ -85,6 +86,15 @@ export class SandboxState {
 		return [...this.entries.keys()];
 	}
 
+	// An independent copy with the same limits, e.g. for a dry run whose changes must not persist.
+	fork(): SandboxState {
+		this.expire();
+		const copy = new SandboxState({ limits: this.limits, now: this.now });
+		for (const [key, entry] of this.entries) copy.entries.set(key, { ...entry });
+		copy.totalBytes = this.totalBytes;
+		return copy;
+	}
+
 	private remove(key: string) {
 		const entry = this.entries.get(key);
 		if (entry === undefined) return;
@@ -103,6 +113,15 @@ export class SandboxState {
 		if (typeof key !== 'string' || key.length === 0 || key.length > this.limits.maxKeyLength) {
 			throw new Error(`state.${operation} expects a key of 1 to ${this.limits.maxKeyLength} characters, got ${typeof key === 'string' ? `${key.length} characters` : typeof key}`);
 		}
+	}
+}
+
+function isJson(text: string): boolean {
+	try {
+		JSON.parse(text);
+		return true;
+	} catch {
+		return false;
 	}
 }
 

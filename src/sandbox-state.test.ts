@@ -56,6 +56,7 @@ test('rejects empty, overlong and non-string keys', () => {
 	assert.throws(() => store.get('abcd'), /state\.get expects a key of 1 to 3 characters, got 4 characters/);
 	assert.throws(() => store.delete(undefined as unknown as string), /state\.delete expects a key .*got undefined/);
 	assert.throws(() => store.set('a', undefined as unknown as string), /JSON-serializable/);
+	assert.throws(() => store.set('a', 'not json'), /JSON-serializable/);
 });
 
 test('entries expire after the idle TTL; reads and writes reset it, and expiry frees their size', () => {
@@ -71,4 +72,18 @@ test('entries expire after the idle TTL; reads and writes reset it, and expiry f
 	store.set('c', '3'); // fits only because b no longer counts
 	now = 300;
 	assert.deepEqual(store.keys(), []);
+});
+
+test('a fork starts with the same entries, and changes on either side stay on that side', () => {
+	const store = new SandboxState({ limits: { maxKeys: 2 } });
+	store.set('a', '1');
+	const fork = store.fork();
+	fork.set('a', '2');
+	fork.set('b', '3');
+	fork.delete('a');
+	assert.throws(() => { fork.set('c', '4'); fork.set('d', '5'); }, /already holds 2 keys/, 'keeps the limits');
+	assert.deepEqual(store.keys(), ['a']);
+	assert.equal(store.get('a'), '1');
+	store.set('z', '9');
+	assert.equal(fork.get('z'), undefined);
 });

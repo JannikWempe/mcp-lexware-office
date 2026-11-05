@@ -121,7 +121,7 @@ dryRun: true previews writes without sending them. Reads run normally, so the sc
 
 This server is read-only by default. POST, PUT, PATCH, and DELETE are blocked unless the server is started with LEXWARE_OFFICE_ALLOW_WRITES=true. Setting LEXWARE_OFFICE_READ_ONLY=true is a hard block that overrides ALLOW_WRITES. Check spec.info.writesEnabled to branch before attempting a write. LEXWARE_OFFICE_WRITE_ALLOW can further restrict writes to a list: spec.info.writePolicy.allow is then the only writes permitted ('METHOD /v1/template'; a '?finalize' suffix also allows finalize=true, otherwise sales documents can only be created as drafts). Writes outside it are rejected before sending.
 
-Every execute call starts a fresh sandbox; only state carries data to the next call. Split work that exceeds one call (2 requests/s, 30 s, maxRequests <= 50) into batches, keep the ids, a cursor and partial totals in state, and return only progress until the last batch. state is shared by all execute calls of this server, including dry runs; use distinct keys per task and delete them when done.
+Every execute call starts a fresh sandbox; only state carries data to the next call. Split work that exceeds one call (2 requests/s, 30 s, maxRequests <= 50) into batches, keep the ids, a cursor and partial totals in state, and return only progress until the last batch. state is shared by all execute calls of this server; a dry run reads it, but its changes are discarded. Use a distinct key per task, run one batch of a task at a time, and delete the key when done.
 
 Example:
 
@@ -145,16 +145,17 @@ async () => {
   return { vouchers: rows.length };
 }
 
-Later calls (maxRequests: 30) process the next batch and accumulate; the last one returns the summary:
+Later calls (maxRequests: 25) process the next batch and accumulate; the last one returns the summary:
 
 async () => {
   const job = await state.get('q1-input-tax');
-  for (const id of job.ids.slice(job.cursor, job.cursor + 25)) {
+  if (job === undefined) return { error: 'no job stored (expired or server restarted): run the first call again' };
+  for (const id of job.ids.slice(job.cursor, job.cursor + 20)) {
     const voucher = await lexware.json({ path: \`/v1/vouchers/\${id}\` });
     job.taxCents += lexware.requireMoney(voucher, 'totalTaxAmount');
     job.cursor += 1;
+    await state.set('q1-input-tax', job); // keeps the progress if the call times out
   }
-  await state.set('q1-input-tax', job);
   if (job.cursor < job.ids.length) return { done: job.cursor, of: job.ids.length };
   await state.delete('q1-input-tax');
   return { vouchers: job.ids.length, inputTax: lexware.formatMoney(job.taxCents) };

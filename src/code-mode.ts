@@ -105,7 +105,8 @@ export class CodeMode {
 			requestCount += 1;
 		};
 		const sandbox = lexwareSandbox(this.client, { beforeSend, onSettled: (entry) => requests.push(entry), dryRun, onPlanned });
-		const state = stateSandbox(this.state);
+		// A dry run sees the stored state but its changes are discarded, so it can't advance a real job's cursor.
+		const state = stateSandbox(dryRun ? this.state.fork() : this.state);
 		const execution = await this.executor.execute(
 			code,
 			{ spec: await this.sandboxSpec(options.signal) },

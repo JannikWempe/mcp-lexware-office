@@ -9,7 +9,8 @@ import type { CallToolResult } from '@modelcontextprotocol/server';
 import { AccountProfile, type AccountInfo } from './account.js';
 import { CodeMode } from './code-mode.js';
 import { LexwareApiClient, type LexwareClientOptions } from './lexware-client.js';
-import { SandboxState } from './sandbox-state.js';
+import { stateDeclaration } from './lexware-sandbox-sdk.js';
+import { DEFAULT_STATE_LIMITS, SandboxState } from './sandbox-state.js';
 import { parseWriteAllow } from './write-policy.js';
 
 const jsonResponse = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), {
@@ -767,10 +768,42 @@ test('state is not reachable from search', async () => {
 	assert.deepEqual(payload.result, { state: 'undefined', host: ['__capabilitiesJson'] });
 });
 
-test('state is frozen and not on globalThis in execute', async () => {
+test('state is frozen, not on globalThis, and exposes exactly the declared methods', async () => {
+	const declared = [...stateDeclaration.match(/^declare const state: \{\n([\s\S]*?)\n\};/m)![1].matchAll(/^ {2}(\w+)(?:<[^>]*>)?\(/gm)].map((match) => match[1]);
 	const { codeMode } = codeModeWith();
 
 	const payload = payloadOf(await codeMode.execute(`async () => ({ keys: Object.keys(state), frozen: Object.isFrozen(state), onGlobal: typeof globalThis.state })`, { maxRequests: 1 }));
 
-	assert.deepEqual(payload.result, { keys: ['get', 'set', 'delete', 'keys'], frozen: true, onGlobal: 'undefined' });
+	assert.deepEqual(payload.result, { keys: declared, frozen: true, onGlobal: 'undefined' });
+	assert.deepEqual(declared, ['get', 'set', 'delete', 'keys']);
+	assert.match(stateDeclaration, new RegExp(`${DEFAULT_STATE_LIMITS.maxValueBytes / (1024 * 1024)} MB per value, ${DEFAULT_STATE_LIMITS.maxTotalBytes / (1024 * 1024)} MB and ${DEFAULT_STATE_LIMITS.maxKeys} keys`));
+});
+
+test('a dry run reads the stored state but discards its changes', async () => {
+	const { codeMode } = codeModeWith();
+	await codeMode.execute(`async () => state.set('job', { cursor: 0 })`, { maxRequests: 1 });
+
+	const dry = payloadOf(await codeMode.execute(`async () => {
+		const job = await state.get('job');
+		await state.set('job', { cursor: job.cursor + 20 });
+		await state.set('scratch', 1);
+		await state.delete('missing');
+		return { seen: job, afterSet: await state.get('job'), keys: await state.keys() };
+	}`, { maxRequests: 1, dryRun: true }));
+	assert.deepEqual(dry.result, { seen: { cursor: 0 }, afterSet: { cursor: 20 }, keys: ['job', 'scratch'] });
+
+	const real = payloadOf(await codeMode.execute(`async () => ({ job: await state.get('job'), keys: await state.keys() })`, { maxRequests: 1 }));
+	assert.deepEqual(real.result, { job: { cursor: 0 }, keys: ['job'] });
+});
+
+test('the host rejects non-JSON text sent to the state host function directly', async () => {
+	const { codeMode } = codeModeWith();
+
+	const payload = payloadOf(await codeMode.execute(`async () => ({
+		direct: await globalThis.__stateJson(JSON.stringify({ op: 'set', key: 'k', json: '{not json' })).then(() => 'stored', (error) => error.message),
+		unknownOp: await globalThis.__stateJson(JSON.stringify({ op: 'clear' })).then(() => 'ok', (error) => error.message),
+		keys: await state.keys(),
+	})`, { maxRequests: 1 }));
+
+	assert.deepEqual(payload.result, { direct: 'state.set expects a JSON-serializable value', unknownOp: 'Unknown state operation: clear', keys: [] });
 });
