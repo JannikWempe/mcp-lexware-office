@@ -1,3 +1,33 @@
 {
-	"latestChangelogEntry": "2026-08-11"
+	"latestChangelogEntry": "2026-08-11",
+	"sections": {
+		"lexware-api-documentation": "20c0757e5ec67057",
+		"api-rate-limits": "afb70e8ef5bf9f2e",
+		"articles-endpoint": "1b273fb550b80b66",
+		"contacts-endpoint": "5146f4f484adf5b5",
+		"countries-endpoint": "daf7d9651e071018",
+		"credit-notes-endpoint": "28a07a090d1734db",
+		"delivery-notes-endpoint": "3209f6afb06fa27c",
+		"dunnings-endpoint": "ebe0cad7566f87ee",
+		"down-payment-invoices-endpoint": "6018a56a05cb446b",
+		"event-subscriptions-endpoint": "f103194549943673",
+		"files-endpoint": "85603b72c6e73ea2",
+		"invoices-endpoint": "1cb51a0c16b8b239",
+		"order-confirmations-endpoint": "b9e93c6aa7c98255",
+		"payments-endpoint": "cdaad51660ecc636",
+		"payment-conditions-endpoint": "6c6dabd66a4bcc44",
+		"posting-categories-endpoint": "18467f8546703421",
+		"print-layouts-endpoint": "7c17f8f1be17a971",
+		"profile-endpoint": "de35af99023e00ae",
+		"quotations-endpoint": "fe9ac486d2a6f361",
+		"recurring-templates-endpoint": "72c85486e6bb0c87",
+		"voucherlist-endpoint": "9e875be2e468086c",
+		"vouchers-endpoint": "afd7cf53874e8e77",
+		"paging-of-resources": "85d28878529af162",
+		"optimistic-locking": "df7160f179833725",
+		"http-status-codes": "f71fa703d8b37c96",
+		"error-codes": "a95c333d697cf987",
+		"faq": "047d880dba88de28",
+		"samples": "3f759baa239e5ed5"
+	}
 }

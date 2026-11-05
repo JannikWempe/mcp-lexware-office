@@ -183,3 +183,126 @@ test('duplicateVoucher copies the contact choice and keeps voucherNumber for ope
 	assert.doesNotMatch(workflowText, /Omit voucherNumber/);
 	assert.match(workflowText, /can be assigned to only one voucher/);
 });
+
+/*
+Pinned from the docs "Create …" and "Pursue to …" sections of each sales document,
+"Event Types", "Update a Contact", "Payments properties" and the FAQ "Datetime Format".
+*/
+const DOCUMENTED_SALES_REQUIRED: Record<string, string[]> = {
+	'/v1/invoices': ['voucherDate', 'address', 'lineItems', 'totalPrice', 'taxConditions', 'shippingConditions'],
+	'/v1/order-confirmations': ['voucherDate', 'address', 'lineItems', 'totalPrice', 'taxConditions', 'shippingConditions'],
+	'/v1/quotations': ['voucherDate', 'expirationDate', 'address', 'lineItems', 'totalPrice', 'taxConditions'],
+	'/v1/credit-notes': ['voucherDate', 'address', 'lineItems', 'totalPrice', 'taxConditions'],
+	'/v1/delivery-notes': ['voucherDate', 'address', 'lineItems', 'taxConditions', 'shippingConditions'],
+	'/v1/dunnings': ['voucherDate', 'address', 'lineItems', 'totalPrice', 'taxConditions', 'shippingConditions'],
+};
+
+const DOCUMENTED_SALES_TAX_TYPES = ['net', 'gross', 'vatfree', 'intraCommunitySupply', 'constructionService13b', 'externalService13b', 'thirdPartyCountryService', 'thirdPartyCountryDelivery', 'photovoltaicEquipment'];
+
+const DOCUMENTED_EVENT_TYPES = [
+	'article.created', 'article.changed', 'article.deleted',
+	'contact.created', 'contact.changed', 'contact.deleted',
+	'credit-note.created', 'credit-note.changed', 'credit-note.deleted', 'credit-note.status.changed',
+	'delivery-note.created', 'delivery-note.changed', 'delivery-note.deleted', 'delivery-note.status.changed',
+	'down-payment-invoice.created', 'down-payment-invoice.changed', 'down-payment-invoice.deleted', 'down-payment-invoice.status.changed',
+	'dunning.created', 'dunning.changed', 'dunning.deleted',
+	'invoice.created', 'invoice.changed', 'invoice.deleted', 'invoice.status.changed',
+	'order-confirmation.created', 'order-confirmation.changed', 'order-confirmation.deleted', 'order-confirmation.status.changed',
+	'quotation.created', 'quotation.changed', 'quotation.deleted', 'quotation.status.changed',
+	'recurring-template.created', 'recurring-template.changed', 'recurring-template.deleted',
+	'voucher.created', 'voucher.changed', 'voucher.deleted', 'voucher.status.changed',
+	'payment.changed', 'token.revoked',
+];
+
+const salesCreate = (path: string): LexwareOperation => {
+	const operation = lexwareSpec.paths[path]?.post;
+	assert.ok(operation, `missing POST ${path}`);
+	return operation;
+};
+
+test('each sales document create lists exactly its documented required fields', () => {
+	for (const [path, expected] of Object.entries(DOCUMENTED_SALES_REQUIRED)) {
+		assert.deepEqual([...(salesCreate(path).requestBody?.required ?? [])].sort(), [...expected].sort(), `required fields of POST ${path} diverge from docs`);
+	}
+	assert.match(salesCreate('/v1/quotations').requestBody?.summary ?? '', /expirationDate is required/);
+});
+
+test('sales document bodies document the full enums, datetime format and limits', () => {
+	for (const path of Object.keys(DOCUMENTED_SALES_REQUIRED)) {
+		const operation = salesCreate(path);
+		const shape = operation.requestBody?.shape as { voucherDate: string; lineItems: Array<{ type: string }>; taxConditions: { taxType: string; taxSubType: string } };
+		assert.match(shape.voucherDate, /yyyy-MM-ddTHH:mm:ss\.SSSXXX/);
+		assert.deepEqual(shape.lineItems[0]?.type.split('|'), ['custom', 'material', 'service', 'text']);
+		assert.deepEqual(shape.taxConditions.taxType.split('|').sort(), [...DOCUMENTED_SALES_TAX_TYPES].sort());
+		assert.match(shape.taxConditions.taxSubType, /distanceSales\|electronicServices/);
+		const notesText = JSON.stringify(operation.notes);
+		assert.match(notesText, /At most 300 line items/);
+		assert.match(notesText, /unitPrice except on delivery notes, where it is optional/);
+		assert.match(notesText, /title 25, introduction and remark 2000/);
+		assert.match(notesText, /other formats are rejected with 406/);
+		assert.match(notesText, /electronicDocumentProfile .* is read-only/);
+		const requiresShipping = DOCUMENTED_SALES_REQUIRED[path]?.includes('shippingConditions');
+		assert.equal('shippingConditions' in (operation.requestBody?.shape as object), requiresShipping, `POST ${path} shippingConditions shape`);
+	}
+	assert.ok('xRechnung' in (salesCreate('/v1/invoices').requestBody?.shape as object));
+});
+
+test('pursue rules are spelled out per document type', () => {
+	const param = (path: string): string => salesCreate(path).parameters?.find((parameter) => parameter.name === 'precedingSalesVoucherId')?.description ?? '';
+	for (const path of ['/v1/invoices', '/v1/order-confirmations', '/v1/credit-notes', '/v1/delivery-notes', '/v1/dunnings']) {
+		assert.match(param(path), /invalid pursue action is rejected with 406/);
+	}
+	assert.match(param('/v1/invoices'), /alternative or optional line items, or a draft order confirmation or delivery note/);
+	assert.match(param('/v1/delivery-notes'), /draft order confirmation/);
+	assert.match(param('/v1/credit-notes'), /draft invoice is rejected with 406, and a closing invoice cannot be pursued/);
+	assert.match(JSON.stringify(salesCreate('/v1/credit-notes').notes), /Only one credit note can relate to an invoice.*immediately gets status paidoff/);
+	assert.match(param('/v1/dunnings'), /down-payment invoice/);
+	assert.match(JSON.stringify(salesCreate('/v1/dunnings').notes), /taxConditions must match the invoice/);
+	assert.equal(salesCreate('/v1/quotations').parameters?.some((parameter) => parameter.name === 'precedingSalesVoucherId'), false);
+});
+
+test('creates document 201 instead of the shared 200', () => {
+	for (const [path, methods] of Object.entries(lexwareSpec.paths)) {
+		const operation = methods.post;
+		if (!operation || operation.requestBody?.contentType === 'multipart/form-data') continue;
+		assert.ok(operation.responses?.['201'], `POST ${path} has no 201 response`);
+		assert.equal(operation.responses['200'], undefined, `POST ${path} still documents 200`);
+		if (path !== '/v1/event-subscriptions') assert.equal(operation.responses['409'], undefined, `POST ${path} documents an optimistic-locking 409`);
+	}
+});
+
+test('event subscriptions list every documented event type and the create semantics', () => {
+	const create = lexwareSpec.paths['/v1/event-subscriptions']?.post;
+	const shape = create?.requestBody?.shape as { eventType: string };
+	const listed = shape.eventType.replace(/^one of: /, '').split(', ');
+	assert.deepEqual([...listed].sort(), [...DOCUMENTED_EVENT_TYPES].sort());
+	assert.match(create?.responses?.['409'] ?? '', /already exists/);
+	assert.match(create?.responses?.['406'] ?? '', /HEAD check/);
+	assert.match(JSON.stringify(lexwareSpec.paths['/v1/payments/{voucherId}']?.get?.notes), /payment\.changed event for a draft voucher is expected/);
+});
+
+test('contact update explains the more-than-one-entry restriction', () => {
+	const notesText = JSON.stringify(lexwareSpec.paths['/v1/contacts/{id}']?.put?.notes);
+	assert.match(notesText, /cannot be updated via the API if any of these lists has more than one entry/);
+	assert.doesNotMatch(notesText, /replaced as a whole/);
+	for (const list of ['addresses.billing', 'addresses.shipping', 'emailAddresses', 'phoneNumbers', 'company.contactPersons']) {
+		assert.match(notesText, new RegExp(list.replace('.', '\\.')));
+	}
+});
+
+test('operation docsUrls point at the operation, not the endpoint root', () => {
+	for (const [path, methods] of Object.entries(lexwareSpec.paths)) {
+		for (const [method, operation] of Object.entries(methods) as Array<[HttpMethod, LexwareOperation]>) {
+			assert.doesNotMatch(operation.docsUrl ?? '', /-endpoint$/, `${method.toUpperCase()} ${path} links the endpoint root`);
+		}
+	}
+});
+
+test('smaller catalog facts match the docs', () => {
+	assert.match(JSON.stringify(lexwareSpec.paths['/v1/payments/{voucherId}']?.get?.notes), /irrecoverableReceivable/);
+	const sort = lexwareSpec.paths['/v1/recurring-templates']?.get?.parameters?.find((parameter) => parameter.name === 'sort')?.description ?? '';
+	assert.match(sort, /createdDate, updatedDate, lastExecutionDate or nextExecutionDate/);
+	assert.match(sort, /Default updatedDate,DESC/);
+	assert.match(JSON.stringify(lexwareSpec.paths['/v1/articles']?.post?.requestBody?.shape), /"taxRate":"0\|7\|19"/);
+	assert.match(JSON.stringify(lexwareSpec.paths['/v1/voucherlist']?.get?.notes), /lexware\.requireMoney throws on such rows/);
+});

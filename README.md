@@ -86,7 +86,7 @@ See [docs/guide.md](docs/guide.md#binary-safe-file-uploads) for details and all 
 
 ### Get a Lexware Office API key
 
-Create an API key at <https://app.lexoffice.de/addons/public-api>.
+Create an API key at <https://app.lexware.de/addons/public-api>.
 
 ### Prerequisites
 
@@ -249,7 +249,7 @@ npm test
 ## Documentation
 
 - [Guide and migration notes](docs/guide.md)
-- [Lexware Office API key setup](https://app.lexoffice.de/addons/public-api)
+- [Lexware Office API key setup](https://app.lexware.de/addons/public-api)
 
 ## License
 
