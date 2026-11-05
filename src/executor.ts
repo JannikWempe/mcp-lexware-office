@@ -261,8 +261,9 @@ export class QuickJsExecutor implements CodeExecutor {
 			preludeEvaluation.value.dispose();
 
 			// The script's completion value is the function. `0, ` keeps the code an expression (also
-			// `async function () {}`) without adding a line, so only columns on line 1 shift. A trailing
-			// semicolon or comment (async () => 1; // main) still parses.
+			// `async function () {}`) without adding a line, so only columns on line 1 shift (by 3). A trailing
+			// semicolon or comment (async () => 1; // main) still parses; a statement after the function
+			// becomes the completion value and is rejected below.
 			const userEvaluation = vm.evalCode(`0, ${code}`, filename, { type: 'global', strict: true });
 			if (engineFailure !== undefined) return engineFailureResult();
 			if (userEvaluation.error) return { error: stringifyQuickJsError(dumpAndDispose(vm, userEvaluation.error)), logs };

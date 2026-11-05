@@ -40,11 +40,11 @@ test('find ranks specific operations for English and German queries', () => {
 });
 
 test('find folds umlauts and matches German plurals', () => {
-	assert.ok(ids('Auftragsbestätigungen', 3).includes('createOrderConfirmation'), ids('Auftragsbestätigungen', 3).join(', '));
+	assert.deepEqual(new Set(ids('Auftragsbestätigungen', 2)), new Set(['listVoucherSummaries', 'createOrderConfirmation']));
 	assert.equal(ids('auftragsbestätigung erstellen', 1)[0], 'createOrderConfirmation');
 	assert.deepEqual(find('Auftragsbestätigung'), find('auftragsbestaetigung'));
 	assert.equal(ids('buchungskategorien', 1)[0], 'listPostingCategories');
-	assert.equal(ids('kontakt löschen', 1)[0], ids('kontakt loeschen', 1)[0]);
+	assert.equal(ids('artikel löschen', 1)[0], 'deleteArticle');
 	assert.equal(ids('kontakt ändern', 1)[0], 'updateContact');
 });
 
