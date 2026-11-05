@@ -157,6 +157,7 @@ declare const lexware: {
   updateVoucher(id: string, patch: Record<string, unknown>, options?: { expectedVersion?: number; allowFileRemoval?: boolean }): Promise<{ before: unknown; after: unknown; changed: string[]; requested: string[]; notApplied: string[]; sideEffects: string[] }>;
   uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped'; warnings?: string[]; waitError?: string }>;
   attachFileToVoucher(voucherId: string, input: FileInput): Promise<{ fileId: string; sent: UploadSent }>;
+  voucherWarnings(voucher: unknown): string[];
   sleep(ms: number): Promise<void>;
   findVouchers(criteria: { voucherNumber?: string; contactName?: string | RegExp; amount?: number; currency?: string; dateFrom?: string; dateTo?: string; voucherType?: string; voucherStatus?: string }, options?: { maxPages?: number }): Promise<Array<{ row: unknown; score: number; matched: string[] }>>;
 };
@@ -165,7 +166,7 @@ type FileInput = { contentPath?: string; contentBase64?: string; filename?: stri
 type UploadSent = { bytes: number; parts: Array<{ name: string; filename?: string; bytes: number; sha256: string }> };
 ```
 
-`lexware.sleep(ms)` waits inside the sandbox, e.g. between polls. One call waits at most 10,000 ms; the 30 s `execute` timeout bounds the total, and cancelling the call ends the wait. `uploadVoucherFile` and `attachFileToVoucher` are described in [Upload helpers](#upload-helpers-uploadvoucherfile-and-attachfiletovoucher).
+`lexware.sleep(ms)` waits inside the sandbox, e.g. between polls. One call waits at most 10,000 ms; the 30 s `execute` timeout bounds the total, and cancelling the call ends the wait. `uploadVoucherFile`, `voucherWarnings` and `attachFileToVoucher` are described in [Upload helpers](#upload-helpers-uploadvoucherfile-and-attachfiletovoucher).
 
 `lexware.updateVoucher` updates a bookkeeping voucher without the usual `PUT /v1/vouchers/{id}` pitfalls, in 3 requests (`GET`, `PUT`, `GET`) against `maxRequests`:
 
@@ -176,7 +177,7 @@ type UploadSent = { bytes: number; parts: Array<{ name: string; filename?: strin
 - A non-OK PUT throws with the normalized Lexware `issues`. If the re-read after a successful PUT fails (e.g. `maxRequests` is used up), the error says the PUT went through; don't repeat it. After a successful PUT it re-reads the voucher, throws if a kept file is gone, and returns `before`, `after` and these key lists:
   - `changed`: top-level keys that differ between `before` and `after` (ignoring `version` and `updatedDate`).
   - `requested`: `patch` keys that differ from `before`.
-  - `notApplied`: `patch` keys the re-read voucher doesn't hold. Lexware can answer 200 without keeping a change, e.g. on `unchecked` vouchers. A sent `yyyy-MM-dd` date matches the returned timestamp, `'119.00'` matches `119`, and fields Lexware adds to `voucherItems` are ignored.
+  - `notApplied`: `patch` keys the re-read voucher doesn't hold. Lexware can answer 200 without keeping a change, e.g. on `unchecked` vouchers. A sent `yyyy-MM-dd` `voucherDate` or `dueDate` matches the returned timestamp, `'119.00'` matches `119`, and fields Lexware adds to `voucherItems` are ignored.
   - `sideEffects`: `changed` keys not in `patch`, which Lexware derived itself, e.g. `contactName` after `useCollectiveContact: true`.
 
 ```js
@@ -369,7 +370,21 @@ async () => {
 - It `POST`s `/v1/files` with `type=voucher` and throws if the upload fails or returns no `voucherId`.
 - It then polls `GET /v1/vouchers/{voucherId}` after 2, 4 and 8 s and once more at the timeout (`waitForExtraction: { timeoutMs }`, default and at most 15,000) until the status is no longer `blank`. That's up to 5 requests and about 15 s, so one waiting upload fills most of an `execute` call (30 s timeout). For several files, upload them with `waitForExtraction: false` and read the vouchers in a later call; run a `findVouchers` duplicate check in its own call before a waiting upload.
 - `extraction` is `done` (`voucher` holds the recognized voucher), `pending` (still `blank` at the timeout: `GET` the voucher in a later call) or `skipped` (`waitForExtraction: false`). It never uploads again. If waiting fails (a poll error or `maxRequests` used up), it returns `extraction: 'pending'` with `waitError`, still with `fileId`, `voucherId` and `sent`, because the upload itself went through.
-- With `extraction: 'done'`, `warnings` lists signs that the text recognition misread the receipt: a sales type (`salesinvoice`, `salescreditnote`), no `voucherItems`, an item without `amount` or `categoryId`, no `totalGrossAmount` (e.g. for a foreign-currency document), no `voucherNumber`, no `voucherDate`, or neither `contactId` nor `useCollectiveContact`. The list is not exhaustive (it can't tell your own company from a supplier, for example), so still compare number, date, gross amount, supplier and category with the document.
+- With `extraction: 'done'`, `warnings` lists signs that the text recognition misread the receipt (`lexware.voucherWarnings` of the recognized voucher): a sales type (`salesinvoice`, `salescreditnote`), no `voucherItems`, an item without `amount` or `categoryId`, no `totalGrossAmount` (e.g. for a foreign-currency document), no `voucherNumber`, no `voucherDate`, or neither `contactId` nor `useCollectiveContact`. The list is not exhaustive (it can't tell your own company from a supplier, for example), so still compare number, date, gross amount, supplier and category with the document.
+
+For a voucher you read later, after batch uploads (`waitForExtraction: false`) or `extraction: 'pending'`, `lexware.voucherWarnings(voucher)` returns the same warnings without a request. Pass the voucher from `GET /v1/vouchers/{id}`; while it is still `blank`, it returns a single warning that recognition is still running.
+
+```js
+async () => {
+  const voucherIds = ['<voucherId from the upload>'];
+  const checked = [];
+  for (const id of voucherIds) {
+    const voucher = await lexware.json({ path: `/v1/vouchers/${id}` });
+    checked.push({ id, status: voucher.voucherStatus, warnings: lexware.voucherWarnings(voucher) });
+  }
+  return checked;
+}
+```
 
 `lexware.attachFileToVoucher(voucherId, { contentPath })` attaches a file to an existing voucher via `POST /v1/vouchers/{id}/files` (1 request) and returns `{ fileId, sent }`. Later voucher updates must keep that file id; `lexware.updateVoucher` does that for you.
 
@@ -492,7 +507,7 @@ With writes enabled, `LEXWARE_OFFICE_WRITE_ALLOW` narrows them down to a list. U
 
 - Entries are separated by commas or newlines. Each is either `METHOD /v1/path` using the catalog's path template, or an operationId (`uploadFile, uploadFileToVoucher, updateVoucher` is equivalent to the example above). Path parameter names don't matter: `{id}` matches `{subscriptionId}`.
 - Sales document endpoints with a `finalize` parameter (invoices, quotations, order confirmations, credit notes, delivery notes) only allow drafts unless the entry ends in `?finalize`: `POST /v1/invoices` creates drafts only, `POST /v1/invoices?finalize` also allows `finalize=true`. Any `finalize` value other than `false` counts as finalizing.
-- Bookkeeping vouchers are finalized through the body's `voucherStatus`, so `?finalize` also applies to `PUT /v1/vouchers/{id}` (`updateVoucher`) and `POST /v1/vouchers` (`createVoucher`). Without it, a `PUT` may only omit `voucherStatus` or send `unchecked` (sending `open` finalizes, even for an already open voucher), and a `POST` must send `voucherStatus: 'unchecked'` (Lexware creates an open voucher when it is omitted). A body the server can't read as a JSON object counts as finalizing. Behavior change: a plain `createVoucher` entry no longer allows creating open vouchers; add `POST /v1/vouchers?finalize` for that.
+- Bookkeeping vouchers are finalized through the body's `voucherStatus`, so `?finalize` also applies to `PUT /v1/vouchers/{id}` (`updateVoucher`) and `POST /v1/vouchers` (`createVoucher`). Without it, a `PUT` may only omit `voucherStatus` or send `unchecked` (sending `open` finalizes, even for an already open voucher, and `null` counts as finalizing too), and a `POST` must send `voucherStatus: 'unchecked'` (Lexware creates an open voucher when it is omitted or `null`). Another spelling of the key, such as `VoucherStatus`, must be `unchecked` as well. A body the server can't read as a JSON object counts as finalizing. Behavior change: a plain `createVoucher` entry no longer allows creating open vouchers; add `POST /v1/vouchers?finalize` for that.
 - Entries that don't name a cataloged write (typos, read endpoints, `?finalize` on an endpoint without it) and an empty value stop the server at startup with an error.
 - Writes to paths not in the catalog, and write paths containing an encoded `/` or `\` (`%2F`, `%5C`) or a `;` (also `%3B`), are always blocked while an allowlist is set.
 - Blocked writes are rejected before sending (`sent: false` in `requests`), don't count against `maxRequests`, and the error lists the allowed writes.

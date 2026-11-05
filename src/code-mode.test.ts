@@ -579,6 +579,18 @@ test('a plain updateVoucher entry lets lexware.updateVoucher edit but not finali
 	assert.match(dryRun.result, /with voucherStatus "open" is blocked/);
 });
 
+test('a plain createVoucher entry blocks a body whose voucherStatus keys conflict, in a dry run too', async () => {
+	const { codeMode, fetched } = codeModeWith(undefined, { writesEnabled: true, writeAllow: parseWriteAllow('createVoucher') });
+	const script = `async () => {
+		const response = await lexware.request({ method: 'POST', path: '/v1/vouchers', body: { type: 'purchaseinvoice', VoucherStatus: 'unchecked', voucherStatus: null } }).catch((error) => ({ error: error.message }));
+		return response.error ?? response.planned.blocked;
+	}`;
+
+	assert.match(payloadOf(await codeMode.execute(script, { maxRequests: 1, dryRun: true })).result, /^POST \/v1\/vouchers with voucherStatus null is blocked: it would finalize the voucher/);
+	assert.match(payloadOf(await codeMode.execute(script, { maxRequests: 1 })).result, /^POST \/v1\/vouchers with voucherStatus null is blocked: it would finalize the voucher/);
+	assert.deepEqual(fetched, []);
+});
+
 test('a dry run hashes contentPath uploads and still enforces the upload dirs', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'lexware-dry-run-'));
 	try {

@@ -63,14 +63,16 @@ test('updateVoucher with a voucherStatus other than unchecked requires a ?finali
 	const finalize = parseWriteAllow('updateVoucher?finalize');
 	const request = (body: unknown, extra: object = {}) => ({ method: 'PUT', path: '/v1/vouchers/abc', query: query(), operationId: 'updateVoucher', body, ...extra });
 
-	for (const body of [undefined, { version: 1 }, { voucherStatus: 'unchecked' }, { voucherStatus: ' Unchecked ' }, { voucherStatus: null }, '{"version":1}']) {
+	for (const body of [undefined, { version: 1 }, { voucherStatus: 'unchecked' }, { voucherStatus: ' Unchecked ' }, { voucherStatus: 'unchecked', VoucherStatus: 'UNCHECKED' }, '{"version":1}']) {
 		assert.equal(writeAllowViolation(edits, request(body)), undefined, JSON.stringify(body));
 	}
-	for (const body of [{ voucherStatus: 'open' }, { VoucherStatus: 'open' }, { voucherStatus: 'unchecked', VOUCHERSTATUS: 'open' }, { voucherStatus: 1 }, '{"voucherStatus":"open"}']) {
+	for (const body of [{ voucherStatus: 'open' }, { VoucherStatus: 'open' }, { voucherStatus: 'unchecked', VOUCHERSTATUS: 'open' }, { voucherStatus: 1 }, '{"voucherStatus":"open"}',
+		{ voucherStatus: null }, { VoucherStatus: null }, { voucherStatus: 'unchecked', VoucherStatus: null }, '{"voucherStatus":null}']) {
 		assert.match(writeAllowViolation(edits, request(body)) ?? '', /is blocked: it would finalize the voucher.*omit voucherStatus to edit without finalizing, or ask the server operator to add "PUT \/v1\/vouchers\/\{id\}\?finalize"\. Allowed: PUT \/v1\/vouchers\/\{id\}\./, JSON.stringify(body));
 		assert.equal(writeAllowViolation(finalize, request(body)), undefined, JSON.stringify(body));
 	}
 	assert.match(writeAllowViolation(edits, request({ voucherStatus: 'open' })) ?? '', /^PUT \/v1\/vouchers\/abc with voucherStatus "open" is blocked/);
+	assert.match(writeAllowViolation(edits, request({ voucherStatus: null })) ?? '', /^PUT \/v1\/vouchers\/abc with voucherStatus null is blocked/);
 });
 
 test('createVoucher requires voucherStatus unchecked unless a ?finalize rule allows it', () => {
@@ -78,14 +80,17 @@ test('createVoucher requires voucherStatus unchecked unless a ?finalize rule all
 	const finalize = parseWriteAllow('POST /v1/vouchers?finalize');
 	const request = (body: unknown) => ({ method: 'POST', path: '/v1/vouchers', query: query(), operationId: 'createVoucher', body });
 
-	for (const body of [{ voucherStatus: 'unchecked' }, { VoucherStatus: 'UNCHECKED' }]) {
+	for (const body of [{ voucherStatus: 'unchecked' }, { voucherStatus: ' UNCHECKED ' }, { voucherStatus: 'unchecked', VoucherStatus: 'Unchecked' }, '{"voucherStatus":"unchecked"}']) {
 		assert.equal(writeAllowViolation(unchecked, request(body)), undefined, JSON.stringify(body));
 	}
-	for (const body of [undefined, {}, { voucherStatus: null }, { voucherStatus: 'open' }, { voucherStatus: 'unchecked', VoucherStatus: 'open' }]) {
+	// Only the canonical key counts as unchecked; any other spelling must agree, or a server binding it could finalize.
+	const conflicting = [{ VoucherStatus: 'unchecked', voucherStatus: null }, { voucherStatus: 'unchecked', VoucherStatus: null }, { voucherStatus: 'unchecked', VOUCHERSTATUS: 'open' }, '{"VoucherStatus":"unchecked","voucherStatus":null}'];
+	for (const body of [undefined, {}, { voucherStatus: null }, { voucherStatus: 'open' }, { VoucherStatus: 'unchecked' }, ...conflicting]) {
 		assert.match(writeAllowViolation(unchecked, request(body)) ?? '', /^POST \/v1\/vouchers with .* is blocked: .*send voucherStatus 'unchecked' to create an unchecked voucher, or ask the server operator to add "POST \/v1\/vouchers\?finalize"/, JSON.stringify(body));
 		assert.equal(writeAllowViolation(finalize, request(body)), undefined, JSON.stringify(body));
 	}
 	assert.match(writeAllowViolation(unchecked, request({})) ?? '', /^POST \/v1\/vouchers with no voucherStatus is blocked/);
+	assert.match(writeAllowViolation(unchecked, request({ VoucherStatus: 'unchecked', voucherStatus: null })) ?? '', /^POST \/v1\/vouchers with voucherStatus null is blocked/);
 });
 
 test('a voucher body that cannot be inspected counts as finalizing', () => {

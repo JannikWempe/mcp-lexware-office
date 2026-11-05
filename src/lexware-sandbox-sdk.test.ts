@@ -250,6 +250,21 @@ test('lexware.updateVoucher lists sent fields the re-read voucher does not hold 
 	assert.deepEqual(result.sideEffects, []);
 });
 
+test('lexware.updateVoucher matches a yyyy-MM-dd value to a timestamp only in date fields', async () => {
+	const after = { ...storedVoucher, version: 4, dueDate: '2026-11-30T00:00:00.000+01:00', voucherNumber: '2026-11-03T00:00:00.000+01:00' };
+	let reads = 0;
+	const { sdk } = sdkWith((input) => {
+		if (input.method === 'PUT') return okResponse({});
+		reads += 1;
+		return okResponse(reads === 1 ? storedVoucher : after);
+	});
+
+	const result = await sdk.updateVoucher('v-1', { dueDate: '2026-11-30', voucherNumber: '2026-11-03' });
+
+	assert.ok('notApplied' in result);
+	assert.deepEqual(result.notApplied, ['voucherNumber']);
+});
+
 test('lexware.updateVoucher drops contactId when switching to the collective contact', async () => {
 	const { sdk, inputs } = voucherHost();
 
@@ -421,6 +436,21 @@ test('lexware.uploadVoucherFile warns about recognition results that need a clos
 
 	const collective = await upload({ ...recognizedVoucher, contactId: undefined, useCollectiveContact: true, voucherDate: undefined });
 	assert.deepEqual(collective.warnings, ['voucherDate is missing']);
+});
+
+test('lexware.voucherWarnings checks a voucher read later without requests', () => {
+	const { sdk, inputs } = uploadHost([]);
+
+	assert.deepEqual(sdk.voucherWarnings(recognizedVoucher), []);
+	assert.deepEqual(sdk.voucherWarnings({ ...recognizedVoucher, voucherNumber: ' ', voucherItems: [] }), [
+		'voucherItems is empty: no amount or category was recognized',
+		'voucherNumber is missing',
+	]);
+	assert.deepEqual(sdk.voucherWarnings({ id: 'v-9', voucherStatus: 'blank' }), ['voucherStatus is blank: text recognition is still running; GET the voucher again in a later call']);
+	for (const notVoucher of [undefined, null, 'v-9', [recognizedVoucher]]) {
+		assert.throws(() => sdk.voucherWarnings(notVoucher), /lexware\.voucherWarnings expects a voucher object/, JSON.stringify(notVoucher));
+	}
+	assert.deepEqual(inputs, []);
 });
 
 test('lexware.uploadVoucherFile returns pending on timeout without uploading again', async () => {

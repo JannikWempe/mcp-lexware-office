@@ -111,14 +111,15 @@ function jsonObjectBody(request: WriteRequest): Record<string, unknown> | undefi
 }
 
 // Describes what in the body finalizes the voucher, or undefined if nothing does. Fails closed: a body
-// it cannot read finalizes, and so does any voucherStatus key spelling (VoucherStatus) a server might bind.
+// it cannot read finalizes, and so does any voucherStatus key spelling (VoucherStatus) a server might bind
+// whose value is not 'unchecked', null included (on POST, a null voucherStatus means open).
 function voucherStatusFinalizing(mode: 'whenSet' | 'unlessUnchecked', request: WriteRequest): string | undefined {
 	const body = jsonObjectBody(request);
 	if (body === undefined) return 'a body that is not a JSON object';
-	const statuses = Object.entries(body).filter(([key, value]) => key.toLowerCase() === 'voucherstatus' && value !== undefined && value !== null);
-	if (statuses.length === 0) return mode === 'unlessUnchecked' ? 'no voucherStatus' : undefined;
+	const statuses = Object.entries(body).filter(([key, value]) => key.toLowerCase() === 'voucherstatus' && value !== undefined);
 	const finalizing = statuses.find(([, value]) => typeof value !== 'string' || value.trim().toLowerCase() !== 'unchecked');
-	return finalizing !== undefined ? `${finalizing[0]} ${JSON.stringify(finalizing[1])}` : undefined;
+	if (finalizing !== undefined) return `${finalizing[0]} ${JSON.stringify(finalizing[1])}`;
+	return mode === 'unlessUnchecked' && body.voucherStatus === undefined ? 'no voucherStatus' : undefined;
 }
 
 const finalizeModes = new Map(catalogWrites.map((write) => [write.operationId, write.finalizeMode]));

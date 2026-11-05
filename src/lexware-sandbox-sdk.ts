@@ -290,9 +290,11 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		const files = isObjectLike(voucher) ? voucher.files : undefined;
 		return Array.isArray(files) ? files.map((file) => String(file)) : [];
 	};
-	// Compares a sent value with what Lexware holds, the way Lexware echoes it: a yyyy-MM-dd date matches its timestamp,
-	// a number its numeric string, and null, '' and false a missing value. `partial` lets objects hold keys that were not sent.
-	const sameValue = (sent: unknown, actual: unknown, partial: boolean): boolean => {
+	// Bookkeeping voucher fields Lexware echoes as a timestamp when sent as yyyy-MM-dd.
+	const voucherDateFields = ['voucherDate', 'dueDate'];
+	// Compares a sent value with what Lexware holds, the way Lexware echoes it: a yyyy-MM-dd date in a date field matches its
+	// timestamp, a number its numeric string, and null, '' and false a missing value. `partial` lets objects hold keys that were not sent.
+	const sameValue = (sent: unknown, actual: unknown, partial: boolean, isDate = false): boolean => {
 		const isEmpty = (value: unknown) => value === undefined || value === null || value === '' || value === false;
 		if (isEmpty(sent) || isEmpty(actual)) {
 			return isEmpty(sent) && isEmpty(actual);
@@ -305,7 +307,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 				&& Object.keys(sent).every((key) => sameValue(sent[key], actual[key], partial))
 				&& (partial || Object.keys(actual).every((key) => Object.prototype.hasOwnProperty.call(sent, key) || isEmpty(actual[key])));
 		}
-		if (typeof sent === 'string' && typeof actual === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(sent)) {
+		if (isDate && typeof sent === 'string' && typeof actual === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(sent)) {
 			return actual === sent || actual.startsWith(sent + 'T');
 		}
 		if ((typeof sent === 'number' || typeof actual === 'number') && isNumeric(sent) && isNumeric(actual)) {
@@ -370,7 +372,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		}
 		// Patch keys the PUT sends: contactId is not sent while useCollectiveContact is true.
 		const sentKeys = Object.keys(patch).filter((key) => Object.prototype.hasOwnProperty.call(body, key));
-		const requested = sentKeys.filter((key) => !sameValue(body[key], before[key], false));
+		const requested = sentKeys.filter((key) => !sameValue(body[key], before[key], false, voucherDateFields.includes(key)));
 		const putResponse = await request({ method: 'PUT', path, body });
 		if (!putResponse || putResponse.ok !== true) {
 			// Throws with status, category and the normalized Lexware issues.
@@ -399,7 +401,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		const changed = Object.keys({ ...before, ...afterRecord })
 			.filter((key) => key !== 'version' && key !== 'updatedDate' && JSON.stringify(before[key]) !== JSON.stringify(afterRecord[key]));
 		// Lexware can answer 200 without keeping a field (e.g. on unchecked vouchers) and derives others, such as contactName.
-		const notApplied = sentKeys.filter((key) => !sameValue(body[key], afterRecord[key], true));
+		const notApplied = sentKeys.filter((key) => !sameValue(body[key], afterRecord[key], true, voucherDateFields.includes(key)));
 		const sideEffects = changed.filter((key) => !Object.prototype.hasOwnProperty.call(patch, key));
 		return { before, after, changed, requested, notApplied, sideEffects };
 	};
@@ -430,8 +432,15 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		}
 		return part;
 	};
-	// Signs that text recognition misread a receipt, from the recognized voucher alone. Hints, not a complete check.
-	const extractionWarnings = (voucher: Record<string, unknown>): string[] => {
+	// Signs that text recognition misread a receipt, from the voucher alone (no requests). Hints, not a complete check.
+	// A blank voucher gets one warning instead: recognition is still running, so its fields mean nothing yet.
+	const voucherWarnings = (voucher: unknown): string[] => {
+		if (!isObjectLike(voucher) || Array.isArray(voucher)) {
+			throw new Error('lexware.voucherWarnings expects a voucher object, e.g. the data of GET /v1/vouchers/{id}');
+		}
+		if (voucher.voucherStatus === 'blank') {
+			return ['voucherStatus is blank: text recognition is still running; GET the voucher again in a later call'];
+		}
 		const warnings: string[] = [];
 		if (voucher.type === 'salesinvoice' || voucher.type === 'salescreditnote') {
 			warnings.push('type is ' + voucher.type + ': receipts are usually purchaseinvoice or purchasecreditnote; also check the contact and the categories');
@@ -508,7 +517,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 				return { ...uploaded, ...(voucher !== undefined && { voucher }), extraction: 'pending', waitError };
 			}
 			if (isObjectLike(voucher) && voucher.voucherStatus !== 'blank') {
-				return { ...uploaded, voucher, extraction: 'done', warnings: extractionWarnings(voucher) };
+				return { ...uploaded, voucher, extraction: 'done', warnings: voucherWarnings(voucher) };
 			}
 		}
 		return { ...uploaded, ...(voucher !== undefined && { voucher }), extraction: 'pending' };
@@ -656,6 +665,7 @@ export function createLexwareSdk(requestJson: (payload: string) => Promise<strin
 		updateVoucher,
 		uploadVoucherFile,
 		attachFileToVoucher,
+		voucherWarnings,
 		sleep,
 		findVouchers,
 	});
@@ -680,11 +690,14 @@ export const lexwareSdkDeclaration = `declare const lexware: {
   // POST /v1/files (type=voucher), then polls the voucher after 2, 4, 8 s until it is no longer blank (timeoutMs default and max 15000):
   // up to 5 requests. One waiting upload per execute call (30 s timeout); for batches pass waitForExtraction: false. Never re-uploads;
   // extraction 'pending' on timeout, or with waitError when a poll failed (e.g. maxRequests used up), means GET /v1/vouchers/{voucherId} later.
-  // extraction 'done' adds warnings: hints that text recognition misread the receipt (sales type, no items, item without amount or
-  // categoryId, no totalGrossAmount, voucherNumber, voucherDate or contact). Not exhaustive: still compare with the document.
+  // extraction 'done' adds warnings: the voucherWarnings of the recognized voucher.
   // Dry run: no upload, no polling; returns the plan.
   uploadVoucherFile(input: FileInput & { waitForExtraction?: boolean | { timeoutMs?: number } }): Promise<{ fileId: string; voucherId: string; sent: UploadSent; voucher?: unknown; extraction: 'done' | 'pending' | 'skipped'; warnings?: string[]; waitError?: string } | { dryRun: true; planned: PlannedWrite; extraction: 'skipped' }>;
   attachFileToVoucher(voucherId: string, input: FileInput): Promise<{ fileId: string; sent: UploadSent } | { dryRun: true; planned: PlannedWrite }>; // POST /v1/vouchers/{id}/files, 1 request
+  // No requests. Hints that text recognition misread a receipt, for a voucher read with GET /v1/vouchers/{id} (e.g. after batch uploads):
+  // sales type, no items, item without amount or categoryId, no totalGrossAmount, voucherNumber, voucherDate or contact. A blank voucher
+  // gets one warning that recognition is still running. Not exhaustive: still compare with the document.
+  voucherWarnings(voucher: unknown): string[];
   sleep(ms: number): Promise<void>; // 0-${MAX_SLEEP_MS} ms per call; the 30 s execute timeout bounds the total
   // Duplicate check before uploads. A voucherNumber is queried exactly first (1 request). Without voucherNumber (contactName and/or amount
   // suffice), or if the exact query finds nothing, it pages /v1/voucherlist in dateFrom..dateTo, which is then required (else throws):
