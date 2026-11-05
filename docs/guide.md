@@ -139,6 +139,7 @@ async () => {
 - rate-limits host requests to one every 600 ms by default (a buffer below Lexware's 2 requests/second),
 - retries a `GET` once when Lexware answers `429`, after `Retry-After` if it is ≤ 5 s or after a 1–2 s backoff if the header is missing, and holds back queued requests for that wait (writes are never retried; the wait counts against the 30 s `execute` timeout, the retry against `maxRequests`),
 - returns JSON/text or binary metadata,
+- serves reference data from the [response cache](#response-cache) when it was fetched before,
 - adds operation metadata when the request matches the catalog,
 - allows unknown `/v1/...` paths for API coverage gaps.
 
@@ -245,6 +246,23 @@ async () => {
 }
 ```
 
+### Response cache
+
+Reference data rarely changes but is needed by many workflows, so the server keeps successful `GET` responses of these operations in memory for 1 hour and answers repeated requests from there, also in later `execute` calls:
+
+- `GET /v1/posting-categories`, `/v1/profile`, `/v1/countries`, `/v1/payment-conditions`, `/v1/print-layouts` (`cacheTtlSeconds` in `spec.paths`).
+
+How it behaves:
+
+- Only `2xx` responses with JSON data are cached. Errors, text and binary responses are always fetched.
+- The cache key is the path, the query (in any order), `accept` and `includeAllHeaders`.
+- A cache hit is not sent: it doesn't count against `maxRequests`, doesn't wait for the rate limiter, and the response carries `cached: true`. It appears in `requests` as `{ "method": "GET", "path": "/v1/posting-categories", "status": 200, "ok": true, "write": false, "sent": false, "cached": true, "durationMs": 0 }`, or in `readsSummary.cached` when reads are summarized.
+- Every write the server sends clears the whole cache, whatever its outcome. Writes that are not sent (blocked, [dry runs](#dry-runs)) keep it.
+- `lexware.request({ path: '/v1/posting-categories', cache: false })` skips the cache and stores the fresh response.
+- Lists and details of business data (vouchers, invoices, contacts, ...) are never cached, so polls such as waiting for a voucher to leave `blank` always see the current state. To hand such data to the next call, use [`state`](#state-between-execute-calls).
+- The cache lives in the server process, holds at most 200 responses and 5 MB (least recently used first out), and is cleared by a restart. Changes made outside this server, e.g. in the Lexware web app, show up after at most an hour; pass `cache: false` if you need them sooner.
+- Set `LEXWARE_OFFICE_CACHE=off` to disable it.
+
 ### Tool results and metadata
 
 Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount`, `requests` and possibly `readsSummary` for `execute`, and `dryRun`/`plannedWrites` for a [dry run](#dry-runs); `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent`. No `outputSchema` is declared because `result` is arbitrary.
@@ -253,13 +271,13 @@ Results whose JSON exceeds 24,000 characters are shrunk structurally, so the tex
 
 `lexware.request` responses include only the headers useful for follow-up logic: `content-type`, `content-length`, `content-disposition`, `location`, `retry-after`, `x-request-id` and `x-ratelimit-*`. Pass `includeAllHeaders: true` to get every upstream header.
 
-`requests` is an audit log of the HTTP attempts `execute` made, in the order the attempts finished — present on success and on failure. Every write and every non-OK, errored or unsent attempt is always listed. Successful reads are listed too, unless there are more than 5 of them; then they are left out of `requests` and counted in `readsSummary` instead, e.g. `{ "count": 18, "byStatus": { "200": 18 }, "totalDurationMs": 6120 }`.
+`requests` is an audit log of the HTTP attempts `execute` made, in the order the attempts finished — present on success and on failure. Every write and every non-OK, errored or unsent attempt is always listed. Successful reads, including [cache hits](#response-cache), are listed too, unless there are more than 5 of them; then they are left out of `requests` and counted in `readsSummary` instead, e.g. `{ "count": 18, "byStatus": { "200": 18 }, "totalDurationMs": 6120 }`, plus `cached` for the reads answered by the [response cache](#response-cache).
 
 ```json
 { "method": "POST", "path": "/v1/invoices", "status": 201, "ok": true, "write": true, "sent": true, "durationMs": 412 }
 ```
 
-Failed attempts (blocked writes, network errors, timeouts, cancellations) carry `error` instead of `status`/`ok`; a retried `429` shows up as two entries. `sent` tells whether the request reached `fetch`: `false` means Lexware never saw it (blocked, or cancelled while queued). A write with `error` and `sent: true`, or answered with `504`, also carries `"outcome": "unknown"` — it may have been applied by Lexware (e.g. aborted after sending, or the gateway timed out while Lexware kept processing), so reconcile with a `GET` before retrying it. Entries never contain headers, query values, bodies, or the API key. Use it after a failed execution to see which writes already succeeded before retrying. `requestCount` is the number of HTTP attempts actually sent to Lexware — the `requests` entries with `sent: true` plus the reads counted in `readsSummary`, so a retried `429` counts twice. `maxRequests` (default 10, max 50) bounds exactly that: requests rejected before sending (invalid input, blocked writes, cancelled while queued) don't count, and an attempt beyond the budget is not sent and fails with `Execution exceeded maxRequests=N` (it appears in `requests` with that `error` and `sent: false`).
+Failed attempts (blocked writes, network errors, timeouts, cancellations) carry `error` instead of `status`/`ok`; a retried `429` shows up as two entries. `sent` tells whether the request reached `fetch`: `false` means Lexware never saw it (blocked, cancelled while queued, or answered from the [response cache](#response-cache) with `cached: true`). A write with `error` and `sent: true`, or answered with `504`, also carries `"outcome": "unknown"` — it may have been applied by Lexware (e.g. aborted after sending, or the gateway timed out while Lexware kept processing), so reconcile with a `GET` before retrying it. Entries never contain headers, query values, bodies, or the API key. Use it after a failed execution to see which writes already succeeded before retrying. `requestCount` is the number of HTTP attempts actually sent to Lexware — the `requests` entries with `sent: true` plus the reads counted in `readsSummary` except its `cached` ones, so a retried `429` counts twice and a cache hit not at all. `maxRequests` (default 10, max 50) bounds exactly that: requests rejected before sending (invalid input, blocked writes, cancelled while queued) don't count, and an attempt beyond the budget is not sent and fails with `Execution exceeded maxRequests=N` (it appears in `requests` with that `error` and `sent: false`).
 
 ### Dry runs
 

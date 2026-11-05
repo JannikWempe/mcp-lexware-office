@@ -182,7 +182,7 @@ test('failing execute still reports requests made before the error', async () =>
 	const mcp = await startMcp(lexware.baseUrl);
 	try {
 		const { response } = callExecute(mcp, `async () => {
-			await lexware.request({ path: '/v1/profile' });
+			await lexware.request({ path: '/v1/contacts' });
 			await lexware.request({ method: 'POST', path: '/v1/contacts', body: {} }).catch(() => {});
 			throw new Error('boom');
 		}`);
@@ -194,13 +194,34 @@ test('failing execute still reports requests made before the error', async () =>
 		assert.equal(result?.structuredContent?.requestCount, 1);
 		const requests = result?.structuredContent?.requests as Array<Record<string, unknown>>;
 		assert.deepEqual(requests.map(({ method, path, status, write }) => ({ method, path, status, write })), [
-			{ method: 'GET', path: '/v1/profile', status: 200, write: false },
+			{ method: 'GET', path: '/v1/contacts', status: 200, write: false },
 			{ method: 'POST', path: '/v1/contacts', status: undefined, write: true },
 		]);
 		assert.match(String(requests[1]?.error), /blocked: writes are disabled/);
 	} finally {
 		mcp.close();
 		lexware.close();
+	}
+});
+
+test('reference data is cached across execute calls unless LEXWARE_OFFICE_CACHE=off', async () => {
+	for (const [env, expectedHits] of [[{}, 1], [{ LEXWARE_OFFICE_CACHE: 'off' }, 2]] as const) {
+		let countriesHits = 0;
+		const lexware = await startFakeLexware((req, res) => {
+			if (req.url === '/v1/countries') countriesHits += 1;
+			res.writeHead(200, { 'content-type': 'application/json' }).end('[]');
+		});
+		const mcp = await startMcp(lexware.baseUrl, env);
+		try {
+			await callExecute(mcp, 'async () => (await lexware.request({ path: "/v1/countries" })).cached').response;
+			const { result } = await callExecute(mcp, 'async () => (await lexware.request({ path: "/v1/countries" })).cached ?? false').response;
+			assert.equal(countriesHits, expectedHits, JSON.stringify(env));
+			assert.equal(result?.structuredContent?.result, expectedHits === 1);
+			assert.equal(result?.structuredContent?.requestCount, expectedHits === 1 ? 0 : 1);
+		} finally {
+			mcp.close();
+			lexware.close();
+		}
 	}
 });
 

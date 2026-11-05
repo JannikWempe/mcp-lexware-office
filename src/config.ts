@@ -12,6 +12,8 @@ export interface ServerConfig {
 	writesEnabled: boolean;
 	// Writes allowed when writesEnabled; undefined allows every write.
 	writeAllow?: WriteAllowRule[];
+	// Cache reference-data GETs across execute calls; LEXWARE_OFFICE_CACHE=off disables it.
+	cacheEnabled: boolean;
 }
 
 // The only place that reads the environment. Everything else gets these values injected.
@@ -28,5 +30,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 		writesEnabled: env.LEXWARE_OFFICE_READ_ONLY !== 'true' && env.LEXWARE_OFFICE_ALLOW_WRITES === 'true',
 		// Throws on entries that don't name a cataloged write, so a typo fails at startup instead of silently blocking.
 		writeAllow: env.LEXWARE_OFFICE_WRITE_ALLOW !== undefined ? parseWriteAllow(env.LEXWARE_OFFICE_WRITE_ALLOW) : undefined,
+		cacheEnabled: env.LEXWARE_OFFICE_CACHE?.trim().toLowerCase() !== 'off',
 	};
 }

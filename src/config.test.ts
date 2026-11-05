@@ -34,6 +34,7 @@ test('API key and base URL are passed through, undefined when unset', () => {
 		uploadDirs: [],
 		writesEnabled: false,
 		writeAllow: undefined,
+		cacheEnabled: true,
 	});
 	const empty = loadConfig({});
 	assert.equal(empty.apiKey, undefined);
@@ -52,6 +53,16 @@ test('WRITE_ALLOW is undefined when unset and parsed into catalog rules when set
 		{ operationId: 'uploadFileToVoucher', method: 'POST', pathTemplate: '/v1/vouchers/{id}/files', finalize: false },
 		{ operationId: 'updateVoucher', method: 'PUT', pathTemplate: '/v1/vouchers/{id}', finalize: false },
 	]);
+});
+
+test('the response cache is on unless CACHE=off', () => {
+	assert.equal(loadConfig({}).cacheEnabled, true);
+	for (const value of ['off', 'OFF', ' off ']) {
+		assert.equal(loadConfig({ LEXWARE_OFFICE_CACHE: value }).cacheEnabled, false, `CACHE=${value}`);
+	}
+	for (const value of ['on', 'true', '']) {
+		assert.equal(loadConfig({ LEXWARE_OFFICE_CACHE: value }).cacheEnabled, true, `CACHE=${value}`);
+	}
 });
 
 test('WRITE_ALLOW fails fast on entries that are not cataloged writes', () => {
