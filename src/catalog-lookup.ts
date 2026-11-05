@@ -1,4 +1,4 @@
-import type { HttpMethod, LexwareApiCatalog, LexwareOperation } from './lexware-spec.js';
+import type { HttpMethod, LexwareApiCatalog } from './lexware-spec.js';
 
 // The guest-facing `find` and `describe` helpers of the search and execute sandboxes: a ranked,
 // compact lookup over the catalog so discovery doesn't return whole spec sections. The
@@ -44,8 +44,8 @@ export function createCatalogLookup(catalog: LexwareApiCatalog) {
 	const WEIGHT = { tag: 3, path: 2, id: 2, summary: 2, param: 1, text: 1 };
 	// Too common in the catalog to tell entries apart.
 	const STOPWORDS = new Set(['a', 'an', 'and', 'or', 'the', 'of', 'to', 'for', 'in', 'on', 'by', 'with', 'from', 'is', 'are', 'be', 'v1', 'id', 'der', 'die', 'das', 'und', 'ein', 'eine', 'mit', 'von', 'für']);
-	// German words a query may use that the catalog only has in English. Nouns the catalog already
-	// tags in German (beleg, umsatz, mahnungen, angebote, …) need no entry.
+	// German query words mapped to the English words the catalog uses: mostly verbs and nouns the
+	// catalog has no German tag for (beleg, umsatz, mahnungen, angebote, … are tagged already).
 	const SYNONYMS: Record<string, string[]> = {
 		hochladen: ['upload'], herunterladen: ['download'], anlegen: ['create'], erstellen: ['create'], ändern: ['update'], aktualisieren: ['update'],
 		bearbeiten: ['update'], löschen: ['delete'], suchen: ['find', 'list'], finden: ['find', 'list'], auflisten: ['list'], abrufen: ['get'],
@@ -81,7 +81,8 @@ export function createCatalogLookup(catalog: LexwareApiCatalog) {
 	};
 	const hasOwn = (object: unknown, key: string) => object !== null && typeof object === 'object' && Object.prototype.hasOwnProperty.call(object, key);
 	const propertyAccess = (key: string) => (/^[A-Za-z_$][\w$]*$/.test(key) ? '.' + key : '[' + JSON.stringify(key) + ']');
-	const paths = (catalog.paths ?? {}) as Record<string, Partial<Record<HttpMethod, LexwareOperation>>>;
+	const paths = catalog.paths ?? {};
+	const isMethod = (value: string): value is HttpMethod => (METHODS as string[]).includes(value);
 
 	let index: Entry[] | undefined;
 	const buildIndex = (): Entry[] => {
@@ -180,6 +181,7 @@ export function createCatalogLookup(catalog: LexwareApiCatalog) {
 		if (options === null || typeof options !== 'object') throw new Error('find(query, options) expects options to be an object, e.g. { limit: 5 }');
 		const { limit = DEFAULT_LIMIT, kinds } = options;
 		if (typeof limit !== 'number' || !Number.isFinite(limit)) throw new Error('find: limit must be a finite number');
+		const maxResults = Math.min(Math.max(Math.floor(limit), 1), MAX_LIMIT);
 		if (kinds !== undefined) {
 			if (!Array.isArray(kinds)) throw new Error('find: kinds must be an array, e.g. ["operation", "workflow"]');
 			const unknownKinds = kinds.filter((kind) => !KINDS.includes(kind));
@@ -190,8 +192,10 @@ export function createCatalogLookup(catalog: LexwareApiCatalog) {
 		// The query written as one word ('order confirmation' → 'orderconfirmation') can add to the score but isn't required.
 		const compound = compoundTokens(query)[0];
 		const optionalTerms = compound !== undefined && !terms.includes(compound) && terms.length > 1 ? [compound] : [];
-		// A catalog path in the query ('GET /v1/vouchers/{id}') points at that operation.
-		const queryPath = /\/v1\/[^\s?]*/.exec(query)?.[0];
+		// A catalog path in the query ('/v1/vouchers/{id}', 'PUT /v1/vouchers/{id}') points at that operation.
+		const pathMatch = /(?:\b(get|post|put|patch|delete)\s+)?(\/v1\/[^\s?]*)/i.exec(query);
+		const queryMethod = pathMatch?.[1]?.toUpperCase();
+		const queryPath = pathMatch?.[2];
 		const words = terms.flatMap(spellings);
 		index ??= buildIndex();
 		const candidates = index.filter((entry) => kinds === undefined || kinds.includes(entry.match.kind));
@@ -206,11 +210,11 @@ export function createCatalogLookup(catalog: LexwareApiCatalog) {
 			if (score === 0) return;
 			// Entries matching more of the query's terms rank above ones matching one term strongly.
 			score *= scores.filter((value) => value > 0).length / Math.max(knownTerms, 1);
-			if (queryPath !== undefined && entry.match.path === queryPath) score += 10;
+			if (queryPath !== undefined && entry.match.path === queryPath) score += queryMethod === undefined ? 10 : entry.match.method === queryMethod ? 12 : 8;
 			if (entry.idTokens.length > 0) score += 0.5 * entry.idTokens.filter((token) => words.includes(token)).length / entry.idTokens.length;
 			results.push({ ...entry.match, score: Math.round(score * 100) / 100 });
 		});
-		return results.sort((a, b) => b.score - a.score).slice(0, Math.min(Math.max(Math.floor(limit), 1), MAX_LIMIT));
+		return results.sort((a, b) => b.score - a.score).slice(0, maxResults);
 	};
 
 	// Resolves a concrete path such as /v1/vouchers/1234 to its catalog template /v1/vouchers/{id}.
@@ -228,9 +232,9 @@ export function createCatalogLookup(catalog: LexwareApiCatalog) {
 	// Compact view of one operation, without tags, capabilities and examples.
 	const describe = (method: string, path: string) => {
 		if (typeof method !== 'string' || typeof path !== 'string') throw new Error('describe(method, path) expects two strings, e.g. describe("GET", "/v1/voucherlist")');
-		const methodKey = method.toLowerCase() as HttpMethod;
+		const methodKey = method.toLowerCase();
 		const template = resolveTemplate(path);
-		const operation = template !== undefined && METHODS.includes(methodKey) && hasOwn(paths[template], methodKey) ? paths[template][methodKey] : undefined;
+		const operation = template !== undefined && isMethod(methodKey) && hasOwn(paths[template], methodKey) ? paths[template][methodKey] : undefined;
 		if (template === undefined || operation === undefined) {
 			const methods = template !== undefined ? Object.keys(paths[template]).map((key) => key.toUpperCase()) : [];
 			throw new Error(

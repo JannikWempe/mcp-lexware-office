@@ -28,6 +28,8 @@ test('find ranks specific operations for English and German queries', () => {
 	assert.equal(ids('payment terms', 1)[0], 'listPaymentConditions');
 	assert.equal(ids('webhooks', 1)[0], 'listEventSubscriptions');
 	assert.equal(ids('GET /v1/vouchers/{id}', 1)[0], 'getVoucher');
+	assert.equal(ids('POST /v1/contacts', 1)[0], 'createContact');
+	assert.equal(ids('put /v1/contacts/{id}', 1)[0], 'updateContact');
 	// German synonyms from spec.info.domainIndex tags, and German verbs the catalog only has in English.
 	assert.ok(ids('mahnung', 3).includes('createDunning'));
 	assert.ok(ids('angebote', 3).includes('createQuotation'));
