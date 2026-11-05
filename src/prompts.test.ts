@@ -138,7 +138,10 @@ test('prompts render their arguments', () => {
 });
 
 // Parses like prompts/get does, so empty strings go through the argument schemas.
-const renderParsed = (name: string, args: Record<string, string>, context: PromptContext) => renderPrompt(prompt(name), prompt(name).argsSchema.parse(args), context);
+const renderParsed = (name: string, args: Record<string, string>, context: PromptContext) => {
+	const found = prompt(name);
+	return renderPrompt(found, found.argsSchema.parse(args), context);
+};
 
 test('prompts treat empty arguments as omitted', () => {
 	const profit = renderParsed('profit-report', { dateFrom: '', dateTo: ' ' }, { writesEnabled: false });
@@ -150,7 +153,11 @@ test('prompts treat empty arguments as omitted', () => {
 	assert.match(invoice, /Ask the user for the customer\./);
 	assert.doesNotMatch(invoice, /Customer: /);
 
-	assert.equal(renderParsed('revenue-report', { basis: '' }, { writesEnabled: false }), render('revenue-report', {}, { writesEnabled: false }));
+	for (const basis of ['', ' ']) {
+		assert.equal(renderParsed('revenue-report', { basis }, { writesEnabled: false }), render('revenue-report', {}, { writesEnabled: false }), JSON.stringify(basis));
+	}
+	assert.equal(renderParsed('upload-receipts', { mode: ' ' }, { writesEnabled: true }), render('upload-receipts', {}, { writesEnabled: true }));
+	assert.equal(prompt('revenue-report').argsSchema.safeParse({ basis: 'gross' }).success, false);
 	assert.equal(renderParsed('upload-receipts', { files: ' ' }, { writesEnabled: true }), render('upload-receipts', {}, { writesEnabled: true }));
 });
 

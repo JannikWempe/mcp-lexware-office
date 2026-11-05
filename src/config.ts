@@ -41,7 +41,7 @@ function parseBaseUrl(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
 	if (trimmed === undefined || trimmed === '') return undefined;
 	if (!URL.canParse(trimmed) || !['http:', 'https:'].includes(new URL(trimmed).protocol)) {
-		throw new Error(`LEXWARE_OFFICE_API_BASE_URL "${value}" is not an http(s) URL. Unset it to use https://api.lexware.io.`);
+		throw new Error(`LEXWARE_OFFICE_API_BASE_URL "${value}" is not an http(s) URL. Unset it to use the default.`);
 	}
 	return trimmed;
 }

@@ -18,22 +18,3 @@ test('request paths are appended to the base URL, keeping its path prefix', asyn
 	assert.equal(await sentUrl('https://proxy.test/lexware', { path: '/v1/contacts' }), 'https://proxy.test/lexware/v1/contacts');
 	assert.equal(await sentUrl('https://proxy.test/lexware/', { path: '/v1/contacts/a%2Fb' }), 'https://proxy.test/lexware/v1/contacts/a%2Fb');
 });
-
-test('a binary response whose stream already errored does not reject unhandled', async () => {
-	const unhandled: unknown[] = [];
-	const onUnhandled = (reason: unknown) => unhandled.push(reason);
-	process.on('unhandledRejection', onUnhandled);
-	try {
-		const fetchImpl: typeof fetch = async () => new Response(
-			new ReadableStream({ start: (controller) => controller.error(new Error('stream broke')) }),
-			{ status: 200, headers: { 'content-type': 'application/pdf', 'content-length': '3' } },
-		);
-		const client = new LexwareApiClient({ apiKey: 'test-key', baseUrl: 'https://example.test', rateLimitIntervalMs: 0, fetchImpl });
-		const result = await client.request({ path: '/v1/files/abc' });
-		assert.equal((result.data as { binary?: boolean }).binary, true);
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		assert.deepEqual(unhandled, []);
-	} finally {
-		process.off('unhandledRejection', onUnhandled);
-	}
-});

@@ -228,7 +228,7 @@ Reference data `GET`s are cached in server memory (see [docs/guide.md#response-c
 
 ### API base URL
 
-Requests go to `https://api.lexware.io`. To route them through a proxy, set `LEXWARE_OFFICE_API_BASE_URL`; a path prefix is kept, so this sends `GET /v1/contacts` to `https://proxy.example/lexware/v1/contacts`:
+Requests go to `https://api.lexware.io`. To route them through a proxy, set `LEXWARE_OFFICE_API_BASE_URL`; a path prefix is kept, so this sends `GET /v1/contacts` to `https://proxy.example/lexware/v1/contacts`. An empty value uses the default; a value that isn't an `http(s)` URL stops the server at startup:
 
 ```json
 {

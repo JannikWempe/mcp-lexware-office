@@ -245,3 +245,21 @@ test('missing API key fails before fetch with the env var hint', async () => {
 	await assert.rejects(() => client.request({ path: '/v1/countries' }), /LEXWARE_OFFICE_API_KEY environment variable is required/);
 	assert.equal(calls, 0);
 });
+
+test('a binary response whose stream already errored does not reject unhandled', async () => {
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => unhandled.push(reason);
+	process.on('unhandledRejection', onUnhandled);
+	try {
+		const fetchImpl: typeof fetch = async () => new Response(
+			new ReadableStream({ start: (controller) => controller.error(new Error('stream broke')) }),
+			{ status: 200, headers: { 'content-type': 'application/pdf', 'content-length': '3' } },
+		);
+		const result = await clientWithFetch(fetchImpl).request({ path: '/v1/files/abc' });
+		assert.equal((result.data as { binary?: boolean }).binary, true);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.deepEqual(unhandled, []);
+	} finally {
+		process.off('unhandledRejection', onUnhandled);
+	}
+});

@@ -38,9 +38,10 @@ const given = (value: string | undefined) => {
 	const trimmed = value?.trim();
 	return trimmed === '' ? undefined : trimmed;
 };
-const textArg = (description: string) => z.string().optional().transform(given).describe(description);
+const blankAsOmitted = z.string().optional().transform(given);
+const textArg = (description: string) => blankAsOmitted.describe(description);
 const enumArg = <const Values extends [string, ...string[]]>(values: Values, description: string) =>
-	z.enum(values).or(z.literal('')).optional().transform((value) => (value === '' ? undefined : value)).describe(description);
+	blankAsOmitted.pipe(z.enum(values).optional()).describe(description);
 
 const dateArg = (bound: string) => textArg(`${bound} of the voucherDate period, yyyy-MM-dd. Omitted: ask the user.`);
 const modeArg = enumArg(['apply', 'preview'], 'apply (default): send the writes once the checks pass. preview: plan the writes with execute dryRun: true and send none.');
