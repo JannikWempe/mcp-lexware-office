@@ -214,7 +214,7 @@ declare const state: {
 - Limits: 1 MB per serialized value, 10 MB and 1,000 keys in total, keys of 1 to 256 characters. A `set` over a limit throws and keeps the previous value.
 - An entry expires 1 hour after it was last read or written.
 - The store lives in the server process: a restart clears it, nothing is written to disk. All `execute` calls of the server share it, so use a distinct key per task, run one batch of a task at a time (there is no locking between parallel calls) and delete the key when done.
-- A [dry run](#dry-runs) reads the stored state, but its changes are discarded when the call ends, so previewing a batch doesn't advance the real job.
+- A [dry run](#dry-runs) reads the stored state, but its changes are discarded when the call ends, so previewing a batch doesn't advance the real job. Its reads don't reset the 1 hour expiry either.
 - `state` calls are not Lexware requests: they don't count against `maxRequests` and don't appear in `requests`.
 
 Use it for work that doesn't fit one call (2 requests/s, 30 s timeout, `maxRequests` ≤ 50), e.g. a report that needs one detail `GET` per voucher. The first call stores the ids and a cursor:
@@ -232,7 +232,7 @@ Each later call (with `maxRequests: 25`) processes the next batch and accumulate
 ```js
 async () => {
   const job = await state.get('q1-input-tax');
-  if (job === undefined) return { error: 'no job stored (expired or server restarted): run the first call again' };
+  if (job === undefined) throw new Error('No job stored (expired or server restarted): run the first call again');
   for (const id of job.ids.slice(job.cursor, job.cursor + 20)) {
     const voucher = await lexware.json({ path: `/v1/vouchers/${id}` });
     job.taxCents += lexware.requireMoney(voucher, 'totalTaxAmount');

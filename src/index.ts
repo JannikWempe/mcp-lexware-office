@@ -121,7 +121,7 @@ dryRun: true previews writes without sending them. Reads run normally, so the sc
 
 This server is read-only by default. POST, PUT, PATCH, and DELETE are blocked unless the server is started with LEXWARE_OFFICE_ALLOW_WRITES=true. Setting LEXWARE_OFFICE_READ_ONLY=true is a hard block that overrides ALLOW_WRITES. Check spec.info.writesEnabled to branch before attempting a write. LEXWARE_OFFICE_WRITE_ALLOW can further restrict writes to a list: spec.info.writePolicy.allow is then the only writes permitted ('METHOD /v1/template'; a '?finalize' suffix also allows finalize=true, otherwise sales documents can only be created as drafts). Writes outside it are rejected before sending.
 
-Every execute call starts a fresh sandbox; only state carries data to the next call. Split work that exceeds one call (2 requests/s, 30 s, maxRequests <= 50) into batches, keep the ids, a cursor and partial totals in state, and return only progress until the last batch. state is shared by all execute calls of this server; a dry run reads it, but its changes are discarded. Use a distinct key per task, run one batch of a task at a time, and delete the key when done.
+Every execute call starts a fresh sandbox; only state carries data to the next call. Split work that exceeds one call (2 requests/s, 30 s, maxRequests <= 50) into batches, keep the ids, a cursor and partial totals in state, and return only progress until the last batch. state is shared by all execute calls of this server: use a distinct key per task, run one batch of a task at a time, and delete the key when done.
 
 Example:
 
@@ -149,7 +149,7 @@ Later calls (maxRequests: 25) process the next batch and accumulate; the last on
 
 async () => {
   const job = await state.get('q1-input-tax');
-  if (job === undefined) return { error: 'no job stored (expired or server restarted): run the first call again' };
+  if (job === undefined) throw new Error('No job stored (expired or server restarted): run the first call again');
   for (const id of job.ids.slice(job.cursor, job.cursor + 20)) {
     const voucher = await lexware.json({ path: \`/v1/vouchers/\${id}\` });
     job.taxCents += lexware.requireMoney(voucher, 'totalTaxAmount');

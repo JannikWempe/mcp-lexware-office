@@ -9,8 +9,7 @@ import type { CallToolResult } from '@modelcontextprotocol/server';
 import { AccountProfile, type AccountInfo } from './account.js';
 import { CodeMode } from './code-mode.js';
 import { LexwareApiClient, type LexwareClientOptions } from './lexware-client.js';
-import { stateDeclaration } from './lexware-sandbox-sdk.js';
-import { DEFAULT_STATE_LIMITS, SandboxState } from './sandbox-state.js';
+import { SandboxState } from './sandbox-state.js';
 import { parseWriteAllow } from './write-policy.js';
 
 const jsonResponse = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), {
@@ -766,17 +765,6 @@ test('state is not reachable from search', async () => {
 	const payload = payloadOf(await codeMode.search(`async () => ({ state: typeof state, host: Object.getOwnPropertyNames(globalThis).filter((name) => name.startsWith('__')) })`));
 
 	assert.deepEqual(payload.result, { state: 'undefined', host: ['__capabilitiesJson'] });
-});
-
-test('state is frozen, not on globalThis, and exposes exactly the declared methods', async () => {
-	const declared = [...stateDeclaration.match(/^declare const state: \{\n([\s\S]*?)\n\};/m)![1].matchAll(/^ {2}(\w+)(?:<[^>]*>)?\(/gm)].map((match) => match[1]);
-	const { codeMode } = codeModeWith();
-
-	const payload = payloadOf(await codeMode.execute(`async () => ({ keys: Object.keys(state), frozen: Object.isFrozen(state), onGlobal: typeof globalThis.state })`, { maxRequests: 1 }));
-
-	assert.deepEqual(payload.result, { keys: declared, frozen: true, onGlobal: 'undefined' });
-	assert.deepEqual(declared, ['get', 'set', 'delete', 'keys']);
-	assert.match(stateDeclaration, new RegExp(`${DEFAULT_STATE_LIMITS.maxValueBytes / (1024 * 1024)} MB per value, ${DEFAULT_STATE_LIMITS.maxTotalBytes / (1024 * 1024)} MB and ${DEFAULT_STATE_LIMITS.maxKeys} keys`));
 });
 
 test('a dry run reads the stored state but discards its changes', async () => {

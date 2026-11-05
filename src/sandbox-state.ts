@@ -56,13 +56,14 @@ export class SandboxState {
 	// Also checks the JSON on the host: guest code can call the host function without the guest SDK.
 	set(key: string, json: string): void {
 		this.validateKey(key, 'set');
-		if (typeof json !== 'string' || !isJson(json)) throw new Error('state.set expects a JSON-serializable value');
+		if (typeof json !== 'string') throw new Error('state.set expects a JSON-serializable value');
 		this.expire();
 		const valueBytes = Buffer.byteLength(json);
 		const bytes = Buffer.byteLength(key) + valueBytes;
 		if (valueBytes > this.limits.maxValueBytes) {
 			throw new Error(`state.set: the value for "${key}" is ${formatBytes(valueBytes)} serialized; the limit is ${formatBytes(this.limits.maxValueBytes)} per value. Store less, or split it across keys.`);
 		}
+		if (!isJson(json)) throw new Error('state.set expects a JSON-serializable value');
 		const previous = this.entries.get(key);
 		if (previous === undefined && this.entries.size >= this.limits.maxKeys) {
 			throw new Error(`state.set: the state already holds ${this.limits.maxKeys} keys, the limit. Delete keys you no longer need with state.delete.`);
