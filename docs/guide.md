@@ -265,7 +265,7 @@ How it behaves:
 
 ### Tool results and metadata
 
-Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount`, `requests` and possibly `readsSummary` for `execute`, and `dryRun`/`plannedWrites` for a [dry run](#dry-runs); `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent`. No `outputSchema` is declared because `result` is arbitrary.
+Both tools return a JSON text block (`{ ok, result, logs }`, plus `requestCount`, `requests` and possibly `readsSummary` for `execute`, and `dryRun`/`plannedWrites` for a [dry run](#dry-runs); `error` instead of `result` on failure, with `isError: true`). The same object is also returned as `structuredContent`. No `outputSchema` is declared because `result` is arbitrary. `logs` keeps the first 25 `console` entries of a call, each up to 8,000 characters; a final entry says how many more were dropped.
 
 Results whose JSON exceeds 24,000 characters are shrunk structurally, so the text block stays valid JSON: arrays keep their leading items followed by a `"[truncated: N more items]"` element, the largest object values are shrunk first (down to a `"[truncated: N chars]"` marker), objects with too many keys keep their leading keys plus a `"[truncated]"` entry naming the dropped ones, and long strings are clipped. `ok`, `requestCount`, `requests`, `readsSummary` and `dryRun` are kept whole unless they alone come close to the limit. A top-level `truncated: { originalChars, note }` field then signals that the result is incomplete. Summarize or filter inside `execute` to avoid it.
 

@@ -227,8 +227,15 @@ export class QuickJsExecutor implements CodeExecutor {
 				});
 			}
 
+			let droppedLogEntries = 0;
 			vm.newFunction('log', (...args) => {
-				if (logs.length >= maxLogEntries || engineFailure !== undefined) return;
+				if (engineFailure !== undefined) return;
+				if (logs.length >= maxLogEntries) {
+					// One trailing entry, rewritten per drop, so the model knows output is missing.
+					droppedLogEntries += 1;
+					logs[maxLogEntries] = `...[${droppedLogEntries} more log ${droppedLogEntries === 1 ? 'entry' : 'entries'} dropped: the limit is ${maxLogEntries} per call]`;
+					return;
+				}
 				let message: string;
 				try {
 					message = args.map((arg) => stringifyLogValue(vm.dump(arg))).join(' ');
