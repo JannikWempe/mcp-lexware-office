@@ -188,6 +188,8 @@ To allow only specific writes, list them in `LEXWARE_OFFICE_WRITE_ALLOW` (comma-
 }
 ```
 
+Finalizing needs a `?finalize` suffix on the entry: `POST /v1/invoices?finalize` allows `finalize=true` on invoices, `PUT /v1/vouchers/{id}?finalize` allows setting a voucher's `voucherStatus` to `open`, and `POST /v1/vouchers?finalize` allows creating open vouchers (without it, only `voucherStatus: 'unchecked'` vouchers can be created).
+
 See [docs/guide.md#permissions](docs/guide.md#permissions) for the detailed permission model.
 
 ### Upload directories

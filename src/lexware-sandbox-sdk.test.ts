@@ -180,9 +180,10 @@ const voucherStore = (put: (body: Record<string, any>) => LexwareResponse = () =
 			const response = put(input.body);
 			if (response.ok) {
 				voucher = { ...voucher, ...input.body, version: voucher.version + 1, updatedDate: '2026-11-04T10:00:00.000+01:00' };
-				delete voucher.useCollectiveContact;
+				// As observed: the collective contact replaces contactName and leaves contactId unset.
 				if (input.body.useCollectiveContact === true) {
-					voucher.contactId = 'collective';
+					voucher.contactName = 'Sammellieferant';
+					delete voucher.contactId;
 				}
 			}
 			return response;
@@ -203,6 +204,65 @@ test('lexware.updateVoucher PUTs the merged voucher with files and version, with
 	assert.ok('after' in result);
 	assert.equal((result.after as Record<string, unknown>).version, 4);
 	assert.deepEqual(result.changed, ['voucherStatus', 'voucherNumber']);
+	assert.ok('notApplied' in result);
+	assert.deepEqual([result.requested, result.notApplied, result.sideEffects], [['voucherNumber', 'voucherStatus'], [], []]);
+});
+
+test('lexware.updateVoucher reports fields Lexware derived as sideEffects, apart from the requested ones', async () => {
+	const { sdk } = voucherHost();
+
+	const result = await sdk.updateVoucher('v-1', { useCollectiveContact: true, voucherNumber: 'RE-1' });
+
+	assert.ok('notApplied' in result);
+	assert.deepEqual(result.changed, ['contactId', 'contactName', 'useCollectiveContact']);
+	assert.deepEqual(result.requested, ['useCollectiveContact'], 'an unchanged voucherNumber is not requested');
+	assert.deepEqual(result.notApplied, []);
+	assert.deepEqual(result.sideEffects, ['contactId', 'contactName']);
+});
+
+test('lexware.updateVoucher lists sent fields the re-read voucher does not hold as notApplied', async () => {
+	const after = {
+		...storedVoucher,
+		version: 4,
+		voucherDate: '2026-11-03T00:00:00.000+01:00',
+		totalGrossAmount: 119,
+		voucherItems: [{ amount: 119, taxAmount: 19, taxRatePercent: 19, categoryId: 'cat-1' }],
+	};
+	let reads = 0;
+	const { sdk } = sdkWith((input) => {
+		if (input.method === 'PUT') return okResponse({});
+		reads += 1;
+		return okResponse(reads === 1 ? storedVoucher : after);
+	});
+
+	const result = await sdk.updateVoucher('v-1', {
+		voucherDate: '2026-11-03',
+		totalGrossAmount: '119.00',
+		voucherItems: [{ amount: '119', taxRatePercent: 19, categoryId: 'cat-1' }],
+		remark: 'x',
+		voucherNumber: 'RE-2',
+		contactName: null,
+	});
+
+	assert.ok('notApplied' in result);
+	assert.deepEqual(result.requested, ['voucherDate', 'totalGrossAmount', 'voucherItems', 'remark', 'voucherNumber', 'contactName']);
+	assert.deepEqual(result.notApplied, ['remark', 'voucherNumber', 'contactName'], 'dates, numeric strings and fields Lexware adds to items count as applied');
+	assert.deepEqual(result.sideEffects, []);
+});
+
+test('lexware.updateVoucher matches a yyyy-MM-dd value to a timestamp only in date fields', async () => {
+	const after = { ...storedVoucher, version: 4, dueDate: '2026-11-30T00:00:00.000+01:00', voucherNumber: '2026-11-03T00:00:00.000+01:00' };
+	let reads = 0;
+	const { sdk } = sdkWith((input) => {
+		if (input.method === 'PUT') return okResponse({});
+		reads += 1;
+		return okResponse(reads === 1 ? storedVoucher : after);
+	});
+
+	const result = await sdk.updateVoucher('v-1', { dueDate: '2026-11-30', voucherNumber: '2026-11-03' });
+
+	assert.ok('notApplied' in result);
+	assert.deepEqual(result.notApplied, ['voucherNumber']);
 });
 
 test('lexware.updateVoucher drops contactId when switching to the collective contact', async () => {
@@ -244,6 +304,8 @@ test('lexware.updateVoucher removes files only with allowFileRemoval', async () 
 
 	assert.deepEqual(inputs[1].body.files, ['f-1']);
 	assert.deepEqual(result.changed, ['files']);
+	assert.ok('sideEffects' in result);
+	assert.deepEqual([result.requested, result.notApplied, result.sideEffects], [['files'], [], []]);
 });
 
 test('lexware.updateVoucher throws with the Lexware issues when the PUT fails', async () => {
@@ -293,10 +355,14 @@ test('sandbox lexware.updateVoucher merges and verifies inside QuickJS', async (
 		},
 	};
 
-	const execution = await new QuickJsExecutor().execute(`async () => (await lexware.updateVoucher('v-1', { remark: 'x' }, { expectedVersion: 3 })).changed`, {}, lexwareSandbox(client));
+	const execution = await new QuickJsExecutor().execute(
+		`async () => { const { changed, requested, notApplied, sideEffects } = await lexware.updateVoucher('v-1', { remark: 'x' }, { expectedVersion: 3 }); return { changed, requested, notApplied, sideEffects }; }`,
+		{},
+		lexwareSandbox(client),
+	);
 
 	assert.equal(execution.error, undefined);
-	assert.deepEqual(execution.result, ['remark']);
+	assert.deepEqual(execution.result, { changed: ['remark'], requested: ['remark'], notApplied: [], sideEffects: [] });
 	assert.deepEqual(puts, [{ type: 'purchaseinvoice', voucherNumber: 'RE-1', contactId: 'c-1', version: 3, files: ['f-1', 'f-2'], remark: 'x' }]);
 });
 
@@ -306,14 +372,26 @@ const uploadAccepted = okResponse({ id: 'file-1', voucherId: 'v-9' }, {
 	sent: { bytes: 3, parts: [{ name: 'file', filename: 'receipt.pdf', bytes: 3, sha256: 'abc' }] },
 });
 
-// Upload host: POST answers `upload`, the voucher GETs answer the statuses in turn (the last one repeats).
-const uploadHost = (statuses: string[], upload: LexwareResponse = uploadAccepted) => {
+const recognizedVoucher = {
+	id: 'v-9',
+	voucherStatus: 'unchecked',
+	type: 'purchaseinvoice',
+	voucherNumber: 'RE-9',
+	voucherDate: '2026-11-03T00:00:00.000+01:00',
+	contactId: 'c-1',
+	totalGrossAmount: 119,
+	voucherItems: [{ amount: 119, taxAmount: 19, taxRatePercent: 19, categoryId: 'cat-1' }],
+};
+
+// Upload host: POST answers `upload`, the voucher GETs answer the statuses in turn (the last one repeats);
+// a voucher no longer blank is `recognized`.
+const uploadHost = (statuses: string[], upload: LexwareResponse = uploadAccepted, recognized: Record<string, unknown> = recognizedVoucher) => {
 	let reads = 0;
 	return sdkWith((input) => {
 		if (input.method === 'POST') return upload;
 		const voucherStatus = statuses[Math.min(reads, statuses.length - 1)];
 		reads += 1;
-		return okResponse({ id: 'v-9', voucherStatus, ...(voucherStatus !== 'blank' && { voucherNumber: 'RE-9' }) });
+		return okResponse(voucherStatus === 'blank' ? { id: 'v-9', voucherStatus } : { ...recognized, voucherStatus });
 	});
 };
 
@@ -329,7 +407,50 @@ test('lexware.uploadVoucherFile uploads type=voucher and polls until text recogn
 	});
 	assert.deepEqual(inputs.slice(1).map((input) => [input.method ?? 'GET', input.path]), [['GET', '/v1/vouchers/v-9'], ['GET', '/v1/vouchers/v-9']]);
 	assert.deepEqual(sleeps, [2000, 4000]);
-	assert.deepEqual(result, { fileId: 'file-1', voucherId: 'v-9', sent: uploadAccepted.sent, voucher: { id: 'v-9', voucherStatus: 'unchecked', voucherNumber: 'RE-9' }, extraction: 'done' });
+	assert.deepEqual(result, { fileId: 'file-1', voucherId: 'v-9', sent: uploadAccepted.sent, voucher: recognizedVoucher, extraction: 'done', warnings: [] });
+});
+
+test('lexware.uploadVoucherFile warns about recognition results that need a closer look', async () => {
+	const upload = async (recognized: Record<string, unknown>) => {
+		const result = await uploadHost(['unchecked'], uploadAccepted, recognized).sdk.uploadVoucherFile({ contentPath: '/data/a.pdf' });
+		assert.ok('warnings' in result);
+		return result;
+	};
+
+	// Observed: a flight receipt with no items, no contact and a payment reference as voucherNumber.
+	const flight = await upload({ id: 'v-9', type: 'purchaseinvoice', voucherNumber: '', voucherDate: '2026-10-01', totalGrossAmount: 89.99, totalTaxAmount: 0, useCollectiveContact: false, voucherItems: [] });
+	assert.deepEqual(flight.warnings, [
+		'voucherItems is empty: no amount or category was recognized',
+		'voucherNumber is missing',
+		'no contact: neither contactId nor useCollectiveContact is set',
+	]);
+
+	// Observed: a USD supplier bill recognized as a sales invoice, without gross total or item amount.
+	const usdBill = await upload({ id: 'v-9', type: 'salesinvoice', voucherNumber: 'INV-1', voucherDate: '2026-10-01', contactId: 'own-company', voucherItems: [{ taxAmount: 0, taxRatePercent: 19, categoryId: 'revenue' }, { amount: '5.00' }] });
+	assert.deepEqual(usdBill.warnings, [
+		'type is salesinvoice: receipts are usually purchaseinvoice or purchasecreditnote; also check the contact and the categories',
+		'voucherItems[0].amount is missing',
+		'voucherItems[1].categoryId is missing',
+		'totalGrossAmount is missing, e.g. for a document in a foreign currency',
+	]);
+
+	const collective = await upload({ ...recognizedVoucher, contactId: undefined, useCollectiveContact: true, voucherDate: undefined });
+	assert.deepEqual(collective.warnings, ['voucherDate is missing']);
+});
+
+test('lexware.voucherWarnings checks a voucher read later without requests', () => {
+	const { sdk, inputs } = uploadHost([]);
+
+	assert.deepEqual(sdk.voucherWarnings(recognizedVoucher), []);
+	assert.deepEqual(sdk.voucherWarnings({ ...recognizedVoucher, voucherNumber: ' ', voucherItems: [] }), [
+		'voucherItems is empty: no amount or category was recognized',
+		'voucherNumber is missing',
+	]);
+	assert.deepEqual(sdk.voucherWarnings({ id: 'v-9', voucherStatus: 'blank' }), ['voucherStatus is blank: text recognition is still running; GET the voucher again in a later call']);
+	for (const notVoucher of [undefined, null, 'v-9', [recognizedVoucher]]) {
+		assert.throws(() => sdk.voucherWarnings(notVoucher), /lexware\.voucherWarnings expects a voucher object/, JSON.stringify(notVoucher));
+	}
+	assert.deepEqual(inputs, []);
 });
 
 test('lexware.uploadVoucherFile returns pending on timeout without uploading again', async () => {
@@ -368,18 +489,30 @@ test('lexware.uploadVoucherFile throws on a failed upload or a response without 
 	assert.equal(inputs.length, 1);
 });
 
-test('lexware.uploadVoucherFile says the upload succeeded when polling fails', async () => {
-	const { sdk } = sdkWith((input) => (input.method === 'POST' ? uploadAccepted : rateLimited));
+test('lexware.uploadVoucherFile returns pending with the waitError and sent hashes when polling fails', async () => {
+	let reads = 0;
+	const { sdk, inputs } = sdkWith((input) => {
+		if (input.method === 'POST') return uploadAccepted;
+		reads += 1;
+		return reads === 1 ? okResponse({ id: 'v-9', voucherStatus: 'blank' }) : rateLimited;
+	});
 
-	await assert.rejects(() => sdk.uploadVoucherFile({ contentPath: '/data/a.pdf' }), /the upload succeeded \(fileId file-1, voucherId v-9\), but waiting for text recognition failed\. Do not upload again.*429/);
+	const result = await sdk.uploadVoucherFile({ contentPath: '/data/a.pdf' });
+
+	assert.equal(inputs.length, 3, 'stops polling after the failed poll');
+	assert.deepEqual({ ...result, waitError: undefined }, { fileId: 'file-1', voucherId: 'v-9', sent: uploadAccepted.sent, voucher: { id: 'v-9', voucherStatus: 'blank' }, extraction: 'pending', waitError: undefined });
+	assert.ok('waitError' in result);
+	assert.match(result.waitError ?? '', /^Lexware API request failed: 429/);
 });
 
-test('lexware.uploadVoucherFile says the upload succeeded when the wait itself fails', async () => {
+test('lexware.uploadVoucherFile returns pending when the wait itself fails', async () => {
 	const sdk = createLexwareSdk(async () => JSON.stringify(uploadAccepted), async () => {
 		throw new Error('lexware.sleep was aborted: the execution ended');
 	});
 
-	await assert.rejects(() => sdk.uploadVoucherFile({ contentPath: '/data/a.pdf' }), /the upload succeeded \(fileId file-1, voucherId v-9\).*Do not upload again.*lexware\.sleep was aborted/);
+	const result = await sdk.uploadVoucherFile({ contentPath: '/data/a.pdf' });
+
+	assert.deepEqual(result, { fileId: 'file-1', voucherId: 'v-9', sent: uploadAccepted.sent, extraction: 'pending', waitError: 'lexware.sleep was aborted: the execution ended' });
 });
 
 test('lexware upload helpers validate the file input before sending', async () => {
@@ -428,6 +561,7 @@ test('lexware.updateVoucher in a dry run returns the planned PUT and the changed
 		dryRun: true,
 		planned: { method: 'PUT', path: '/v1/vouchers/v-1', query: {} },
 		changed: ['voucherNumber', 'useCollectiveContact', 'contactId'],
+		requested: ['voucherNumber', 'useCollectiveContact'],
 	});
 });
 
@@ -500,6 +634,24 @@ test('sandbox lexware.uploadVoucherFile polls with the host sleep', async () => 
 	assert.equal(execution.error, undefined);
 	assert.deepEqual(execution.result, { extraction: 'pending', voucherId: 'v-9' }, 'a 60 ms budget ends after one blank poll');
 	assert.equal(reads, 1);
+});
+
+test('sandbox lexware.uploadVoucherFile computes warnings inside QuickJS', async () => {
+	const client = {
+		request: async (input: unknown) => ((input as Record<string, unknown>).method === 'POST' ? uploadAccepted : okResponse({ ...recognizedVoucher, type: 'salescreditnote', totalGrossAmount: 'n/a' })),
+	};
+
+	const execution = await new QuickJsExecutor().execute(
+		`async () => (await lexware.uploadVoucherFile({ contentPath: '/data/a.pdf', waitForExtraction: { timeoutMs: 10 } })).warnings`,
+		{},
+		{ timeoutMs: 5000, ...lexwareSandbox(client) },
+	);
+
+	assert.equal(execution.error, undefined);
+	assert.deepEqual(execution.result, [
+		'type is salescreditnote: receipts are usually purchaseinvoice or purchasecreditnote; also check the contact and the categories',
+		'totalGrossAmount is missing, e.g. for a document in a foreign currency',
+	]);
 });
 
 const voucherRows = [
