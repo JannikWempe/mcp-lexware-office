@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.0.0](https://github.com/JannikWempe/mcp-lexware-office/compare/v3.1.0...v4.0.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* with LEXWARE_OFFICE_WRITE_ALLOW set, a plain createVoucher / "POST /v1/vouchers" entry only allows voucherStatus 'unchecked'; creating open vouchers (voucherStatus omitted or open) needs "POST /v1/vouchers?finalize". A plain updateVoucher entry rejects a voucherStatus other than unchecked; use "PUT /v1/vouchers/{id}?finalize".
+
+### Features
+
+* uploadVoucherFile flags suspicious text recognition, keeps sent hash when waiting fails; updateVoucher separates requested changes from side effects ([6b7cd18](https://github.com/JannikWempe/mcp-lexware-office/commit/6b7cd18cd337d668c0e17ae4b2869e40cb8940a7))
+
+
+### Bug Fixes
+
+* address review — conflicting or null voucherStatus keys count as finalizing, date normalization only for date fields, lexware.voucherWarnings for vouchers read later ([8e1460d](https://github.com/JannikWempe/mcp-lexware-office/commit/8e1460d947ff5eb9b31a009083b35602defd51db))
+* LEXWARE_OFFICE_WRITE_ALLOW blocks finalizing bookkeeping vouchers unless the entry has ?finalize ([5fa3cbb](https://github.com/JannikWempe/mcp-lexware-office/commit/5fa3cbb7ca35aea284cc2ccdb67b8b200da34c64))
+
 ## [3.1.0](https://github.com/JannikWempe/mcp-lexware-office/compare/v3.0.2...v3.1.0) (2026-11-05)
 
 

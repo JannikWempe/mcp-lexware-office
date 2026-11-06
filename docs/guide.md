@@ -16,7 +16,7 @@ For GitHub installs, use an explicit GitHub package spec:
 
 <!-- x-release-please-start-major -->
 ```json
-"args": ["-y", "--package=github:JannikWempe/mcp-lexware-office#semver:^3", "lexware-office"]
+"args": ["-y", "--package=github:JannikWempe/mcp-lexware-office#semver:^4", "lexware-office"]
 ```
 <!-- x-release-please-end -->
 
